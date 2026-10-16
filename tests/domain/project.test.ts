@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { parseMembers } from "../../src/domain/access-control.ts";
-import { createProject } from "../../src/domain/project.ts";
+import { createProject, listProjects, loadProject } from "../../src/domain/project.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-proj-"));
 beforeEach(() => { fs.rmSync(root, { recursive: true, force: true }); fs.mkdirSync(root, { recursive: true }); });
@@ -45,4 +45,20 @@ describe("createProject", () => {
       expect(() => createProject(ws, bad, [])).toThrow("项目 id");
     }
   });
+});
+
+it("loadProject / listProjects：读 alias、坏 JSON 回落 id、排序", () => {
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-projects-"));
+  try {
+    const ws = createWorkspace(root2);
+    createProject(ws, "beta", ["alice"]);
+    createProject(ws, "alpha", ["bob"], "阿尔法");
+    fs.writeFileSync(path.join(root2, "projects", "beta", "project.json"), "{坏");
+    expect(loadProject(ws, "alpha").alias).toBe("阿尔法");
+    expect(loadProject(ws, "beta").alias).toBe("beta");
+    expect(listProjects(ws).map((p) => p.id)).toEqual(["alpha", "beta"]);
+    expect(listProjects(ws).map((p) => p.alias)).toEqual(["阿尔法", "beta"]);
+  } finally {
+    fs.rmSync(root2, { recursive: true, force: true });
+  }
 });

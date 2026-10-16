@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { employeeDir, type Workspace } from "./paths.ts";
+import { agentsDir, employeeDir, type Workspace } from "./paths.ts";
 import type { EmployeeId, ModelChoice } from "./types.ts";
 
 export type Employee = {
@@ -67,4 +67,19 @@ export function renderInstructions(employee: Employee): string {
   return [employee.entry, employee.profile, employee.memory]
     .filter((part) => part.trim() !== "")
     .join("\n\n");
+}
+
+/** 扫描 agents/ 下全部员工（按 id 排序；跳过隐藏目录）。 */
+export function listEmployees(ws: Workspace): Employee[] {
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(agentsDir(ws), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort()
+    .map((id) => loadEmployee(ws, id));
 }

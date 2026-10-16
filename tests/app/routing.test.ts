@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { planRouting } from "../../src/app/routing.ts";
-import { unreadForBoss } from "../../src/app/unread.ts";
 
 describe("planRouting", () => {
   it("点名 → 只投给被点名者", () => {
@@ -18,20 +17,5 @@ describe("planRouting", () => {
       ],
       broadcast: true,
     });
-  });
-});
-
-describe("unreadForBoss", () => {
-  it("老板没看过的、非老板发的消息 = 小红点", () => {
-    const unread = unreadForBoss(
-      [
-        { relation: "dm:alice", messages: [
-          { id: "1", role: "user", text: "在吗" },
-          { id: "2", role: "assistant", text: "在的" },
-        ] },
-      ],
-      { "dm:alice": 1 },
-    );
-    expect(unread).toEqual([{ relation: "dm:alice", message: { id: "2", role: "assistant", text: "在的" } }]);
   });
 });

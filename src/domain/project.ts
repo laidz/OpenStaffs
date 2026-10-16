@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { membersFile, projectDir, type Workspace } from "./paths.ts";
+import { membersFile, projectDir, projectsDir, type Workspace } from "./paths.ts";
 import type { EmployeeId, ProjectName } from "./types.ts";
 
 export type Project = { id: ProjectName; alias: string };
@@ -34,4 +34,32 @@ export function createProject(ws: Workspace, id: ProjectName, memberIds: Employe
   fs.writeFileSync(membersFile(ws, id), ["# 成员", ...memberIds.map((m) => `- ${m}`), ""].join("\n"));
   fs.writeFileSync(path.join(dir, "project.json"), `${JSON.stringify({ alias: displayName }, null, 2)}\n`);
   return { id, alias: displayName };
+}
+
+/** 读项目 alias；project.json 缺失/坏 JSON → alias = id。 */
+export function loadProject(ws: Workspace, id: ProjectName): Project {
+  const dir = projectDir(ws, id);
+  if (!fs.existsSync(dir)) throw new Error(`项目不存在: ${id}`);
+  let alias = id;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8")) as { alias?: unknown };
+    if (typeof parsed.alias === "string" && parsed.alias.trim() !== "") alias = parsed.alias.trim();
+  } catch {
+    // 容错：回落 id
+  }
+  return { id, alias };
+}
+
+export function listProjects(ws: Workspace): Project[] {
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(projectsDir(ws), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort()
+    .map((id) => loadProject(ws, id));
 }

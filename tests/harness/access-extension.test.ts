@@ -36,7 +36,7 @@ describe("访问控制钩子", () => {
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
-      const convId = await harness.ensureActive("dm:alice", spec());
+      const convId = await harness.startSession(spec());
       await harness.send(convId, "先在界内写 note.md，再写到 agents/bob/evil.md");
       await harness.send(convId, "继续");
     } finally {
@@ -58,7 +58,7 @@ describe("访问控制钩子", () => {
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
-      const convId = await harness.ensureActive("dm:alice", spec());
+      const convId = await harness.startSession(spec());
       await harness.send(convId, "跑个命令");
     } finally {
       await harness.close();

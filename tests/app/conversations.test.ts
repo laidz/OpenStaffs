@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import { instructionsFor, newSession, openDm, openGroup, permissionFilesFor, relationKey, skillDirsFor } from "../../src/app/conversations.ts";
+import {
+  activeMemberSessions, findSessionOwner, instructionsFor, newSession, openDm, openGroup,
+  permissionFilesFor, relationKey, roomTranscripts, sessionChains, skillDirsFor, type SessionDefaults,
+} from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 
@@ -59,6 +62,7 @@ describe("应用用例", () => {
       expect(chain[0]!.ended).not.toBeNull();
       expect(chain[1]!.previous).toBe(first);
       expect(relationKey({ kind: "dm", employeeId: "alice" }, "alice")).toBe("dm:alice");
+      expect(relationKey({ kind: "group", project: "yt" }, "bob")).toBe("group:yt:bob");
     } finally {
       await harness.close();
     }
@@ -190,5 +194,197 @@ describe("应用用例", () => {
     expect(text).toContain("- 群技能：来自项目");
     expect(text).toContain("- 员工技能：来自员工");
     expect(text.indexOf("群技能")).toBeLessThan(text.indexOf("员工技能"));
+  });
+
+  it("快照清单：根 AGENTS.md 与项目 AGENTS.md 按序注入（群聊），私聊只注入根 + 员工", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "公司总纲：不得违法。");
+    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "yt", "AGENTS.md"), "任务：做 yt 视频。");
+    const speaker = loadEmployee(ws, "alice");
+
+    const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+    expect(group).toContain("公司总纲：不得违法。");
+    expect(group).toContain("任务：做 yt 视频。");
+    expect(group.indexOf("公司总纲")).toBeLessThan(group.indexOf("任务：做 yt 视频。"));
+    expect(group.indexOf("任务：做 yt 视频。")).toBeLessThan(group.indexOf("你是 alice。"));
+
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm).toContain("公司总纲：不得违法。");
+    expect(dm).not.toContain("任务：做 yt 视频。");
+  });
+
+  it("员工未配模型时用 defaults 兜底可对话；无 defaults 则失败（不静默）", async () => {
+    const dir = path.join(root, "agents", "carol");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 carol。");
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const defaults: SessionDefaults = { model: { provider: "faux", modelId: "faux-model" } };
+      const convId = await openDm(ws, harness, "carol", defaults);
+      const reply = await harness.send(convId, "在吗");
+      expect(reply.text).toBe("ok");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("会话链辅助：sessionChains / activeMemberSessions / findSessionOwner", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n");
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const a1 = await openGroup(ws, harness, "yt", "alice");
+      const chains = sessionChains(ws, { kind: "group", project: "yt" });
+      expect(chains.map((c) => c.memberId)).toEqual(["alice", "bob"]);
+      expect(chains[0]!.rows).toHaveLength(1);
+
+      const active = activeMemberSessions(ws, { kind: "group", project: "yt" });
+      expect(active).toEqual([{ memberId: "alice", convId: a1 }]);
+      expect(findSessionOwner(ws, { kind: "group", project: "yt" }, a1)).toBe("alice");
+      expect(findSessionOwner(ws, { kind: "group", project: "yt" }, "conv:不存在")).toBeUndefined();
+
+      const transcripts = await roomTranscripts(ws, harness, { kind: "group", project: "yt" });
+      expect(transcripts).toHaveLength(1);
+      expect(transcripts[0]!.memberId).toBe("alice");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("roomTranscripts：链指向不存在的 convId 时跳过该成员（不让整房间的合并视图/未读 500）", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n");
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      // bob 的链被人为写坏：活跃行指向一个不存在的会话
+      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      fs.mkdirSync(path.dirname(bobFile), { recursive: true });
+      fs.writeFileSync(
+        bobFile,
+        ["# 会话链", "", "| id | started | ended | previous |", "|----|---------|-------|----------|", "| conv:不存在 | 2026-10-16T00:00:00Z |  | - |", ""].join("\n"),
+      );
+
+      const transcripts = await roomTranscripts(ws, harness, { kind: "group", project: "yt" });
+      expect(transcripts.map((t) => t.memberId)).toEqual(["alice"]);
+      expect(transcripts[0]!.convId).toBe(aliceConv);
+
+      // 控制组：坏会话确实让 harness.transcript 抛错（跳过是必要的，而非恒真断言）
+      await expect(harness.transcript("conv:不存在")).rejects.toThrow();
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("会话快照：会话中改档案文件不生效；新开会话后生效", async () => {
+    const dir = path.join(root, "agents", "dave");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave。");
+    fs.writeFileSync(path.join(dir, "profile.md"), "档案版本一。");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+
+    const systems: string[] = [];
+    const recordSystem = (messages: readonly { role: string; content: unknown }[]): void => {
+      systems.push(
+        messages
+          .filter((m) => m.role === "system")
+          .map((m) => JSON.stringify(m))
+          .join("\n"),
+      );
+    };
+
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      (context) => {
+        recordSystem(context.messages);
+        return fauxAssistantMessage("ok");
+      },
+      (context) => {
+        recordSystem(context.messages);
+        return fauxAssistantMessage("ok");
+      },
+      (context) => {
+        recordSystem(context.messages);
+        return fauxAssistantMessage("ok");
+      },
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-snapshot.sqlite"), models });
+    await harness.open();
+    try {
+      const ws = createWorkspace(root);
+      const first = await openDm(ws, harness, "dave");
+      await harness.send(first, "在吗");
+      fs.writeFileSync(path.join(dir, "profile.md"), "档案版本二。");
+      const again = await openDm(ws, harness, "dave");
+      expect(again).toBe(first); // attach 复用旧会话，不重配置
+      await harness.send(again, "还在吗");
+      const fresh = await newSession(ws, harness, { kind: "dm", employeeId: "dave" }, "dave");
+      expect(fresh).not.toBe(first);
+      await harness.send(fresh, "新会话");
+
+      expect(systems).toHaveLength(3);
+      expect(systems[0]).toContain("档案版本一。");
+      expect(systems[1]).toContain("档案版本一。"); // 会话进行中：文件变更不生效
+      expect(systems[2]).toContain("档案版本二。"); // 新开会话：读到新档案
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("固化跨重启仍生效：重启后 attach 复读同一会话，instructions 仍在 system", async () => {
+    const dir = path.join(root, "agents", "dave");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave。");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+    const sqlitePath = path.join(root, ".openstaffs", "state-restart.sqlite");
+    const ws = createWorkspace(root);
+
+    const openingFaux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    openingFaux.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("ok")]);
+    const openingModels = createModels();
+    openingModels.setProvider(openingFaux.provider);
+    const first = createPiHarness({ root, sqlitePath, models: openingModels });
+    await first.open();
+    const convId = await openDm(ws, first, "dave");
+    await first.close();
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave（改）。"); // 重启后改档案：attach 不得重渲染，快照应仍为旧指令
+
+    let seenSystem = "";
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      (context) => {
+        seenSystem = context.messages
+          .filter((m) => m.role === "system")
+          .map((m) => JSON.stringify(m))
+          .join("\n");
+        return fauxAssistantMessage("ok");
+      },
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const reopened = createPiHarness({ root, sqlitePath, models });
+    await reopened.open();
+    try {
+      const again = await openDm(ws, reopened, "dave");
+      expect(again).toBe(convId);
+      await reopened.send(again, "还在吗");
+      expect(seenSystem).toContain("你是 dave。");
+    } finally {
+      await reopened.close();
+    }
   });
 });

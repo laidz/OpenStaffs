@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
-import { loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
+import { listEmployees, loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-"));
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -75,4 +75,22 @@ describe("loadEmployee", () => {
     write("grace", "config.json", JSON.stringify({ alias: "  阿草  " }));
     expect(loadEmployee(ws, "grace").alias).toBe("阿草");
   });
+});
+
+it("listEmployees：按 id 排序、跳过隐藏目录、坏 config.json 不崩", () => {
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-list-"));
+  try {
+    for (const id of ["bob", "alice"]) {
+      const dir = path.join(root2, "agents", id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
+    }
+    fs.mkdirSync(path.join(root2, "agents", ".hidden"), { recursive: true });
+    fs.writeFileSync(path.join(root2, "agents", "alice", "config.json"), "{坏");
+    const ws = createWorkspace(root2);
+    expect(listEmployees(ws).map((e) => e.id)).toEqual(["alice", "bob"]);
+    expect(listEmployees(ws)[0]!.model).toEqual({ provider: "", modelId: "" });
+  } finally {
+    fs.rmSync(root2, { recursive: true, force: true });
+  }
 });

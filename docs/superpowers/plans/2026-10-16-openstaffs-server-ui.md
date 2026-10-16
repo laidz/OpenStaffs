@@ -4291,7 +4291,42 @@ git diff master --stat
 
 ## 执行日志
 
-（执行者：每条 Ruling 记录——日期 / 任务 / 原因 / 偏差 / 采用方案。无 Ruling 则写"无"。）
+执行方式：subagent 逐任务（SDD：每任务实现者 + 独立审查者），分支 `feat/server-ui`（base `53674bf` → head `95958f4`，squash 合入 master）。fix rounds：Task 8×1、Task 9×1、Task 10×1、Task 13×1、Task 15×1。最终验证：**140/140 测试全绿、typecheck 零错误、未配置模式冒烟通过（status 200 / employees 409 / 静态外壳 200）**、差异核对 44 文件全部可归因（唯一偏差 `tests/harness/access-extension.test.ts` 的两行机械迁移，已披露；计数以执行末尾 `git diff --name-only master..HEAD | wc -l` 实测为准——Task 16 报告里的 43 为审查期快照）。
+
+> 最终审查修复（merge 前最后一波）后，测试总数由 140 → 144（见 `.superpowers/sdd/2026-10-16-openstaffs-server-ui/final-fix-report.md`）。
+
+### Ruling 汇总（按时间顺序；R8/R11 编号未使用）
+
+1. **R1（Task 9 衔接）**：`ServerDeps` 扩展（getHarness/queue 必填）会破坏 Task 8 的 http 测试 helper → Task 9 同步更新调用点。代价：遗漏则在 Task 9 步骤内暴露。
+2. **R2（Task 2→3）**：transcript 的合成条目（`pi.compaction`/`pi.reset`）按 role 会被误判为"老板发言" → 归属 Task 3 显示层过滤（user 仅认 `chat.message`/`pi.user`），transcript 保持原始透传；补回归测试。代价：若下游绕开 `normalizeChatMessage` 直读展示则漏过滤。
+3. **R3（Task 2→6）**：补"固化持久性"测试（重开 harness → attach → send → instructions 仍在请求上下文）→ 落 Task 6 实现。代价：遗漏则"固化未落盘"重启后静默。
+4. **R4（Task 5→10）**：`watch` 的 listener 抛错会被 Pi 静默终结订阅（无 onReport）→ 裁决 pump 回调整体 try/catch 自保（Task 10 已实现 + 注释）。代价：遗漏则订阅可能静默死亡。
+5. **R5（Task 8→10）**：read handler 的 hub 推送因 SseHub 未存在而推迟 → Task 10 补"已读后推 room.unread"（已实现）。
+6. **R6（Task 9）**：审查实测路径穿越（`dm:..%2F..` 可逃出工作区、读任意目录 conversation_ids.md）→ fix：`parseRoomKey` id 安全校验 + decode try/catch + unread 正向闭环断言（已实现，含穿越 RED/GREEN 证据）。
+7. **R7（Task 9→10）**：pump.register 失败不得让已 admitted 的 POST 500 → Task 10 包 best-effort（已实现）。
+8. **R9（Task 10→13）**：新房间首条 boss 消息因订阅晚于 submit 不入流 → 不改服务端注册点（涉编排重构）；前端发送后重拉 + 幂等喂入（Task 13 实现、Task 14 加已知键过滤）。代价：每次发送多一次本地 GET。
+9. **R10（Task 10）**：`Pump.register` 的 has→set 跨 await 竞态（双订阅/重影）→ in-flight 去重 + 回归测试；new-session register best-effort；registerAll per-session 容错（已实现，含"双 watch 复现"RED）。
+10. **R12（Task 13）**：两条 Minor 升级进 fix——live 误删（R9 重喂已存在消息会抹掉流式气泡）改为"仅真正追加时清理"；Enter 加 `!isComposing`（中文 IME 上屏会误发）（已实现，含判别断言与浏览器实测）。
+
+### 事实记录（影响后续维护）
+
+- **Node strip-only**：`npm start` 经 `node` 直跑 TS，代码**不得使用参数属性/枚举/命名空间**（`Pump` 已改显式 `#deps` 字段）。
+- **Pi 事件形状**（1.3.0 实测）：assistant/user 落盘走 `message_end`（非 `entry_appended`）；`watchEvents` 要求数值 ConversationId；`SystemMessage.content` 恒空、内容在 `sections`（测试 helper 用整条 `JSON.stringify`）。
+- **routes 安全**：房间键 id 经 `isSafeRoomId` 校验（拒 `/`、`\`、点开头等）。
+- **失败提示时延**：provider 重试/超时可能 >80s 才出错误气泡（已写入 README FAQ）。
+
+### 已知偏差（相对 spec）
+
+1. **`GET /api/rooms/:key/messages` 未实现 `?limit=`**（spec §6.1 的分页参数）：MVP 房间量可控，返回全量合并视图；前端也未做分页（README FAQ 已声明）。
+2. **"并行性 E2E（两成员生成交叠）"降级为 FakePort 单元用例**（`tests/app/send.test.ts` 的"异 key 并行"）：未做真实模型的双成员交叠端到端（需真实 key 且时序不可控）。
+3. **员工头像（首字母）未实现、聊天头部忙碌展示从简**（spec §8.3 的"员工左侧带头像（首字母）"与头部忙碌指示）：仅以气泡名 + 侧栏忙碌点呈现。
+
+### 留待用户验收 / 后续
+
+- **真实模型手动验收（README 清单 1–10，需真实 key）**：流式回复、错误气泡、群聊 @/广播、未读小红点时机、新开会话与回看、快照生效。
+- 逐任务审查累计的 deferred minors 已随各任务记录并由全分支最终审查 triage（唯一合并前必修项"跨房间事件触发无谓重渲"已在最终修复波修复）；"`room.failed` 后忙点是否残留（依赖 Pi 是否补发 run_end）"需在真实使用中观察（`task_failed.kind` 已透传以供裁决）。
+- **最终修复波**（`8ecbd74`，whole-branch 审查后）：I1 流式增量渲染（dispatch 状态身份短路 + 按事件分流局部渲染；Chrome setter 计数证据——delta 期间 messages-part 零重建、跨房间事件零重建）+ 容错硬化（静态畸形编码 404、listen 友好报错、陈旧错误清理、坏会话跳过、failed.kind 透传、void 调用 catch）与去重清理。re-review 判定全部 addressed、无 Critical/Important 遗留；2 条 Minor/Low（run-start 渲染残差、server error 常驻）经裁定 park（记录于 SDD ledger）。
+- **计划文本回灌建议（未执行）**：Task 7 的 FakePort 门序 bug、Task 2/8 的 access-extension 连带迁移、Task 5 的 systemTextOf（sections）——若复用本计划执行，需先修正这三处。
 
 
 

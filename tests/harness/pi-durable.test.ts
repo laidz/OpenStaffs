@@ -4,8 +4,9 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import type { ConversationSpec } from "../../src/harness/port.ts";
+import { createPiHarness, mapPiEvent } from "../../src/harness/pi-durable.ts";
+import type { ConversationSpec, HarnessEvent } from "../../src/harness/port.ts";
+import type { AccessContext } from "../../src/domain/access-control.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-harness-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -19,23 +20,48 @@ function spec(cwd: string): ConversationSpec {
   };
 }
 
-function fauxModels() {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
-  faux.setResponses([fauxAssistantMessage("你好，我是 alice。")]);
+function access(cwd: string): AccessContext {
+  return { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [] };
+}
+
+function fauxModels(
+  responses: Parameters<ReturnType<typeof fauxProvider>["setResponses"]>[0],
+  /** tokensPerSecond/tokenSize：放慢流式输出，使 delta 跨过 pi-durable 的 100ms partial 落盘窗口。 */
+  options?: { tokensPerSecond?: number; tokenSize?: { min?: number; max?: number } },
+) {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], ...options });
+  faux.setResponses(responses);
   const models = createModels();
   models.setProvider(faux.provider);
   return { models, faux };
 }
 
+/** 从请求上下文里提取全部 system 文本（faux 响应工厂用）。pi-durable 1.3 把 instructions 放在 SystemMessage.sections 而非 content，故整条序列化。 */
+function systemTextOf(messages: readonly { role: string; content: unknown }[]): string {
+  return messages
+    .filter((m) => m.role === "system")
+    .map((m) => JSON.stringify(m))
+    .join("\n");
+}
+
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("waitFor 超时");
+}
+
 describe("Pi Durable HarnessPort", () => {
   it("能开一条会话、发消息、拿回答、读回 transcript", async () => {
-    const { models } = fauxModels();
+    const { models } = fauxModels([fauxAssistantMessage("你好，我是 alice。")]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
-      const convId = await harness.ensureActive("dm:alice", spec(cwd));
+      const convId = await harness.startSession(spec(cwd));
       const reply = await harness.send(convId, "你是谁？");
       expect(reply.role).toBe("assistant");
       expect(reply.text).toContain("alice");
@@ -46,39 +72,53 @@ describe("Pi Durable HarnessPort", () => {
     }
   });
 
-  it("ensureActive 幂等：同 key 返回同一会话 id", async () => {
-    const { models } = fauxModels();
+  it("startSession 把 instructions/model 固化进会话（请求上下文可见），attach 只读回不改配置", async () => {
+    let seenSystem = "";
+    const { models } = fauxModels([
+      (context: { messages: readonly { role: string; content: unknown }[] }) => {
+        seenSystem = systemTextOf(context.messages);
+        return fauxAssistantMessage("ok");
+      },
+    ]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
-      const a = await harness.ensureActive("dm:alice", spec(cwd));
-      const b = await harness.ensureActive("dm:alice", spec(cwd));
-      expect(b).toBe(a);
+      const convId = await harness.startSession(spec(cwd));
+      expect(await harness.attach(convId, access(cwd))).toBe(true);
+      await harness.send(convId, "你好");
+      expect(seenSystem).toContain("你是测试员工。");
+
+      const other = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state2.sqlite"), models });
+      await other.open();
+      try {
+        expect(await other.attach(convId, access(cwd))).toBe(false);
+      } finally {
+        await other.close();
+      }
     } finally {
       await harness.close();
     }
   });
 
-  it("transcript 只含员工/老板发言，不把工具结果当发言", async () => {
-    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
-    faux.setResponses([
+  it("transcript 只含员工/老板发言（带 kind），不把工具结果当发言", async () => {
+    const { models } = fauxModels([
       fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "hi" }), { stopReason: "toolUse" }),
       fauxAssistantMessage("完成"),
     ]);
-    const models = createModels();
-    models.setProvider(faux.provider);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
-      const convId = await harness.ensureActive("dm:alice", spec(cwd));
+      const convId = await harness.startSession(spec(cwd));
       await harness.send(convId, "写 note.md");
       const history = await harness.transcript(convId);
       expect(history.some((m) => m.text.includes("Successfully wrote"))).toBe(false);
-      expect(history.some((m) => m.role === "user" && m.text === "写 note.md")).toBe(true);
+      const user = history.find((m) => m.role === "user");
+      expect(user?.text).toBe("写 note.md");
+      expect(user?.kind).toBe("pi.user");
       expect(history.some((m) => m.role === "assistant" && m.text === "完成")).toBe(true);
     } finally {
       await harness.close();
@@ -86,30 +126,25 @@ describe("Pi Durable HarnessPort", () => {
   });
 
   it("连续两次 send：消息不丢不重、按序", async () => {
-    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
-    faux.setResponses([fauxAssistantMessage("答一"), fauxAssistantMessage("答二")]);
-    const models = createModels();
-    models.setProvider(faux.provider);
+    const { models } = fauxModels([fauxAssistantMessage("答一"), fauxAssistantMessage("答二")]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
-      const convId = await harness.ensureActive("dm:alice", spec(cwd));
+      const convId = await harness.startSession(spec(cwd));
       await harness.send(convId, "问一");
       await harness.send(convId, "问二");
       const history = await harness.transcript(convId);
-      const users = history.filter((m) => m.role === "user").map((m) => m.text);
-      const assistants = history.filter((m) => m.role === "assistant").map((m) => m.text);
-      expect(users).toEqual(["问一", "问二"]);
-      expect(assistants).toEqual(["答一", "答二"]);
+      expect(history.filter((m) => m.role === "user").map((m) => m.text)).toEqual(["问一", "问二"]);
+      expect(history.filter((m) => m.role === "assistant").map((m) => m.text)).toEqual(["答一", "答二"]);
     } finally {
       await harness.close();
     }
   });
 
   it("send 在提交未完成时抛错，而非伪造员工发言", async () => {
-    const { models } = fauxModels();
+    const { models } = fauxModels([fauxAssistantMessage("unused")]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
     await harness.open();
     try {
@@ -119,10 +154,87 @@ describe("Pi Durable HarnessPort", () => {
         cwd,
         instructions: "无模型员工。",
         model: { provider: "", modelId: "" },
-        access: { root, cwd, selfId: "nobody", memberProjects: [], permissionFiles: [] },
+        access: access(cwd),
       };
-      const convId = await harness.ensureActive("dm:nobody", empty);
+      const convId = await harness.startSession(empty);
       await expect(harness.send(convId, "在吗")).rejects.toThrow();
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe("提交与推流", () => {
+  it("submit 写入自定义 entry（kind/data），transcript 读回", async () => {
+    const { models } = fauxModels([fauxAssistantMessage("收到")]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-submit.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      await harness.submit(convId, "做X", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_1" } });
+      await waitFor(async () => (await harness.transcript(convId)).some((m) => m.role === "assistant"));
+      const boss = (await harness.transcript(convId)).find((m) => m.role === "user");
+      expect(boss?.kind).toBe("chat.message");
+      expect(boss?.text).toBe("做X");
+      expect((boss?.data as { roomMessageId?: string } | undefined)?.roomMessageId).toBe("rm_1");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("watch 推送 delta / 落盘消息 / run 起止", async () => {
+    const { models } = fauxModels([fauxAssistantMessage("你好呀，我是 alice，很高兴见到你，今天有什么可以帮你的吗？")], {
+      tokensPerSecond: 20,
+      tokenSize: { min: 1, max: 1 },
+    });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-watch.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      const events: HarnessEvent[] = [];
+      const unsubscribe = await harness.watch(convId, (event) => events.push(event));
+      try {
+        await harness.submit(convId, "你好");
+        await waitFor(() => events.some((e) => e.type === "message" && e.message.role === "assistant"));
+        expect(events.some((e) => e.type === "message" && e.message.role === "user" && e.message.text === "你好")).toBe(true);
+        expect(events.some((e) => e.type === "delta" && e.channel === "text" && e.delta.length > 0)).toBe(true);
+        expect(events.some((e) => e.type === "run" && e.phase === "start")).toBe(true);
+        expect(events.some((e) => e.type === "run" && e.phase === "end")).toBe(true);
+        const assistant = events.find((e) => e.type === "message" && e.message.role === "assistant");
+        expect(assistant?.type === "message" ? assistant.message.text : "").toContain("你好呀");
+      } finally {
+        await unsubscribe();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("mapPiEvent：task_failed 透传 kind（失败类别，供前端/排障区分）", () => {
+    const mapped = mapPiEvent(
+      { type: "task_failed", taskId: 7, kind: "model", message: "模型不可用" } as unknown as Parameters<typeof mapPiEvent>[0],
+      "c1",
+    );
+    expect(mapped).toEqual([{ type: "failed", convId: "c1", kind: "model", message: "模型不可用" }]);
+  });
+
+  it("同 requestId 重复提交不产生重复输入（Pi 去重语义）", async () => {
+    const { models } = fauxModels([fauxAssistantMessage("一"), fauxAssistantMessage("二")]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-request.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      await harness.submit(convId, "同一个请求", { requestId: "req-1" });
+      await harness.submit(convId, "同一个请求", { requestId: "req-1" });
+      await waitFor(async () => (await harness.transcript(convId)).some((m) => m.role === "assistant"));
+      const users = (await harness.transcript(convId)).filter((m) => m.role === "user");
+      expect(users).toHaveLength(1);
     } finally {
       await harness.close();
     }
