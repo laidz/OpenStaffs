@@ -42,7 +42,7 @@ const configured: WorkspaceConfig = { provider: "faux", apiKey: "k", modelId: "f
 describe("HTTP 骨架", () => {
   it("未配置：status 可用、其余 API 409、静态可用", async () => {
     const ws = createWorkspace(root);
-    const { base, close } = await start({ ws, getConfig: () => undefined, getHarness: () => undefined, queue: new KeyedQueue(), publicDir });
+    const { base, close } = await start({ ws, getConfig: () => undefined, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
     try {
       const status = await fetch(`${base}/api/status`);
       expect(status.status).toBe(200);
@@ -73,7 +73,7 @@ describe("HTTP 骨架", () => {
     fs.writeFileSync(path.join(projectDir, "project.json"), JSON.stringify({ alias: "油管项目" }));
 
     const ws = createWorkspace(root);
-    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir });
+    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
     try {
       const status = (await (await fetch(`${base}/api/status`)).json()) as Record<string, unknown>;
       expect(status.apiKey).toBeUndefined();
@@ -96,7 +96,7 @@ describe("HTTP 骨架", () => {
 
   it("静态文件：防路径穿越、404", async () => {
     const ws = createWorkspace(root);
-    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir });
+    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
     try {
       expect((await fetch(`${base}/nope.txt`)).status).toBe(404);
       // 原始 http 请求绕过 fetch 的路径规范化
@@ -115,7 +115,7 @@ describe("HTTP 骨架", () => {
 
   it("静态路径畸形百分号编码（/%ZZ）：404 而非 500", async () => {
     const ws = createWorkspace(root);
-    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir });
+    const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
     try {
       // 原始 http 请求：fetch/URL 会拒绝非法百分号编码
       const { status, body } = await new Promise<{ status: number; body: string }>((resolve) => {
@@ -154,7 +154,7 @@ async function startWithFaux(employeeIds: string[], groupMembers: string[]): Pro
   const harness = createPiHarness({ root, sqlitePath: path.join(root, `.openstaffs/state-${Date.now()}-${Math.random()}.sqlite`), models });
   await harness.open();
   const ws = createWorkspace(root);
-  const server = createHttpServer({ ws, getConfig: () => configured, getHarness: () => harness, queue: new KeyedQueue(), publicDir });
+  const server = createHttpServer({ ws, getConfig: () => configured, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319 });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {

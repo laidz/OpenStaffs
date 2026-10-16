@@ -8,11 +8,21 @@ import { createConfiguredModels } from "./models.ts";
 import { createHttpServer } from "./http.ts";
 import { SseHub } from "./sse.ts";
 import { Pump } from "./pump.ts";
+import { resolveStartOptions } from "./startup.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 async function main(): Promise<void> {
-  const root = process.env.OPENSTAFFS_ROOT ?? process.cwd();
+  const startup = resolveStartOptions({
+    argv: process.argv,
+    env: process.env,
+    frameworkDir: path.resolve(here, "..", ".."),
+  });
+  if (!startup.ok) {
+    console.error(`[openstaffs] ${startup.error}`);
+    process.exit(1);
+  }
+  const root = startup.root;
   const ws = createWorkspace(root);
   const getConfig = () => readConfig(ws);
   const config = getConfig();
@@ -35,6 +45,7 @@ async function main(): Promise<void> {
     console.log(`[openstaffs] 未配置：请编辑 ${path.join(root, ".openstaffs", "config.json")} 后重启服务`);
   }
 
+  const port = startup.port ?? config?.port ?? DEFAULT_PORT;
   const server = createHttpServer({
     ws,
     getConfig,
@@ -43,8 +54,8 @@ async function main(): Promise<void> {
     publicDir: path.join(here, "..", "..", "public"),
     pump,
     hub,
+    port,
   });
-  const port = config?.port ?? DEFAULT_PORT;
   // 端口占用等监听失败：打印中文原因后退出（spec §3.1），不抛未捕获异常。
   server.on("error", (error: Error) => {
     console.error(`[openstaffs] 无法监听端口 ${port}：${error.message}（可在 .openstaffs/config.json 修改 port）`);

@@ -118,6 +118,7 @@ describe("SSE 全链路", () => {
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),
+      port: 4319,
       pump,
       hub,
     });
@@ -190,6 +191,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),
+      port: 4319,
       pump: { register: async () => { throw new Error("订阅失败"); }, unregister: async () => {} },
       hub: new SseHub(),
     });
@@ -335,6 +337,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),
+      port: 4319,
       pump: { register: async () => { throw new Error("订阅失败"); }, unregister: async () => {} },
       hub: new SseHub(),
     });

@@ -7,9 +7,18 @@
 要求：Node ≥ 22.19（服务端直接用 Node 运行 TypeScript，无需编译）。
 
 1. `npm install`
-2. 写配置：创建 `.openstaffs/config.json`（见下节；`.openstaffs/` 目录不存在就先建）。
-3. `npm start`（会先 `npm run build:web` 打包前端，再启动服务）。
-4. 浏览器打开 `http://localhost:4319`。
+2. 准备一个**项目目录**（办公数据根：`agents/` 员工、`projects/` 群聊、`.openstaffs/` 配置与状态都存这里，与框架目录相互独立）：
+   `mkdir -p ~/MyOffice`
+3. 写配置：在项目目录下创建 `.openstaffs/config.json`（见下节；可先跳过，启动后页面会显示引导页）。
+4. 启动——**必须指定项目目录**；端口可选：
+   ```bash
+   npm start -- ~/MyOffice
+   npm start -- ~/MyOffice 5000        # 端口可选
+   # 等价的环境变量写法：OPENSTAFFS_ROOT=~/MyOffice OPENSTAFFS_PORT=5000 npm start
+   ```
+5. 浏览器打开 `http://localhost:4319`（或你指定的端口）。
+
+> 框架与办公数据必须分开：不指定目录会直接报错退出；把项目目录指向框架目录本身也会被拒绝。办公目录可以单独 `git init`，让员工档案 / 记忆可版本化、可备份、可整包迁移。
 
 其它命令：`npm test`（vitest 全量用例）、`npm run typecheck`（tsc --noEmit）、`npm run build:web`（只打包前端）。
 
@@ -26,10 +35,10 @@
 
 - `provider` / `apiKey` / `modelId` 三项必填；任一缺失、为空或 JSON 损坏 = **未配置模式**：服务照常启动，页面显示引导页，除 `/api/status` 外所有 API 返回 409。
 - `provider` 可选：`opencode-go`、`anthropic`、`openai`、`deepseek`、`google`、`openrouter`。写错会在启动时直接报错退出。
-- `port` 可选，默认 `4319`。
+- `port` 可选，默认 `4319`；**优先级：启动参数 / `OPENSTAFFS_PORT` > 本文件的 `port` > 4319**。
 - 配置是进程级：改完要重启服务（Ctrl+C 后重新 `npm start`）。不重启会出现「部分生效」的假象——`/api/status` 与新会话的 `modelId` 是按请求重读文件的，但 provider 工厂与凭据仍是启动时那份；判断配置是否生效，请以重启后为准。员工 / 项目目录是运行时读取，改完刷新页面即生效。
-- 工作区根 = 启动命令所在目录；可用 `OPENSTAFFS_ROOT=/path/to/root npm start` 指定。
-- 建议 `chmod 600 .openstaffs/config.json`；`.openstaffs/` 已被 `.gitignore` 忽略，密钥只存在本机。
+- 项目目录**必须显式指定**（`npm start -- <目录>` 或 `OPENSTAFFS_ROOT`），且不能是框架目录本身。
+- 建议 `chmod 600 .openstaffs/config.json`；项目目录里的 `.openstaffs/`、`agents/`、`projects/` 均已随框架仓库的 `.gitignore` 忽略；密钥只存在本机。若想版本化员工数据：在项目目录里单独 `git init`。
 - 密钥不会写日志、不会出现在任何 API 响应里（`/api/status` 只回 `provider` / `modelId`）。运行状态也放在 `.openstaffs/`：`state.json`（已读水印）、`state.sqlite`（对话库）。
 
 ## 创建员工（`agents/<id>/`）
@@ -132,7 +141,7 @@ projects/demo/
 
 按顺序做一遍即可覆盖主要功能：
 
-1. **未配置启动**：不建 `.openstaffs/config.json` → `npm start` → 浏览器打开首页显示引导页（工作区根、config 路径、示例 JSON）；`curl http://localhost:4319/api/status` 里 `configured` 为 `false`，其它 `/api/*` 返回 409。
+1. **未配置启动**：项目目录里不建 `.openstaffs/config.json` → `npm start -- <项目目录>` → 浏览器打开首页显示引导页（工作区根、config 路径、示例 JSON）；`curl http://localhost:4319/api/status` 里 `configured` 为 `false`、`root` 等于你指定的项目目录，其它 `/api/*` 返回 409。不带目录参数直接 `npm start` → 报错退出并提示用法。
 2. **配置生效**：按上节写好 `config.json` → 重启服务 → 引导页消失；没有员工时左侧显示「还没有员工：在 agents/ 下创建目录并写 AGENTS.md」。
 3. **建员工**：创建 `agents/alice/AGENTS.md`（可加 `config.json` 设 alias）→ 刷新页面 → 左侧出现该员工（设了 alias 就显示 alias，如「爱丽丝」）。
 4. **私聊对话**：进入 alice 的私聊发一条 → 看到流式回复；不等它答完立刻再发一条，前一条继续生成且不阻塞后一条。
@@ -145,7 +154,9 @@ projects/demo/
 
 ## 常见问题
 
-- **端口被占用**：改 `config.json` 的 `port` 后重启。
+- **启动报「必须指定项目目录」**：漏了目录参数——`npm start` 与目录之间要有 `--`（`npm start -- ~/MyOffice`）；也可以写 `OPENSTAFFS_ROOT=~/MyOffice npm start`。报「项目目录不能是框架目录本身」时换一个独立目录存放办公数据。
+- **指定端口**：`npm start -- ~/MyOffice 5000`，或 `OPENSTAFFS_PORT=5000`；优先级为 启动参数 > 环境变量 > `config.json` 的 `port` > 4319。
+- **端口被占用**：改 `config.json` 的 `port`（或启动参数传端口）后重启。
 - **员工回复失败（聊天里出现红色错误气泡）**：检查 `apiKey` 与 `modelId`；错误原文会显示在气泡里。失败要等 provider 重试 / 超时后才会浮出来，可能超过一分钟——这期间看起来只是「一直在生成」。
 - **改了 config 不生效**：配置是进程级的，必须重启服务；员工 / 项目文件才是刷新即生效。
 - **技能 / 档案 / 记忆改了没反应**：会话创建时已固化 → 新开会话才生效。

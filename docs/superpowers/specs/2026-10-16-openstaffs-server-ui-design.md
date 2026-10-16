@@ -36,7 +36,7 @@
 | D10 | **推流 = SSE + 每条会话 `watchEvents`** | 全局一条 `/api/events` 流，事件带 roomKey；归一化事件不泄漏 Pi 类型。推送泵**绝不 await 慢客户端**（每客户端独立缓冲，delta 可合并/丢弃、权威消息不丢，重连靠重新拉取 + snapshot 补齐）。 |
 | D11 | **发送编排 = fire-and-forget** | POST 只等"提交落盘"（毫秒级），不等模型回答；回答经 SSE 实时推。per-key（房间 × 成员）串行队列防"同成员并发 openGroup"竞态；不同 key 完全并行。`requestId` 交给 Pi 的去重键，防重试重复。 |
 | D12 | **冷启动 = 文件引导页** | 未配置时前端显示引导（config 文件路径 + 示例 JSON + "保存后重启生效"）；**表单不存在**。员工/项目/技能是运行时读取，改完刷新即生效；config 是进程级，需重启。 |
-| D13 | **默认端口 4319**（`config.json` 可改） | 启动根目录 = 进程 cwd（`OPENSTAFFS_ROOT` 环境变量可覆盖）。 |
+| D13 | **项目目录必填 + 端口可选** | 启动**必须显式指定项目目录**（`npm start -- <目录>` 或 `OPENSTAFFS_ROOT`）——不默认 cwd、不允许等于框架目录（框架与办公数据分离）；端口可选（启动参数 `[port]` / `OPENSTAFFS_PORT` > `config.json` > 默认 4319）。 |
 | D14 | **回看 = 会话链 + 单会话只读** | `GET sessions` 列会话链（每成员一份），点旧会话看其 transcript（只读、不 attach、不合并）。 |
 | D15 | **消息不显示时间戳** | EntryRecord 无时间戳；顺序即时间。信息来源为链文件的会话起止时间（回看面板可见）。 |
 
@@ -293,7 +293,7 @@ mergeRoomMessages(relations): RoomMessage[]
 
 - 读取容错：缺失/坏 JSON/字段缺失 → "未配置"模式（不崩溃）。
 - key 注入 Pi：优先用 pi-ai 的 credential 机制（credential store / auth 覆盖，**以 d.ts 为准**）；最坏允许设置进程环境变量（仅内存、不落日志）。
-- `port` 缺省 4319；`OPENSTAFFS_ROOT` 覆盖工作区根（默认进程 cwd）。
+- `port` 优先级：启动参数 / `OPENSTAFFS_PORT` > 本文件 > 4319。**启动必须显式指定项目目录**（`npm start -- <目录> [port]` 或 `OPENSTAFFS_ROOT`）：不默认 cwd、拒绝等于框架目录；目录不存在/不是目录、端口非法均在启动时报错退出。
 
 ### 7.2 引导页（未配置时）
 

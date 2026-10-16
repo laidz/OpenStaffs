@@ -4,7 +4,7 @@ import path from "node:path";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
-import { DEFAULT_PORT, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import { resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { countUnread, mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
@@ -26,6 +26,8 @@ export type ServerDeps = {
   getHarness: () => HarnessPort | undefined;
   queue: KeyedQueue;
   publicDir: string;
+  /** 实际监听端口（启动参数 / config / 默认值解析后的结果）；status 展示用。 */
+  port: number;
   pump?: PumpLike;
   hub?: SseHub;
 };
@@ -243,7 +245,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             json(res, 200, {
               configured: config !== undefined,
               root: deps.ws.root,
-              port: config?.port ?? DEFAULT_PORT,
+              port: deps.port,
               ...(config === undefined ? {} : { provider: config.provider, modelId: config.modelId }),
             });
             return;
