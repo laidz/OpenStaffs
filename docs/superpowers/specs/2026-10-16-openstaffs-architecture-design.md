@@ -93,8 +93,9 @@
 ├─ AGENTS.md                # 公司级总纲 + 老板偏好（Pi 协议：自动加载）
 ├─ agents/
 │  └─ <员工 id>/
+│     ├─ AGENTS.md          # 【入口】Pi 协议：引入本员工的记忆/档案/职能/技能
 │     ├─ profile.md         # 档案：岗位/职责 + 人格（合并原 SOUL.md）
-│     ├─ MEMORY.md          # 长期记忆（我们的约定，渲染进 instructions）
+│     ├─ MEMORY.md          # 长期记忆（拟人核心；我们的约定）
 │     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
 │     │  └─ <技能名>/SKILL.md
 │     ├─ permissions.json   # 可写范围（默认：自己 + 所在项目）
@@ -110,16 +111,21 @@
 > **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permissions.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
 > **原则：Pi 有协议的，就用协议；没有的，才自造。** 因此不设 `BOSS.md`（并入 `AGENTS.md`）、不设 `SOUL.md`（并入 `profile.md`）、不设 `SKILLS.md`（改用标准 `skills/<name>/SKILL.md`）。
 
+> **员工目录的 `AGENTS.md` 是"入口"（必须）**：它**引入**该员工的记忆（`MEMORY.md`）、档案（`profile.md`）、职能与技能——"要认识一个员工，从它的 `AGENTS.md` 读起"。
+> - 员工在**自己目录内**工作（私活）时，Pi 会**自动加载**这份 `AGENTS.md`（它就在 cwd 及祖先链上）。
+> - 员工在**群里发言**时 `cwd` 是项目文件夹，Pi 不会自动加载员工目录的 `AGENTS.md`；此时由 OpenStaffs 的**"员工加载器"以该 `AGENTS.md` 为入口**，按需读取并渲染成 conversation 的 agent 配置。
+> - `MEMORY.md` 保留：**记忆是"拟人"的一个有效支点**，与档案分开、独立演化。
+
 ### 4.2 域模型 → Pi Durable 原语
 
 | 域概念 | 基座原语 | 说明 |
 |---|---|---|
-| 员工 | 一个"员工定义"（读自文件夹） | 渲染成 conversation 的 agent 配置 |
+| 员工 | 一个目录，**入口 = `AGENTS.md`** | 员工加载器以 `AGENTS.md` 为入口，引入记忆/档案/职能/技能，渲染成 conversation 的 agent 配置 |
 | 私聊 | **一条 conversation** | agent 固定为该员工；`cwd` = 公司根 |
 | 群聊（`projects/<任务>/`） | **一条 conversation（"房间"）** | 房间日志天然 = transcript；`cwd` = 项目文件夹 |
 | 发言（某员工在房间说话） | 切 agent + `submit` | 见 §5.1 |
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
-| 员工灵魂/记忆 | `configure({ instructions })` | 从 `profile.md` / `MEMORY.md` 渲染；文件夹是真相源 |
+| 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
 | 员工技能 | Pi 技能发现（`skills/<name>/SKILL.md`） | 走 Pi / Agent Skills 标准，按员工/项目挂载 |
 | 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生视图 | "发给他且待回复的消息"，无需独立文件 |
@@ -143,7 +149,7 @@
 
 1. 老板在房间发 `@alice 做X`
 2. 路由层解析 `@alice` → 定位到该员工定义
-3. `configure(roomConv, { model, tools, instructions: render(alice) })`
+3. 员工加载器以 `agents/alice/AGENTS.md` 为入口渲染 agent 配置 → `configure(roomConv, { model, tools, instructions })`
 4. `roomConv.submit({ type: "input", content: "做X", entry: { kind: "chat.mention", data: { author: "boss", target: "alice" } } })`
 5. `wait()` → 回答写入房间 transcript → `viewState/watch` 推给 Web UI
 
