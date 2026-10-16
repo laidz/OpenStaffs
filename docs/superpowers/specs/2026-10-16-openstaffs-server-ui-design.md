@@ -274,7 +274,7 @@ mergeRoomMessages(relations): RoomMessage[]
 ### 6.4 静态文件与安全
 
 - 仅伺服 `public/` 下文件；路径规范化防穿越；只读。
-- apiKey 不落日志、不过 API（`state.json`/`config.json` 都是本地文件）；`config.json` 写入时 `0600`。
+- apiKey 不落日志、不过 API（`state.json`/`config.json` 都是本地文件）；`config.json` **由老板手工维护（服务端只读）**，README 建议 `chmod 600`。
 
 ---
 
