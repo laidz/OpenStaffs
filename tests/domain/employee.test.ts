@@ -52,4 +52,20 @@ describe("loadEmployee", () => {
     write("carol", "config.json", "{ not json");
     expect(loadEmployee(ws, "carol").model).toEqual({ provider: "", modelId: "" });
   });
+
+  it("config.json 的 alias 作为展示名读出（改名不动目录 id）", () => {
+    const ws = createWorkspace(tmp);
+    write("dave", "AGENTS.md", "你是 dave。");
+    write("dave", "config.json", JSON.stringify({ provider: "faux", modelId: "m", alias: "灯芯草" }));
+    expect(loadEmployee(ws, "dave").alias).toBe("灯芯草");
+  });
+
+  it("无 config.json / alias 非字符串时 alias 为 undefined", () => {
+    const ws = createWorkspace(tmp);
+    write("erin", "AGENTS.md", "你是 erin。");
+    expect(loadEmployee(ws, "erin").alias).toBeUndefined();
+    write("frank", "AGENTS.md", "你是 frank。");
+    write("frank", "config.json", JSON.stringify({ alias: 42 }));
+    expect(loadEmployee(ws, "frank").alias).toBeUndefined();
+  });
 });

@@ -96,26 +96,28 @@
 │     ├─ AGENTS.md          # 【入口】Pi 协议：引入本员工的记忆/档案/职能
 │     ├─ profile.md         # 档案：岗位/职责 + 人格（合并原 SOUL.md）
 │     ├─ MEMORY.md          # 长期记忆（拟人核心；我们的约定）
-│     ├─ config.json        # 员工运行配置：模型供应商 / 模型 / 思考档位
+│     ├─ config.json        # 员工运行配置：模型供应商 / 模型 / 思考档位 / alias
 │     ├─ conversation_ids.md # 私聊会话链（关系数据；导出员工时排除）
-│     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
-│     │  └─ <技能名>/SKILL.md
+│     ├─ skills/            # 员工技能（Agent Skills 格式：<技能名>/SKILL.md）
 │     ├─ permission.json    # 写权限追加（老板维护；基线 = 自己 + 所在项目）
 │     └─ data/              # 自持工作区
 └─ projects/
-   └─ <任务名>/
+   └─ <项目 id>/
       ├─ AGENTS.md          # 任务规范（Pi 协议：自动加载）
+      ├─ project.json       # 展示名 alias（id 不可变）
       ├─ data/              # 多方共享工作区
       ├─ members.md         # 成员名单
+      ├─ skills/            # 群技能（Agent Skills 格式：<技能名>/SKILL.md）
       ├─ permission.json    # 写权限追加（老板维护）
       └─ conversation_ids/  # 本群聊各成员的会话链（<成员>.md）
 ```
 
-> **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permission.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
-> **原则：Pi 有协议的，就用协议；没有的，才自造。** 因此不设 `BOSS.md`（并入 `AGENTS.md`）、不设 `SOUL.md`（并入 `profile.md`）、不设 `SKILLS.md`（改用标准 `skills/<name>/SKILL.md`）。
+> **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）。其余 `profile.md` / `MEMORY.md` / `permission.json` / `members.md` / `project.json` / `skills/` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
+> **原则：Pi 有协议的，就用协议；没有的，才自造。** 因此不设 `BOSS.md`（并入 `AGENTS.md`）、不设 `SOUL.md`（并入 `profile.md`）、不设 `SKILLS.md`（改用 `skills/<name>/SKILL.md` 的 Agent Skills 格式）。
+> **一切引用按 id（决策）**：**目录名即 id**（员工 / 项目），**不可变**；展示名（`alias`）存 `agents/<id>/config.json` 与 `projects/<id>/project.json`，**随时可改**——链文件、`permission.json`、会话键等一律按 id，改名不会断链。
 
 > **员工目录的 `AGENTS.md` 是"入口"（必须）**：它**引入**该员工的记忆（`MEMORY.md`）、档案（`profile.md`）与职能——"要认识一个员工，从它的 `AGENTS.md` 读起"。
-> - **技能不由 `AGENTS.md` 引入**：技能是 **Pi 的机制**（Pi 扫描技能目录，自动把每个技能的 name/description 注入系统提示）。我们只需把员工的 `skills/` 目录纳入 Pi 的技能发现路径，**不做二次登记**。
+> - **技能不由 `AGENTS.md` 引入**：技能由 OpenStaffs 在装配会话时扫描 `skills/*/SKILL.md`，把 name / description 注入会话 instructions（见 §4.2），**不做二次登记**。
 > - 员工在**自己目录内**工作（私活）时，Pi 会**自动加载**这份 `AGENTS.md`（它就在 cwd 及祖先链上）。
 > - 员工在**群里发言**时 `cwd` 是项目文件夹，Pi 不会自动加载员工目录的 `AGENTS.md`；此时由 OpenStaffs 的**"员工加载器"以该 `AGENTS.md` 为入口**，按需读取并渲染成 conversation 的 agent 配置。
 > - `MEMORY.md` 保留：**记忆是"拟人"的一个有效支点**，与档案分开、独立演化。
@@ -140,7 +142,7 @@
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
 | 会话（session） | 一条 conversation | 一个"关系" = 一条**会话链**；"新开会话" = 结束当前、开新条（记 `prevId`） |
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
-| 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
+| 技能（群 + 员工） | OpenStaffs 自实现：扫 `skills/*/SKILL.md`，注入 name + description | **非 Pi 机制**（pi-durable 1.3.0 无技能发现，2026-10-16 实测）；顺序：群 `projects/<id>/skills/` 在前、员工 `agents/<id>/skills/` 在后；同名去重（群优先） |
 | 员工模型配置 | 员工 `config.json` → per-conversation agent | `model`（**供应商 + 模型**）+ `thinkingLevel`（**思考档位，`off` 即关闭**）；Pi Durable 此层**不含温度**，故**不做温度** |
 | 写权限（成员制 + 加法授权） | `members.md`（成员 = 基线资格）+ `permission.json`（加法）+ `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生的**未读标记** | **IM 面板上的小红点，不是独立面板** |
@@ -195,7 +197,7 @@
 
 ### 5.4 建群 = 立项
 
-在 `projects/` 下建同名文件夹（`AGENTS.md` + `data/` + `members.md`）→ 成员写入 `members.md`。**群聊会话不预建**——各成员的会话按需创建（见 §4.3），`cwd` = 该文件夹。
+在 `projects/` 下建 `<项目 id>/`（`AGENTS.md` + `project.json`（`alias`）+ `data/` + `members.md`）→ 成员写入 `members.md`。**id 是唯一标识（目录名，不可变）；alias 是可变展示名**；目标已存在则报错。**群聊会话不预建**——各成员的会话按需创建（见 §4.3），`cwd` = 该文件夹。
 
 ### 5.5 老板待办 = IM 上的小红点
 
@@ -289,7 +291,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 1. 极简工作台 UI（员工/项目列表 + 聊天窗口）
 2. 首次配置（**非对话**表单：供应商 + 密钥；可选种子免费模型）
 3. 职场 IM 与记忆闭环：私聊 / 群聊（`projects/<任务>/` + `members.md`）/ `@触发` / 广播 / SQLite 消息流水 / 老板待办小红点
-4. 员工档案可视读取与编辑（`profile.md` / `MEMORY.md`），可为员工创建/挂载技能（标准 `skills/<name>/SKILL.md`）
+4. 员工档案可视读取与编辑（`profile.md` / `MEMORY.md`），可为员工/项目创建与挂载技能（`skills/<name>/SKILL.md`；群技能 + 员工技能）
 5. **新开会话**：私聊与群聊均可（用户点击，或让 agent 触发）
 
 **非目标（本期不做）：** **0 号员工（Staff0，对话式引导）**、**独立组织架构层（用群聊覆盖）**、自主 Inner Loop、Peer Review、记忆压缩与自动进化、MCP 生态、人才市场、硬档 ACL。
@@ -317,7 +319,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 
 ## 11. 待实测清单（spike 未覆盖）
 
-- [ ] `SKILLS`（标准 `skills/<name>/SKILL.md`）：Pi 原生发现/挂载，以及如何按"员工 / 项目"作用域隔离
+- [x] **`SKILLS`（2026-10-16 实测）**：pi-durable 1.3.0 **无**技能发现机制（导出面 0 命中；唯一 `skill` 命中是 `ExecutionEnv` 一致性测试夹具；`pi-coding-agent` 不在依赖内）。已定为 **OpenStaffs 自实现**：扫 `skills/*/SKILL.md`，注入 name + description；作用域 = 群（`projects/<id>/skills/`）+ 员工（`agents/<id>/skills/`），**群在前**。
 - [ ] `MCP`：`createMcpExtension` 连接与 per-conversation 暴露（1.0 内置）
 - [ ] `codemode`：脚本调用是否被 `beforeTool` 钩子可靠裁决
 - [ ] **硬档隔离**：自定义 `ExecutionEnv`（容器）验证 bash 越界被物理阻断

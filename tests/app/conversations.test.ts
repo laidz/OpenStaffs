@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import { newSession, openDm, openGroup, permissionFilesFor, relationKey } from "../../src/app/conversations.ts";
+import { instructionsFor, newSession, openDm, openGroup, permissionFilesFor, relationKey, skillDirsFor } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 
@@ -160,5 +160,35 @@ describe("应用用例", () => {
     } finally {
       await harness.close();
     }
+  });
+
+  it("技能目录：私聊只有员工 skills；群聊 = 项目 skills + 员工 skills", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const speaker = loadEmployee(ws, "alice");
+    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
+      path.join(root, "agents", "alice", "skills"),
+    ]);
+    expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
+      path.join(root, "projects", "yt", "skills"),
+      path.join(root, "agents", "alice", "skills"),
+    ]);
+  });
+
+  it("instructions 注入技能（只给 name+description；群技能在前）", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const groupSkill = path.join(root, "projects", "yt", "skills", "g", "SKILL.md");
+    fs.mkdirSync(path.dirname(groupSkill), { recursive: true });
+    fs.writeFileSync(groupSkill, "---\nname: 群技能\ndescription: 来自项目\n---\n");
+    const agentSkill = path.join(root, "agents", "alice", "skills", "a", "SKILL.md");
+    fs.mkdirSync(path.dirname(agentSkill), { recursive: true });
+    fs.writeFileSync(agentSkill, "---\nname: 员工技能\ndescription: 来自员工\n---\n");
+    const speaker = loadEmployee(ws, "alice");
+    const text = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+    expect(text).toContain("你是 alice。");
+    expect(text).toContain("- 群技能：来自项目");
+    expect(text).toContain("- 员工技能：来自员工");
+    expect(text.indexOf("群技能")).toBeLessThan(text.indexOf("员工技能"));
   });
 });

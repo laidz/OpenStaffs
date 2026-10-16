@@ -3,6 +3,7 @@ import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir,
 import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
 import { projectsOf } from "../domain/access-control.ts";
 import { activeSession, startNewSession } from "../domain/conversation-chain.ts";
+import { listSkills, renderSkills } from "../domain/skills.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
 
 export type Relation =
@@ -30,6 +31,21 @@ function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): str
     : groupConversationIdsFile(ws, relation.project, speakerId);
 }
 
+/** 技能根目录：群聊 = 项目 skills + 员工 skills（群在前）；私聊 = 员工 skills。 */
+export function skillDirsFor(ws: Workspace, relation: Relation, speaker: Employee): string[] {
+  const dirs: string[] = [];
+  if (relation.kind === "group") dirs.push(path.join(projectDir(ws, relation.project), "skills"));
+  dirs.push(path.join(employeeDir(ws, speaker.id), "skills"));
+  return dirs;
+}
+
+/** 会话的 instructions = 员工入口/档案/记忆 + 技能清单（只注入 name + description）。 */
+export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
+  return [renderInstructions(speaker), renderSkills(listSkills(skillDirsFor(ws, relation, speaker)))]
+    .filter((part) => part.trim() !== "")
+    .join("\n\n");
+}
+
 function specFor(ws: Workspace, relation: Relation, speaker: Employee): ConversationSpec {
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
@@ -37,7 +53,7 @@ function specFor(ws: Workspace, relation: Relation, speaker: Employee): Conversa
   const cwd = relationCwd(ws, relation);
   return {
     cwd,
-    instructions: renderInstructions(speaker),
+    instructions: instructionsFor(ws, relation, speaker),
     model: { provider: speaker.model.provider, modelId: speaker.model.modelId },
     ...(speaker.model.thinkingLevel === undefined ? {} : { thinkingLevel: speaker.model.thinkingLevel }),
     access: {
