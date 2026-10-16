@@ -74,7 +74,7 @@
 | **适配层** | OpenStaffs 自写 | `HarnessPort`：把域操作（起员工、发消息、建群、读消息）翻译成 Pi Durable 调用 |
 | **引擎层** | Pi Durable | conversation / transcript、durable task、storage、multiplayer view、compaction |
 | **工具层** | Pi Durable + 我们的钩子 | `CodingTools`(read/write/edit/bash) + `beforeTool` 钩子裁决 ACL |
-| **状态层（真相源）** | 文件夹 | `SOUL.md`/`MEMORY.md`/`SKILLS.md`/`profile.md`/`data/`/`members.md` |
+| **状态层（真相源）** | 文件夹 | `AGENTS.md`（员工入口）/ `profile.md` / `MEMORY.md` / `skills/` / `permissions.json` / `data/` / `members.md` |
 | **协作层** | 基座 SQLite | 消息 = transcript entries |
 
 **铁则（承自产品文档 §2.1）**：状态只在文件夹，协作只在消息，互不落地到对方。
