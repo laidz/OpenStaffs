@@ -122,6 +122,7 @@
 | 域概念 | 基座原语 | 说明 |
 |---|---|---|
 | 员工 | 一个目录，**入口 = `AGENTS.md`** | 员工加载器以 `AGENTS.md` 为入口，引入记忆/档案/职能，渲染成 conversation 的 agent 配置 |
+| 老板 | conversation 的 **User 一方**（人类） | **无 agent**；有"职责"范围，员工据职责给老板派活（人工任务 / 审核 / 授权） |
 | 私聊 | **一条 conversation（单一持续，累加）** | agent 固定为该员工；`cwd` = 公司根；不新建，长度靠 compaction 压缩 |
 | 群聊（`projects/<任务>/`） | **一条 conversation（"房间"）** | 房间日志天然 = transcript；`cwd` = 项目文件夹 |
 | 发言（某员工在房间说话） | 切 agent + `submit` | 见 §5.1 |
@@ -130,6 +131,11 @@
 | 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
 | 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生的**未读标记** | **IM 面板上的小红点，不是独立面板** |
+
+> **`cwd`（工作目录）**：Pi 的术语。一条 conversation 的 agent 有一个 `cwd`，决定 ①资源发现（`AGENTS.md`/技能/配置从哪找）、②上下文加载（`cwd` 及祖先链上的 `AGENTS.md` 自动加载）、③工具相对路径的基准。
+> - **`cwd` 只决定"默认站在哪"，不决定"能写哪些"**；能写哪些由 ACL（自己目录 + 所在项目）判定。二者分工不同，不冲突。
+> - 私聊 `cwd` = 公司根；群聊 `cwd` = `projects/<任务>/`（即**群聊的"共享工作区"**）。
+> - 老板**无 agent**，他只是 conversation 里的 **User 一方**（即普通 chat 里的用户本人）。
 
 ### 4.3 "一个关系 = 一条 conversation"的取舍（决策记录）
 
@@ -268,8 +274,10 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 
 **开放问题：**
 
-- 老板应以何种身份进入 conversation（是否也是一个 participant / 是否需要自己的 agent）？
-- 房间 `cwd` 若同时是"共享工作区"与"员工可写区"，需确认成员可写范围与 `members.md` 的对应语义（成员写入/移除的即时生效）。
+- 老板的**"职责"**如何建模与存储（供 agent 判断何时该给老板派活：人工任务 / 审核 / 授权）？
+  - 已定：老板**无 agent**、是 conversation 的 **User 一方**、**有职责**；细节（职责的字段 / 渲染 / 触发规则）待细化。
+
+> 原"房间 `cwd` 语义"一问已澄清：`cwd` 只管默认路径基准，能写哪些由 ACL 判定，二者分工不同（见 §4.2）。
 
 ---
 
