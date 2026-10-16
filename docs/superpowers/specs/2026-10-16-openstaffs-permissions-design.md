@@ -16,7 +16,7 @@
 3. **只加不减**、无 deny 方向——认定规则的扩展，不引入"禁止"语义的复杂度；
 4. 不崩溃：缺文件/坏文件一律安全降级（退回基线）。
 
-**非目标（本设计不覆盖）：** 读权限拦截（读保持不拦）、硬档隔离/容器（architecture spec §6.3，第 3 期）、符号链接防护（软边界，architecture spec §6.2 已承认）。
+**非目标（本设计不覆盖）：** 读权限拦截（读保持不拦）、**`bash` 的越界防护**（`bash` 全开，可绕写 ACL，硬档到第 3 期容器）、硬档隔离/容器（architecture spec §6.3，第 3 期）、符号链接防护（软边界，architecture spec §6.2 已承认）。
 
 ---
 
@@ -31,7 +31,7 @@
 | D5 | **目录条目含其全部下级** | `./dir/`（或 `dir`）表示 `dir` 及其下所有内容都允许。 |
 | D6 | **不限定工作区根** | `permission.json` 可授权到工作区根之外的绝对位置；该文件视为老板手写的可信授权。 |
 | D7 | **相对目标 path 按会话 cwd 解析** | 与工具真实落点一致。**移除**旧的 `agents/`/`projects/` 前缀硬化。 |
-| D8 | **`bash` 仍默认禁用** | 不变（architecture spec §6.2）。 |
+| D8 | **`bash` 全开** | 移除钩子里的 bash 拦截；接受 bash 可绕过写 ACL（MVP 软边界，硬档到第 3 期容器）。 |
 
 ---
 
@@ -95,7 +95,7 @@
 - 空串/纯空白条目 → 跳过。
 - 目标 `path` 为空串 → 拒绝。
 - 基线永远生效；即使所有 `permission.json` 都缺失/损坏，基线仍可写自己 + 成员项目。
-- 读：不拦。`bash`：禁用。
+- 读：不拦。`bash`：全开（可绕写 ACL，MVP 软边界）。
 - 符号链接：不处理（软边界）。
 
 ---
@@ -113,7 +113,7 @@
 - `AccessContext` 增加 `permissionFiles: string[]`（移除前缀硬化逻辑）。
 - `isWriteAllowed(ctx, targetPath)` 重写为：目标按 `ctx.cwd` 解析为绝对 → ① 基线（`<root>/agents/<self>/**`、成员项目 `<root>/projects/<task>/**`）② 任一 `ctx.permissionFiles` 命中 → 放行；否则拒绝。
 
-**`src/harness/access-extension.ts`**：不变（仍调用 `isWriteAllowed`）。
+**`src/harness/access-extension.ts`**：**移除对 `bash` 的拦截**（`bash` 全开）；`write`/`edit` 仍走 `isWriteAllowed`。
 
 **`src/app/conversations.ts` 的 `specFor`**：计算 `permissionFiles`——
 - 私聊：`[<agents/自己>/permission.json]`
@@ -125,13 +125,14 @@
 
 - 新增 `tests/domain/permissions.test.ts`：数组解析；非法 JSON / 非数组 / 非字符串元素 → `[]`；相对条目、绝对条目、`../` 归一；目录条目含其下级（`./dir/` 命中 `dir/a/b`）；相等命中（文件条目）；边界外不命中；大小写敏感；空条目跳过。
 - 改 `tests/domain/access-control.test.ts`：**删除**"`agents/bob/x.md` 视为越界"的旧断言（新模型下按 cwd 落项目内 → 放行）；新增"绝对路径写别人目录 → 拒绝""`permission.json` 授权 → 放行""损坏文件 → 退回基线"。
-- 改 `tests/harness/access-extension.test.ts`：恶意写改用**绝对路径**指向 bob 目录（真正的越界）→ 断言被拦；再验证经 `permission.json` 授权后可写。
+- 改 `tests/harness/access-extension.test.ts`：恶意写改用**绝对路径**指向 bob 目录（真正的越界）→ 断言被拦；再验证经 `permission.json` 授权后可写；**移除**任何"bash 被拦"的预期。
+- 补一条 `bash` 放行的测试：模型发起 `bash` 调用（如 `echo`）→ 断言命令执行、未被拦。
 - 改 `tests/app/conversations.test.ts`：断言私聊/群聊算出的 `permissionFiles` 正确。
 
 ---
 
 ## 9. 与既有 spec 的关系
 
-- 修订 architecture spec **§6.2**：写权限由"成员制 + 只写自己/成员项目"扩展为"基线 ∪ `permission.json` 加法"。
+- 修订 architecture spec **§6.2**：写权限由"成员制 + 只写自己/成员项目"扩展为"基线 ∪ `permission.json` 加法"；**`bash` 由"MVP 默认禁用"改为"全开"**（可绕写 ACL，属软边界）。
 - 澄清 architecture spec **§4.2** 的 cwd 语义：相对目标 path 一律按会话 cwd 解析（与工具落点一致），不再对 `agents/`/`projects/` 前缀做根相对特判。
-- 其余（§6.1 铁律、§6.3 硬档、读不拦、bash 禁用）不变。
+- 其余（§6.1 铁律、§6.3 硬档、读不拦）不变。
