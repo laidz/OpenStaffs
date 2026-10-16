@@ -15,7 +15,7 @@ function spec(cwd: string): ConversationSpec {
     cwd,
     instructions: "你是测试员工。",
     model: { provider: "faux", modelId: "faux-model" },
-    access: { root, cwd, selfId: "alice", memberProjects: [] },
+    access: { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [] },
   };
 }
 
@@ -119,7 +119,7 @@ describe("Pi Durable HarnessPort", () => {
         cwd,
         instructions: "无模型员工。",
         model: { provider: "", modelId: "" },
-        access: { root, cwd, selfId: "nobody", memberProjects: [] },
+        access: { root, cwd, selfId: "nobody", memberProjects: [], permissionFiles: [] },
       };
       const convId = await harness.ensureActive("dm:nobody", empty);
       await expect(harness.send(convId, "在吗")).rejects.toThrow();

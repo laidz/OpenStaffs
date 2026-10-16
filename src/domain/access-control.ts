@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { membersFile, projectsDir, type Workspace } from "./paths.ts";
+import { isWriteAllowedByPermission } from "./permissions.ts";
 import type { EmployeeId, ProjectName } from "./types.ts";
 
 export type AccessContext = {
@@ -8,6 +9,7 @@ export type AccessContext = {
   cwd: string;
   selfId: string;
   memberProjects: ProjectName[];
+  permissionFiles: string[];
 };
 
 export function parseMembers(ws: Workspace, name: ProjectName): EmployeeId[] {
@@ -38,23 +40,18 @@ export function projectsOf(ws: Workspace, id: EmployeeId): ProjectName[] {
   return names.filter((name) => parseMembers(ws, name).includes(id));
 }
 
+function isWithin(baseDir: string, target: string): boolean {
+  const rel = path.relative(baseDir, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 export function isWriteAllowed(ctx: AccessContext, targetPath: string): boolean {
   if (targetPath.trim() === "") return false;
-  // 顶层保留命名空间（agents/、projects/）在相对路径中出现时按工作区根解析，
-  // 否则按 cwd 解析。理由见 ledger Task 4 Ruling：避免群聊 cwd 下
-  // "agents/bob/x.md" 被误判为落在项目内而放行。
-  let absolute: string;
-  if (path.isAbsolute(targetPath)) {
-    absolute = targetPath;
-  } else if (/^(?:agents|projects)(?:[/\\]|$)/u.test(targetPath)) {
-    absolute = path.resolve(ctx.root, targetPath);
-  } else {
-    absolute = path.resolve(ctx.cwd, targetPath);
+  const target = path.resolve(ctx.cwd, targetPath);
+  if (path.basename(target) === "permission.json") return false;
+  if (isWithin(path.join(ctx.root, "agents", ctx.selfId), target)) return true;
+  for (const project of ctx.memberProjects) {
+    if (isWithin(path.join(ctx.root, "projects", project), target)) return true;
   }
-  const relative = path.relative(ctx.root, absolute);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false;
-  const parts = relative.split(path.sep);
-  if (parts[0] === "agents" && parts[1] === ctx.selfId) return true;
-  if (parts[0] === "projects" && parts[1] !== undefined && ctx.memberProjects.includes(parts[1])) return true;
-  return false;
+  return isWriteAllowedByPermission(ctx.permissionFiles, target);
 }

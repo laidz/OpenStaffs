@@ -1,3 +1,4 @@
+import path from "node:path";
 import { conversationIdsFile, employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
 import { projectsOf } from "../domain/access-control.ts";
@@ -16,6 +17,13 @@ export function relationCwd(ws: Workspace, relation: Relation): string {
   return relation.kind === "dm" ? employeeDir(ws, relation.employeeId) : projectDir(ws, relation.project);
 }
 
+export function permissionFilesFor(ws: Workspace, relation: Relation, speaker: Employee): string[] {
+  const files: string[] = [];
+  if (relation.kind === "group") files.push(path.join(projectDir(ws, relation.project), "permission.json"));
+  files.push(path.join(employeeDir(ws, speaker.id), "permission.json"));
+  return files;
+}
+
 function specFor(ws: Workspace, relation: Relation, speaker: Employee): ConversationSpec {
   const cwd = relationCwd(ws, relation);
   return {
@@ -23,7 +31,13 @@ function specFor(ws: Workspace, relation: Relation, speaker: Employee): Conversa
     instructions: renderInstructions(speaker),
     model: { provider: speaker.model.provider, modelId: speaker.model.modelId },
     ...(speaker.model.thinkingLevel === undefined ? {} : { thinkingLevel: speaker.model.thinkingLevel }),
-    access: { root: ws.root, cwd, selfId: speaker.id, memberProjects: projectsOf(ws, speaker.id) },
+    access: {
+      root: ws.root,
+      cwd,
+      selfId: speaker.id,
+      memberProjects: projectsOf(ws, speaker.id),
+      permissionFiles: permissionFilesFor(ws, relation, speaker),
+    },
   };
 }
 

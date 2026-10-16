@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import { newSession, openDm, relationKey } from "../../src/app/conversations.ts";
+import { newSession, openDm, permissionFilesFor, relationKey } from "../../src/app/conversations.ts";
+import { loadEmployee } from "../../src/domain/employee.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -80,5 +81,24 @@ describe("应用用例", () => {
     } finally {
       await reopened.close();
     }
+  });
+
+  it("私聊只挂员工 permission.json", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const speaker = loadEmployee(ws, "alice");
+    expect(permissionFilesFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
+      path.join(root, "agents", "alice", "permission.json"),
+    ]);
+  });
+
+  it("群聊挂项目 + 员工 permission.json（项目在前）", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const speaker = loadEmployee(ws, "alice");
+    expect(permissionFilesFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
+      path.join(root, "projects", "yt", "permission.json"),
+      path.join(root, "agents", "alice", "permission.json"),
+    ]);
   });
 });

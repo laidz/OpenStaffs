@@ -15,8 +15,15 @@ function member(name: string, lines: string[]) {
   fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...lines].join("\n"));
 }
 
-function ctx(): AccessContext {
-  return { root: ws.root, cwd: path.join(tmp, "projects", "yt"), selfId: "alice", memberProjects: ["yt"] };
+function ctx(extra: Partial<AccessContext> = {}): AccessContext {
+  return {
+    root: ws.root,
+    cwd: path.join(tmp, "projects", "yt"),
+    selfId: "alice",
+    memberProjects: ["yt"],
+    permissionFiles: [],
+    ...extra,
+  };
 }
 
 describe("parseMembers", () => {
@@ -39,24 +46,51 @@ describe("projectsOf", () => {
 });
 
 describe("isWriteAllowed", () => {
-  it("允许写自己的工作区", () => {
-    expect(isWriteAllowed(ctx(), "agents/alice/note.md")).toBe(true);
+  it("允许写自己的工作区（私聊 cwd = 员工目录）", () => {
+    const c = ctx({ cwd: path.join(tmp, "agents", "alice") });
+    expect(isWriteAllowed(c, "note.md")).toBe(true);
+    expect(isWriteAllowed(c, "data/x.md")).toBe(true);
   });
 
-  it("允许写所在项目（相对 cwd 与绝对路径都行）", () => {
+  it("允许写所在项目（群聊 cwd = 项目目录）", () => {
     expect(isWriteAllowed(ctx(), "data/out.md")).toBe(true);
     expect(isWriteAllowed(ctx(), path.join(tmp, "projects", "yt", "data", "out.md"))).toBe(true);
   });
 
-  it("拒绝写别人的工作区或不在的项目", () => {
-    expect(isWriteAllowed(ctx(), "agents/bob/x.md")).toBe(false);
-    expect(isWriteAllowed(ctx(), "projects/other/x.md")).toBe(false);
+  it("相对 path 一律按 cwd 解析（与工具落点一致）", () => {
+    expect(isWriteAllowed(ctx(), "agents/bob/x.md")).toBe(true);
+    expect(isWriteAllowed(ctx(), "projects/other/x.md")).toBe(true);
   });
 
-  it("拒绝越界写法", () => {
+  it("拒绝真正的工作区外（爬到根外或绝对外部）", () => {
+    expect(isWriteAllowed(ctx(), "../../agents/bob/x.md")).toBe(false);
     expect(isWriteAllowed(ctx(), "../../etc/passwd")).toBe(false);
-    expect(isWriteAllowed(ctx(), "agents/alice/../bob/x.md")).toBe(false);
     expect(isWriteAllowed(ctx(), "/etc/passwd")).toBe(false);
     expect(isWriteAllowed(ctx(), "")).toBe(false);
+  });
+
+  it("permission.json 授权可写界外", () => {
+    const perm = path.join(tmp, "projects", "yt", "permission.json");
+    fs.mkdirSync(path.dirname(perm), { recursive: true });
+    fs.writeFileSync(perm, JSON.stringify(["../../agents/bob/"]));
+    const c = ctx({ permissionFiles: [perm] });
+    expect(isWriteAllowed(c, "../../agents/bob/x.md")).toBe(true);
+    expect(isWriteAllowed(c, "../../agents/carol/x.md")).toBe(false);
+  });
+
+  it("授权文件损坏 → 退回基线，不放大权限", () => {
+    const c = ctx({ permissionFiles: [path.join(tmp, "projects", "yt", "nope.json")] });
+    expect(isWriteAllowed(c, "../../agents/bob/x.md")).toBe(false);
+  });
+
+  it("拒绝写任何 permission.json（授权文件由老板维护，防止自写提权）", () => {
+    expect(isWriteAllowed(ctx(), "permission.json")).toBe(false);
+    const self = ctx({ cwd: path.join(tmp, "agents", "alice") });
+    expect(isWriteAllowed(self, "permission.json")).toBe(false);
+    const grant = path.join(tmp, "projects", "yt", "grant.json");
+    fs.mkdirSync(path.dirname(grant), { recursive: true });
+    fs.writeFileSync(grant, JSON.stringify(["../../"]));
+    const g = ctx({ permissionFiles: [grant] });
+    expect(isWriteAllowed(g, "../../agents/alice/permission.json")).toBe(false);
   });
 });

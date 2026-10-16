@@ -32,6 +32,7 @@
 | D6 | **不限定工作区根** | `permission.json` 可授权到工作区根之外的绝对位置；该文件视为老板手写的可信授权。 |
 | D7 | **相对目标 path 按会话 cwd 解析** | 与工具真实落点一致。**移除**旧的 `agents/`/`projects/` 前缀硬化。 |
 | D8 | **`bash` 全开** | 移除钩子里的 bash 拦截；接受 bash 可绕过写 ACL（MVP 软边界，硬档到第 3 期容器）。 |
+| D9 | **写任何 `permission.json` 一律拒绝** | 该文件由老板维护；防止员工经 `write`/`edit` 自写授权文件**持久提权**（`bash` 越界属已接受的软边界，另论）。 |
 
 ---
 
@@ -96,6 +97,7 @@
 - 目标 `path` 为空串 → 拒绝。
 - 基线永远生效；即使所有 `permission.json` 都缺失/损坏，基线仍可写自己 + 成员项目。
 - 读：不拦。`bash`：全开（可绕写 ACL，MVP 软边界）。
+- 写**任何** `permission.json` → 拒绝（老板维护；防自写提权）。
 - 符号链接：不处理（软边界）。
 
 ---
@@ -111,7 +113,7 @@
 **修改 `src/domain/access-control.ts`**：
 
 - `AccessContext` 增加 `permissionFiles: string[]`（移除前缀硬化逻辑）。
-- `isWriteAllowed(ctx, targetPath)` 重写为：目标按 `ctx.cwd` 解析为绝对 → ① 基线（`<root>/agents/<self>/**`、成员项目 `<root>/projects/<task>/**`）② 任一 `ctx.permissionFiles` 命中 → 放行；否则拒绝。
+- `isWriteAllowed(ctx, targetPath)` 重写为：目标按 `ctx.cwd` 解析为绝对 → 若 basename 为 `permission.json` 直接拒绝 → ① 基线（`<root>/agents/<self>/**`、成员项目 `<root>/projects/<task>/**`）② 任一 `ctx.permissionFiles` 命中 → 放行；否则拒绝。
 
 **`src/harness/access-extension.ts`**：**移除对 `bash` 的拦截**（`bash` 全开）；`write`/`edit` 仍走 `isWriteAllowed`。
 

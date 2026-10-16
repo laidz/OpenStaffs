@@ -18,9 +18,6 @@ export function createAccessExtension(
             }
             return undefined;
           }
-          if (call.name === "bash") {
-            return { block: "访问控制：bash 在本期默认禁用" };
-          }
           return undefined;
         },
       }),

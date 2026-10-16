@@ -16,7 +16,7 @@ function spec(): ConversationSpec {
     cwd: aliceCwd,
     instructions: "你是 alice。",
     model: { provider: "faux", modelId: "faux-model" },
-    access: { root, cwd: aliceCwd, selfId: "alice", memberProjects: [] },
+    access: { root, cwd: aliceCwd, selfId: "alice", memberProjects: [], permissionFiles: [] },
   };
 }
 
@@ -27,7 +27,7 @@ describe("访问控制钩子", () => {
     const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
     faux.setResponses([
       fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "hi" }), { stopReason: "toolUse" }),
-      fauxAssistantMessage(fauxToolCall("write", { path: "agents/bob/evil.md", content: "pwn" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("write", { path: path.join(root, "agents", "bob", "evil.md"), content: "pwn" }), { stopReason: "toolUse" }),
       fauxAssistantMessage("done"),
       fauxAssistantMessage("done"),
     ]);
@@ -44,8 +44,25 @@ describe("访问控制钩子", () => {
     }
     expect(fs.existsSync(path.join(aliceCwd, "note.md"))).toBe(true);
     expect(fs.existsSync(path.join(root, "agents", "bob", "evil.md"))).toBe(false);
-    // 恶意写若未被拦，会落到 alice 的 cwd 下（agents/alice/agents/bob/evil.md）；
-    // 钩子把它当工作区根相对的 agents/ 路径拒绝，故任何位置都不应出现。
-    expect(fs.existsSync(path.join(aliceCwd, "agents", "bob", "evil.md"))).toBe(false);
+  });
+
+  it("bash 放行：命令被执行、未被拦", async () => {
+    fs.mkdirSync(aliceCwd, { recursive: true });
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("bash", { command: "printf hi > made-by-bash.txt" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    await harness.open();
+    try {
+      const convId = await harness.ensureActive("dm:alice", spec());
+      await harness.send(convId, "跑个命令");
+    } finally {
+      await harness.close();
+    }
+    expect(fs.existsSync(path.join(aliceCwd, "made-by-bash.txt"))).toBe(true);
   });
 });
