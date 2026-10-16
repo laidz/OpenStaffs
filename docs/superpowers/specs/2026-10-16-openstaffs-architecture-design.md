@@ -129,7 +129,7 @@
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
 | 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
 | 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
-| 老板待办 | `viewState()` 派生视图 | "发给他且待回复的消息"，无需独立文件 |
+| 老板待办 | `viewState()` 派生的**未读标记** | **IM 面板上的小红点，不是独立面板** |
 
 ### 4.3 "群聊 = 一条 conversation"的取舍（决策记录）
 
@@ -166,9 +166,14 @@
 
 在 `projects/` 下建同名文件夹（`AGENTS.md` + `data/` + `members.md`）→ 建对应 room conversation（`cwd` = 该文件夹）→ 成员写入 `members.md`。
 
-### 5.5 老板待办
+### 5.5 老板待办 = IM 上的小红点
 
-`viewState()` 派生：筛出 sender 非老板、status 待回复的消息 → 待办列表。**不建独立 TODO 文件**。
+老板待办**不是独立面板**，而是 **IM 面板上的小红点（未读标记）**，由 `viewState()` 派生。来源：
+
+- **群聊**：`@老板`（或自定义别名，如 `@Boss`）的消息
+- **私聊**：员工对老板消息的回复，或员工**主动发起**的消息
+
+> 不建独立 TODO 文件，也不建独立面板。
 
 ### 5.6 0 号员工（Staff0）与引导
 
@@ -263,6 +268,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 
 - 老板应以何种身份进入 conversation（是否也是一个 participant / 是否需要自己的 agent）？
 - 房间 `cwd` 若同时是"共享工作区"与"员工可写区"，需确认成员可写范围与 `members.md` 的对应语义（成员写入/移除的即时生效）。
+- **私聊会话模型**：单一持续会话（累加，靠 compaction 压缩）还是每次新建会话？（**推荐：单一累加**，贴合 IM 直觉——"和一个人就一个聊天窗口"——且拟人、员工记得全部历史）
 
 ---
 
