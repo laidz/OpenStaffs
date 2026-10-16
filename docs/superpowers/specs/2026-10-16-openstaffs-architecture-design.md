@@ -89,8 +89,7 @@
 <公司根>/
 ├─ .openstaffs/
 │  ├─ state.sqlite          # Pi Durable 存储（消息/任务/用量）
-│  ├─ config.json           # 供应商/模型/端口等运行配置
-│  └─ sessions.json         # 私聊的会话清单（关系 key → 会话链）
+│  └─ config.json           # 供应商/模型/端口等运行配置
 ├─ AGENTS.md                # 公司级总纲 + 老板偏好（Pi 协议：自动加载）
 ├─ agents/                  # 扁平：一个员工 = 一个自包含目录
 │  └─ <员工 id>/
@@ -98,6 +97,7 @@
 │     ├─ profile.md         # 档案：岗位/职责 + 人格（合并原 SOUL.md）
 │     ├─ MEMORY.md          # 长期记忆（拟人核心；我们的约定）
 │     ├─ config.json        # 员工运行配置：模型供应商 / 模型 / 思考档位
+│     ├─ sessions.json      # 私聊会话链（关系数据；导出员工时排除）
 │     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
 │     │  └─ <技能名>/SKILL.md
 │     ├─ permissions.json   # 可写范围（默认：自己 + 所在项目）
@@ -158,7 +158,8 @@
 - **默认**：只有一条 conversation，**持续累加**（私聊：老板 ↔ 员工；群聊：一个 room）。长度由 Pi 的 compaction 自动压缩。
 - **"新开会话"**：可随时开一条新会话——**上下文不需要了就重开**；**资产已落盘、旧会话保留可回看**。触发：**用户点击按钮**，或**用户让 agent 触发**（agent 调用"新开会话"信号，本轮结束后生效）。
 - **会话链记录**：每条会话有 `id`、`startedAt`、`endedAt`；新会话记 `prevId`（或在新会话首条消息头带上上一会话 id）。
-- **存放位置**：群聊 → `projects/<任务>/sessions.json`（项目自包含）；私聊 → `.openstaffs/sessions.json`（**不放员工目录**，以免破坏"员工文件夹可搬运 / 下载即招募"）。
+- **存放位置**：**会话清单始终放在该关系的 `cwd` 下**的 `sessions.json`——私聊 `cwd` = 员工目录 → `agents/<员工>/sessions.json`；群聊 `cwd` = 项目目录 → `projects/<任务>/sessions.json`。
+  - 员工目录里的 `sessions.json` 是**关系数据**；**导出 / 打包员工时排除它**（保住"下载即招募"的干净）。
 - **群聊**：员工发言时**切换 agent 配置**（`configure`）再 `submit`。
   - 优点：房间日志就是一条 transcript（贴合"聊天记录在 SQLite / 唯一真相"）；`@触发` = 切发言者，语义直白；UI 渲染简单。
   - 代价：每次切换员工会变更 system prompt → provider 提示缓存命中下降。MVP 阶段可接受。
