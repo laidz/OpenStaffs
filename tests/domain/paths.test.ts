@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  agentsDir, conversationIdsFile, createWorkspace, employeeDir, membersFile, projectDir,
+  agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile, membersFile, projectDir,
 } from "../../src/domain/paths.ts";
 
 describe("workspace paths", () => {
@@ -21,6 +21,12 @@ describe("workspace paths", () => {
   it("会话链文件落在给定目录下", () => {
     expect(conversationIdsFile(ws, projectDir(ws, "yt"))).toBe(
       path.join("/tmp/company", "projects", "yt", "conversation_ids.md"),
+    );
+  });
+
+  it("群聊链文件按成员落在 conversation_ids/ 子目录", () => {
+    expect(groupConversationIdsFile(ws, "yt", "alice")).toBe(
+      path.join("/tmp/company", "projects", "yt", "conversation_ids", "alice.md"),
     );
   });
 });

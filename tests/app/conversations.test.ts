@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import { newSession, openDm, permissionFilesFor, relationKey } from "../../src/app/conversations.ts";
+import { newSession, openDm, openGroup, permissionFilesFor, relationKey } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
+import type { HarnessPort } from "../../src/harness/port.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -57,7 +58,7 @@ describe("应用用例", () => {
       expect(chain).toHaveLength(2);
       expect(chain[0]!.ended).not.toBeNull();
       expect(chain[1]!.previous).toBe(first);
-      expect(relationKey({ kind: "dm", employeeId: "alice" })).toBe("dm:alice");
+      expect(relationKey({ kind: "dm", employeeId: "alice" }, "alice")).toBe("dm:alice");
     } finally {
       await harness.close();
     }
@@ -100,5 +101,64 @@ describe("应用用例", () => {
       path.join(root, "projects", "yt", "permission.json"),
       path.join(root, "agents", "alice", "permission.json"),
     ]);
+  });
+
+  it("私聊发言人与关系不一致时报错（不静默挂错权限文件）", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    const stub = {} as HarnessPort;
+    await expect(
+      newSession(ws, stub, { kind: "dm", employeeId: "alice" }, "bob"),
+    ).rejects.toThrow("不一致");
+  });
+
+  it("群聊：每成员一条会话、按需创建、各记各的链", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      const aliceFile = path.join(root, "projects", "yt", "conversation_ids", "alice.md");
+      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      expect(fs.existsSync(aliceFile)).toBe(true);
+      expect(fs.existsSync(bobFile)).toBe(false);
+
+      const bobConv = await openGroup(ws, harness, "yt", "bob");
+      expect(bobConv).not.toBe(aliceConv);
+      expect(await openGroup(ws, harness, "yt", "alice")).toBe(aliceConv);
+
+      expect(readChain(aliceFile)).toHaveLength(1);
+      expect(readChain(bobFile)).toHaveLength(1);
+      expect(readChain(aliceFile)[0]!.id).toBe(aliceConv);
+      expect(readChain(bobFile)[0]!.id).toBe(bobConv);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("群聊新开会话只影响该成员", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const a1 = await openGroup(ws, harness, "yt", "alice");
+      const b1 = await openGroup(ws, harness, "yt", "bob");
+      const a2 = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
+      expect(a2).not.toBe(a1);
+      const aliceFile = path.join(root, "projects", "yt", "conversation_ids", "alice.md");
+      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      expect(readChain(aliceFile)).toHaveLength(2);
+      expect(readChain(aliceFile)[0]!.ended).not.toBeNull();
+      expect(readChain(aliceFile)[1]!.previous).toBe(a1);
+      expect(readChain(bobFile)).toHaveLength(1);
+      expect(readChain(bobFile)[0]!.id).toBe(b1);
+    } finally {
+      await harness.close();
+    }
   });
 });

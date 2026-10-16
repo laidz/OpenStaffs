@@ -36,6 +36,12 @@ describe("readPermissionPaths", () => {
     const blanks = path.join(root, "blanks.json"); write(blanks, JSON.stringify(["./a", "", "  "]));
     expect(readPermissionPaths(blanks)).toEqual(["./a"]);
   });
+
+  it("条目两端空白 trim（D12）", () => {
+    const f = path.join(root, "spaced.json");
+    write(f, JSON.stringify([" ./data ", "./x "]));
+    expect(readPermissionPaths(f)).toEqual(["./data", "./x"]);
+  });
 });
 
 describe("matchesPermission", () => {
@@ -63,6 +69,17 @@ describe("matchesPermission", () => {
 
   it("大小写敏感", () => {
     expect(matchesPermission(["/Shared/"], "/", "/shared/a")).toBe(false);
+  });
+
+  it("条目 \"/\" = 授权全盘", () => {
+    expect(matchesPermission(["/"], "/whatever", "/etc/passwd")).toBe(true);
+    expect(matchesPermission(["/"], "/whatever", "/")).toBe(true);
+  });
+
+  it("trim 后的相对条目按目录子树命中", () => {
+    const f = path.join(root, "subtree.json");
+    write(f, JSON.stringify([" ./data "]));
+    expect(matchesPermission(readPermissionPaths(f), dir, "/company/agents/alice/data/a.md")).toBe(true);
   });
 });
 

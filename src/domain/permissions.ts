@@ -13,7 +13,7 @@ export function readPermissionPaths(file: string): string[] {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     if (parsed.some((entry) => typeof entry !== "string")) return [];
-    return (parsed as string[]).filter((entry) => entry.trim() !== "");
+    return (parsed as string[]).filter((entry) => entry.trim() !== "").map((entry) => entry.trim());
   } catch {
     return [];
   }
@@ -23,7 +23,8 @@ export function readPermissionPaths(file: string): string[] {
 export function matchesPermission(patterns: string[], permissionDir: string, targetAbs: string): boolean {
   return patterns.some((pattern) => {
     const base = path.resolve(permissionDir, pattern);
-    return targetAbs === base || targetAbs.startsWith(base + path.sep);
+    const root = path.parse(base).root;
+    return targetAbs === base || targetAbs.startsWith(base === root ? root : base + path.sep);
   });
 }
 

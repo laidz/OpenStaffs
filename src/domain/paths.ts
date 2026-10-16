@@ -33,3 +33,7 @@ export function membersFile(ws: Workspace, name: string): string {
 export function conversationIdsFile(_ws: Workspace, dir: string): string {
   return path.join(dir, "conversation_ids.md");
 }
+
+export function groupConversationIdsFile(ws: Workspace, name: string, agentId: string): string {
+  return path.join(projectDir(ws, name), "conversation_ids", `${agentId}.md`);
+}

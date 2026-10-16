@@ -43,3 +43,11 @@ describe("conversation chain", () => {
     expect(activeSession(file)?.id).toBe("2");
   });
 });
+
+describe("conversation chain · 嵌套目录", () => {
+  it("父目录不存在时自动创建后落盘", () => {
+    const nested = path.join(dir, "a", "b", "conversation_ids.md");
+    startNewSession(nested, "1", "2026-10-16T10:00:00Z");
+    expect(activeSession(nested)?.id).toBe("1");
+  });
+});

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 export type SessionRow = {
   id: string;
@@ -50,6 +51,7 @@ export function startNewSession(file: string, id: string, now: string): SessionR
   const rows = readChain(file).map((row) => (row.ended === null ? { ...row, ended: now } : row));
   const previous = rows.length === 0 ? null : rows[rows.length - 1]!.id;
   rows.push({ id, started: now, ended: null, previous });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, encode(rows));
   return rows;
 }
