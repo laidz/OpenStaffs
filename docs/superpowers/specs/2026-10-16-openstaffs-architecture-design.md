@@ -60,7 +60,7 @@
 
 > **OpenStaffs 拥有状态（文件夹），Pi Durable 只当引擎。**
 
-- 员工的灵魂/记忆/技能的**真相源永远在文件夹**（`SOUL.md` / `MEMORY.md` / `SKILLS.md`），不在基座；
+- 员工的灵魂/记忆/技能的**真相源永远在文件夹**（`profile.md` / `MEMORY.md` / `skills/`），不在基座；
 - 基座的 per-conversation agent 配置是**运行期派生**，可从员工文件夹重新生成；
 - 在 OpenStaffs 域层与 Pi Durable 之间放一层**薄适配（`HarnessPort`，见 §4）**，使 Pi Durable 的 experimental API 变更不渗透进产品代码。
 
@@ -90,23 +90,25 @@
 ├─ .openstaffs/
 │  ├─ state.sqlite          # Pi Durable 存储（消息/任务/用量）
 │  └─ config.json           # 供应商/模型/端口等运行配置
-├─ AGENTS.md                # 公司级总纲（老板拥有）
-├─ BOSS.md                  # 老板全局偏好
+├─ AGENTS.md                # 公司级总纲 + 老板偏好（Pi 协议：自动加载）
 ├─ agents/
 │  └─ <员工 id>/
-│     ├─ profile.md         # 档案（岗位/职责）
-│     ├─ SOUL.md            # 人格
-│     ├─ MEMORY.md          # 长期记忆
-│     ├─ SKILLS.md          # 技能声明
+│     ├─ profile.md         # 档案：岗位/职责 + 人格（合并原 SOUL.md）
+│     ├─ MEMORY.md          # 长期记忆（我们的约定，渲染进 instructions）
+│     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
+│     │  └─ <技能名>/SKILL.md
 │     ├─ permissions.json   # 可写范围（默认：自己 + 所在项目）
 │     ├─ data/              # 自持工作区
 │     └─ children/          # 下级（子部门/职员）
 └─ projects/
    └─ <任务名>/
-      ├─ AGENTS.md          # 任务规范（自定）
+      ├─ AGENTS.md          # 任务规范（Pi 协议：自动加载）
       ├─ data/              # 多方共享工作区
       └─ members.md         # 成员名单 = ACL
 ```
+
+> **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permissions.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
+> **原则：Pi 有协议的，就用协议；没有的，才自造。** 因此不设 `BOSS.md`（并入 `AGENTS.md`）、不设 `SOUL.md`（并入 `profile.md`）、不设 `SKILLS.md`（改用标准 `skills/<name>/SKILL.md`）。
 
 ### 4.2 域模型 → Pi Durable 原语
 
@@ -117,7 +119,8 @@
 | 群聊（`projects/<任务>/`） | **一条 conversation（"房间"）** | 房间日志天然 = transcript；`cwd` = 项目文件夹 |
 | 发言（某员工在房间说话） | 切 agent + `submit` | 见 §5.1 |
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
-| 员工灵魂/记忆 | `configure({ instructions })` | 从文件夹渲染；文件夹是真相源 |
+| 员工灵魂/记忆 | `configure({ instructions })` | 从 `profile.md` / `MEMORY.md` 渲染；文件夹是真相源 |
+| 员工技能 | Pi 技能发现（`skills/<name>/SKILL.md`） | 走 Pi / Agent Skills 标准，按员工/项目挂载 |
 | 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生视图 | "发给他且待回复的消息"，无需独立文件 |
 
@@ -207,7 +210,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 
 - **本地 HTTP 服务**（Node）：提供 API + 静态资源；浏览器访问 `http://localhost:<port>`。
 - **推流**：服务端对每条 conversation 订阅 Pi Durable 的 `watch()`（Chord 操作流），经 **WebSocket/SSE** 转发给浏览器；或对偏好"编码 agent 风格事件"的客户端用 `watchEvents()`。
-- **UI（MVP）**：左侧员工/项目列表，右侧聊天主窗口；点击员工头像 → 以"员工档案"形式查看/编辑 `SOUL.md`/`MEMORY.md`（直接读写文件夹）。
+- **UI（MVP）**：左侧员工/项目列表，右侧聊天主窗口；点击员工头像 → 以"员工档案"形式查看/编辑 `profile.md` / `MEMORY.md`（直接读写文件夹）。
 - **多客户端**：Pi Durable 的 multiplayer 语义天然支持"晚加入/重连从当前视图开始、可 steer 在跑的会话"。
 
 ---
@@ -233,7 +236,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 1. 极简工作台 UI（员工/项目列表 + 聊天窗口）
 2. 0 号员工入职（表单冷启动 + Staff0 对话引导）
 3. 职场 IM 与记忆闭环：私聊 / 群聊（`projects/<任务>/` + `members.md`）/ `@触发` / 广播 / SQLite 消息流水 / 老板待办
-4. 员工档案可视读取与编辑（`SOUL.md` / `MEMORY.md`），可为员工创建/挂载技能
+4. 员工档案可视读取与编辑（`profile.md` / `MEMORY.md`），可为员工创建/挂载技能（标准 `skills/<name>/SKILL.md`）
 
 **非目标（本期不做）：** 自主 Inner Loop、Peer Review、记忆压缩与自动进化、MCP 生态、人才市场、硬档 ACL。
 
@@ -258,7 +261,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 
 ## 11. 待实测清单（spike 未覆盖）
 
-- [ ] `SKILLS`：`section` 从文件渲染 + 挂载
+- [ ] `SKILLS`（标准 `skills/<name>/SKILL.md`）：Pi 原生发现/挂载，以及如何按"员工 / 项目"作用域隔离
 - [ ] `MCP`：`createMcpExtension` 连接与 per-conversation 暴露（1.0 内置）
 - [ ] `codemode`：脚本调用是否被 `beforeTool` 钩子可靠裁决
 - [ ] **硬档隔离**：自定义 `ExecutionEnv`（容器）验证 bash 越界被物理阻断
