@@ -33,6 +33,9 @@
 | D7 | **相对目标 path 按会话 cwd 解析** | 与工具真实落点一致。**移除**旧的 `agents/`/`projects/` 前缀硬化。 |
 | D8 | **`bash` 全开** | 移除钩子里的 bash 拦截；接受 bash 可绕过写 ACL（MVP 软边界，硬档到第 3 期容器）。 |
 | D9 | **写任何 `permission.json` 一律拒绝** | 该文件由老板维护；防止员工经 `write`/`edit` 自写授权文件**持久提权**（`bash` 越界属已接受的软边界，另论）。 |
+| D10 | **条目 `"/"` = 授权全盘** | 归一为文件系统根时命中任意绝对路径（符合"授权该区域"的直觉）。 |
+| D11 | **员工权限文件按 `speaker.id` 统一** | 私聊断言 `speaker.id === relation.employeeId`（不一致报错），避免 cwd 与权限文件来源分叉。 |
+| D12 | **条目两端空白 trim** | 解析时 `trim()` 后再用，避免 `" ./data "` 这类条目永不命中。 |
 
 ---
 
@@ -67,6 +70,7 @@
    - 相对条目 → `path.resolve(permissionDir, entry)` 消解 `../` 得绝对路径（`permissionDir` = 该 `permission.json` 所在目录）；
    - 规范化后记 `base`。
 3. **判定（目录含其下级）**：`target === base`，**或** `target` 在 `base` 之下（即以 `base + 路径分隔符` 为前缀），即该条目命中。
+   - 特例（D10）：`base` 为**文件系统根**（`/`）时，命中任意绝对路径（即"授权全盘"）。
 4. **放行**：`target` 命中任一有效 `permission.json` 的任一条目即放行。
 
 > 注：`path.resolve` 只做路径归一（`.`/`..`/分隔符），不访问文件系统。`./dir/`、`dir`、`dir/` 三者等价（都表示 `dir` 及其下级）。大小写敏感（字符串比较）。
@@ -93,7 +97,7 @@
 ## 6. 错误与边界（一律不崩溃）
 
 - `permission.json` 缺失 / 非法 JSON / 非数组 / 含非字符串元素 → **跳过该文件**（不影响基线，天然从严）。
-- 空串/纯空白条目 → 跳过。
+- 空串/纯空白条目 → 跳过；其余条目**两端空白 trim** 后使用（D12）。
 - 目标 `path` 为空串 → 拒绝。
 - 基线永远生效；即使所有 `permission.json` 都缺失/损坏，基线仍可写自己 + 成员项目。
 - 读：不拦。`bash`：全开（可绕写 ACL，MVP 软边界）。
@@ -120,6 +124,8 @@
 **`src/app/conversations.ts` 的 `specFor`**：计算 `permissionFiles`——
 - 私聊：`[<agents/自己>/permission.json]`
 - 群聊：`[<projects/任务>/permission.json, <agents/自己>/permission.json]`
+
+其中"自己"一律取 **`speaker.id`**（D11）；私聊保证 `speaker.id === relation.employeeId`。
 
 ---
 

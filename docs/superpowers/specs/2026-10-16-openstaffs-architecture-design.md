@@ -134,8 +134,8 @@
 | 组织架构 | **由群聊表达**（部门=常设群，任务=临时群） | 非独立层；协作属消息层（见 §4.1 注） |
 | 老板 | conversation 的 **User 一方**（人类） | **无 agent**；有"职责"范围，员工据职责给老板派活（人工任务 / 审核 / 授权） |
 | 私聊 | **一条 conversation（单一持续，累加）** | agent 固定为该员工；`cwd` = 员工自己的目录 `agents/<自己>/`；不新建，长度靠 compaction 压缩 |
-| 群聊（`projects/<任务>/`） | **一条 conversation（"房间"）** | 房间日志天然 = transcript；`cwd` = 项目文件夹 |
-| 发言（某员工在房间说话） | 切 agent + `submit` | 见 §5.1 |
+| 群聊（`projects/<任务>/`） | **每位成员一条 conversation（按需创建）** | 会话相互独立、可并行；房间视图 = 各成员会话的合并；`cwd` = 项目文件夹 |
+| 发言（某员工在房间说话） | 对该成员"在群里的会话" `submit` | 见 §5.1 |
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
 | 会话（session） | 一条 conversation | 一个"关系" = 一条**会话链**；"新开会话" = 结束当前、开新条（记 `prevId`） |
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
@@ -151,31 +151,26 @@
 > - **群聊会话中允许写**：agent 可按需**更新其 `cwd`（群聊目录）下的文件**；写自己的目录 `agents/<自己>/`（如更新记忆）亦由 ACL 允许。
 > - 老板**无 agent**，他只是 conversation 里的 **User 一方**（即普通 chat 里的用户本人）。
 
-### 4.3 一个关系 = 一条"会话链"（决策记录）
+### 4.3 一个关系 = 一组"会话链"；群聊 = 每成员一条独立会话（决策记录）
 
-**规则：一个"关系"（私聊 / 群聊）对应一条会话链；当前活跃的是最新一条 conversation。**
+> **2026-10-16 修订**：群聊由"单条房间会话、轮换 agent"改为"**每成员一条独立会话、按需创建**"，动机是让群聊成员**并行工作**。原设定见文末"已废弃"。
 
-- **默认**：只有一条 conversation，**持续累加**（私聊：老板 ↔ 员工；群聊：一个 room）。长度由 Pi 的 compaction 自动压缩。
-- **"新开会话"**：可随时开一条新会话——**上下文不需要了就重开**；**资产已落盘、旧会话保留可回看**。触发：**用户点击按钮**，或**用户让 agent 触发**（agent 调用"新开会话"信号，本轮结束后生效）。
-- **会话链记录**：写在关系 `cwd` 下的 **`conversation_ids.md`**（Markdown 表格），每行一条会话：`id`、`started`、`ended`、`previous`。
-  - 例：
-    ```markdown
-    # 会话链
+**规则：一个"关系"对应一组会话链；当前活跃的是各链最新一条 conversation。**
 
-    | id | started              | ended                | previous |
-    |----|----------------------|----------------------|----------|
-    | 1  | 2026-10-16T10:00:00Z | 2026-10-16T11:00:00Z | -        |
-    | 2  | 2026-10-16T11:05:00Z |                      | 1        |
-    ```
-  - `ended` 为空 = **进行中**（当前活跃会话 = 最后一行）。
-- **存放位置**：**始终放在该关系的 `cwd` 下**——私聊 `cwd` = 员工目录 → `agents/<员工>/conversation_ids.md`；群聊 `cwd` = 项目目录 → `projects/<任务>/conversation_ids.md`。
-  - 员工目录里的 `conversation_ids.md` 是**关系数据**；**导出 / 打包员工时排除它**（保住"下载即招募"的干净）。
-- **群聊**：员工发言时**切换 agent 配置**（`configure`）再 `submit`。
-  - 优点：房间日志就是一条 transcript（贴合"聊天记录在 SQLite / 唯一真相"）；`@触发` = 切发言者，语义直白；UI 渲染简单。
-  - 代价：每次切换员工会变更 system prompt → provider 提示缓存命中下降。MVP 阶段可接受。
-- **备选（已考虑）**：Pi Durable 原生 `reset()` / `control:{handoff}`（同一 conversation 内开新上下文）；本设计采用**独立 conversation**，便于按会话回看与隔离。
+- **私聊**：**一条** conversation（老板 ↔ 员工），持续累加；长度由 Pi 的 compaction 自动压缩。
+- **群聊**：**每位成员一条独立会话**；**按需创建**——第一次需要某成员发言时才创建/复用其会话，**不预先为全员建会话**。
+  - 优点：成员**互不阻塞、可并行**——一人的长任务不拖住其他人。
+  - 代价：房间日志不再是单条 transcript，**房间视图 = 各成员会话的合并**（合并与渲染属 UI/服务层）；会话数与 system prompt 份数随活跃成员增长（token 总量上升）。
+- **"新开会话"**：私聊对整条关系；群聊对**某位成员**的会话链。触发：**用户点击按钮**，或**用户让 agent 触发**（agent 调用"新开会话"信号，本轮结束后生效）；**资产已落盘、旧会话保留可回看**。
+- **会话链记录**（Markdown 表格；每行：`id`、`started`、`ended`、`previous`；`ended` 为空 = **进行中**，活跃会话 = 该链最后一行）：
+  - 私聊：`agents/<员工>/conversation_ids.md`（关系数据；**导出 / 打包员工时排除**）。
+  - 群聊：`projects/<任务>/conversation_ids/<成员>.md`（**每成员一个链文件**）。
+- **群聊发言**：取"该成员在群里的会话"（按需创建/复用）→ `configure` → `submit`；会话相互独立。
+- **@触发 / 广播**：见 §5.1 / §5.2（@谁谁接；没 @ 则全员各接一次）。
 
 > 员工的**持久记忆在文件夹**（`MEMORY.md`），不在 conversation 里；conversation 只承载"这段会话的上下文"。这正好实现两层分离。
+
+> **已废弃（2026-10-16）**：群聊曾采用"一条 room conversation、员工发言时 `configure` 切换 agent"。该方案使群成员**串行**，已弃用；`reset()` / `control:{handoff}` 之备选亦不再需要。
 
 ---
 
@@ -185,13 +180,13 @@
 
 1. 老板在房间发 `@alice 做X`
 2. 路由层解析 `@alice` → 定位到该员工定义
-3. 员工加载器以 `agents/alice/AGENTS.md` 为入口渲染 agent 配置 → `configure(roomConv, { model, tools, instructions })`
-4. `roomConv.submit({ type: "input", content: "做X", entry: { kind: "chat.mention", data: { author: "boss", target: "alice" } } })`
-5. `wait()` → 回答写入房间 transcript → `viewState/watch` 推给 Web UI
+3. 员工加载器以 `agents/alice/AGENTS.md` 为入口渲染 agent 配置 → 取得 **alice 在该群的会话**（按需创建/复用）并 `configure`
+4. `aliceConv.submit({ type: "input", content: "做X", entry: { kind: "chat.mention", data: { author: "boss", target: "alice" } } })`
+5. `wait()` → 回答写入 **alice 在该群的会话** transcript → 房间视图（各成员会话的合并）经 `viewState/watch` 推给 Web UI
 
 ### 5.2 不 @（广播）
 
-对全体成员**依次**（同一条 conversation 是串行的）执行"切 agent + submit"，各成员各自理解后行动，回答依次落在房间。
+对全体成员**各自的会话**各 `submit` 一次，各成员各自理解后行动；会话相互独立，**可并行**。回答分别落在各成员会话，房间视图按合并呈现。
 
 ### 5.3 员工写文件（走工具层）
 
@@ -307,7 +302,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 | Pi Durable **experimental**，API 可能变 | 升级可能破坏 | `HarnessPort` 薄适配隔离；锁定版本 |
 | 轻档 ACL 是软边界 | 拦不住 bash 越界/注入 | MVP 仅用于可信员工；第 3 期前切硬档 |
 | 冷启动无模型无法对话 | 首次配置须先有可用模型 | 首次运行用非对话表单写入供应商/密钥；可选种子免费模型 |
-| 群聊单会话切 agent → 提示缓存命中下降 | token 成本上升 | MVP 可接受；必要时转"每成员一会话"备选 |
+| 群聊每成员一条会话 → 会话数与 system prompt 份数随活跃成员增长 | token 总量上升 | 按需创建（不预先建全员会话）；仅活跃成员持有会话 |
 | 供应商用量/费率 | 成本 | 默认选便宜档；`usage` 按 conversation 可观测 |
 
 **开放问题：**
