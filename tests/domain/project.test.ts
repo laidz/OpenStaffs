@@ -28,13 +28,20 @@ describe("createProject", () => {
     expect(parseMembers(ws, "xhs-01")).toEqual([]);
   });
 
+  it("alias 两端空白被 trim（含写进 AGENTS.md 标题）", () => {
+    createProject(ws, "trim-p", [], "  YouTube  ");
+    const dir = path.join(root, "projects", "trim-p");
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8"))).toEqual({ alias: "YouTube" });
+    expect(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8").split("\n")[0]).toBe("# YouTube");
+  });
+
   it("项目已存在时报错", () => {
     createProject(ws, "dup", []);
     expect(() => createProject(ws, "dup", [])).toThrow("项目已存在");
   });
 
-  it("非法 id 报错", () => {
-    for (const bad of ["", "  ", "a/b", "a\\b", "..", ".", ".hidden", "a/../b", "a b "]) {
+  it("非法 id 报错（含内部空白/制表符）", () => {
+    for (const bad of ["", "  ", "a/b", "a\\b", "..", ".", ".hidden", "a/../b", "a b ", "a b", "a\tb"]) {
       expect(() => createProject(ws, bad, [])).toThrow("项目 id");
     }
   });

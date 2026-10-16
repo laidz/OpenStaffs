@@ -60,7 +60,9 @@ export function listSkills(dirs: string[]): Skill[] {
   for (const dir of dirs) {
     for (const entry of skillDirNames(dir)) {
       const skillDir = path.join(dir, entry);
-      const meta = readFrontmatter(path.join(skillDir, "SKILL.md"));
+      const skillFile = path.join(skillDir, "SKILL.md");
+      if (!fs.existsSync(skillFile)) continue;
+      const meta = readFrontmatter(skillFile);
       const name = meta.name ?? entry;
       if (seen.has(name)) continue;
       seen.add(name);

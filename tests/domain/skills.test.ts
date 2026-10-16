@@ -68,6 +68,12 @@ describe("listSkills", () => {
       { name: "unclosed", description: "", dir: path.join(groupDir(), "unclosed") },
     ]);
   });
+
+  it("没有 SKILL.md 的目录不算技能", () => {
+    skill(groupDir(), "real", "---\nname: real\n---\n");
+    fs.mkdirSync(path.join(groupDir(), "ghost"), { recursive: true });
+    expect(listSkills([groupDir()]).map((s) => s.name)).toEqual(["real"]);
+  });
 });
 
 describe("renderSkills", () => {

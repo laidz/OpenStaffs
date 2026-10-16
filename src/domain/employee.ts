@@ -57,7 +57,7 @@ function readAlias(dir: string): string | undefined {
   if (raw.trim() === "") return undefined;
   try {
     const parsed = JSON.parse(raw) as { alias?: unknown };
-    return typeof parsed.alias === "string" && parsed.alias.trim() !== "" ? parsed.alias : undefined;
+    return typeof parsed.alias === "string" && parsed.alias.trim() !== "" ? parsed.alias.trim() : undefined;
   } catch {
     return undefined;
   }

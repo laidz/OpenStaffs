@@ -68,4 +68,11 @@ describe("loadEmployee", () => {
     write("frank", "config.json", JSON.stringify({ alias: 42 }));
     expect(loadEmployee(ws, "frank").alias).toBeUndefined();
   });
+
+  it("alias 两端空白被 trim", () => {
+    const ws = createWorkspace(tmp);
+    write("grace", "AGENTS.md", "你是 grace。");
+    write("grace", "config.json", JSON.stringify({ alias: "  阿草  " }));
+    expect(loadEmployee(ws, "grace").alias).toBe("阿草");
+  });
 });

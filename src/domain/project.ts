@@ -8,7 +8,7 @@ export type Project = { id: ProjectName; alias: string };
 function assertValidProjectId(id: string): void {
   const invalid =
     id.trim() === "" ||
-    id !== id.trim() ||
+    /\s/u.test(id) ||
     id.includes("/") ||
     id.includes("\\") ||
     id.includes("\0") ||
@@ -28,7 +28,7 @@ export function createProject(ws: Workspace, id: ProjectName, memberIds: Employe
   assertValidProjectId(id);
   const dir = projectDir(ws, id);
   if (fs.existsSync(dir)) throw new Error(`项目已存在: ${id}`);
-  const displayName = alias === undefined || alias.trim() === "" ? id : alias;
+  const displayName = alias === undefined || alias.trim() === "" ? id : alias.trim();
   fs.mkdirSync(path.join(dir, "data"), { recursive: true });
   fs.writeFileSync(path.join(dir, "AGENTS.md"), `# ${displayName}\n\n（任务规范：目标 / 范围 / 交付标准）\n`);
   fs.writeFileSync(membersFile(ws, id), ["# 成员", ...memberIds.map((m) => `- ${m}`), ""].join("\n"));
