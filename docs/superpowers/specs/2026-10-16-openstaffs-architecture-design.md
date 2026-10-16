@@ -142,7 +142,7 @@
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
 | 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
 | 员工模型配置 | 员工 `config.json` → per-conversation agent | `model`（**供应商 + 模型**）+ `thinkingLevel`（**思考档位，`off` 即关闭**）；Pi Durable 此层**不含温度**，故**不做温度** |
-| 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
+| 写权限（成员制 + 加法授权） | `members.md`（成员 = 基线资格）+ `permission.json`（加法）+ `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生的**未读标记** | **IM 面板上的小红点，不是独立面板** |
 
 > **`cwd`（工作目录）**：Pi 的术语。一条 conversation 的 agent 有一个 `cwd`，决定 ①资源发现（`AGENTS.md`/技能/配置从哪找）、②上下文加载（`cwd` 及祖先链上的 `AGENTS.md` 自动加载）、③工具相对路径的基准。
@@ -195,7 +195,7 @@
 
 ### 5.4 建群 = 立项
 
-在 `projects/` 下建同名文件夹（`AGENTS.md` + `data/` + `members.md`）→ 建对应 room conversation（`cwd` = 该文件夹）→ 成员写入 `members.md`。
+在 `projects/` 下建同名文件夹（`AGENTS.md` + `data/` + `members.md`）→ 成员写入 `members.md`。**群聊会话不预建**——各成员的会话按需创建（见 §4.3），`cwd` = 该文件夹。
 
 ### 5.5 老板待办 = IM 上的小红点
 
