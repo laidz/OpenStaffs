@@ -89,7 +89,8 @@
 <公司根>/
 ├─ .openstaffs/
 │  ├─ state.sqlite          # Pi Durable 存储（消息/任务/用量）
-│  └─ config.json           # 供应商/模型/端口等运行配置
+│  ├─ config.json           # 供应商/模型/端口等运行配置
+│  └─ sessions.json         # 私聊的会话清单（关系 key → 会话链）
 ├─ AGENTS.md                # 公司级总纲 + 老板偏好（Pi 协议：自动加载）
 ├─ agents/                  # 扁平：一个员工 = 一个自包含目录
 │  └─ <员工 id>/
@@ -105,7 +106,8 @@
    └─ <任务名>/
       ├─ AGENTS.md          # 任务规范（Pi 协议：自动加载）
       ├─ data/              # 多方共享工作区
-      └─ members.md         # 成员名单 = ACL
+      ├─ members.md         # 成员名单 = ACL
+      └─ sessions.json      # 本群聊的会话清单（会话链）
 ```
 
 > **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permissions.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
@@ -135,6 +137,7 @@
 | 群聊（`projects/<任务>/`） | **一条 conversation（"房间"）** | 房间日志天然 = transcript；`cwd` = 项目文件夹 |
 | 发言（某员工在房间说话） | 切 agent + `submit` | 见 §5.1 |
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
+| 会话（session） | 一条 conversation | 一个"关系" = 一条**会话链**；"新开会话" = 结束当前、开新条（记 `prevId`） |
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
 | 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
 | 员工模型配置 | 员工 `config.json` → per-conversation agent | `model`（**供应商 + 模型**）+ `thinkingLevel`（**思考档位，`off` 即关闭**）；Pi Durable 此层**不含温度**，故**不做温度** |
@@ -148,20 +151,20 @@
 > - **群聊会话中允许写**：agent 可按需**更新其 `cwd`（群聊目录）下的文件**；写自己的目录 `agents/<自己>/`（如更新记忆）亦由 ACL 允许。
 > - 老板**无 agent**，他只是 conversation 里的 **User 一方**（即普通 chat 里的用户本人）。
 
-### 4.3 "一个关系 = 一条 conversation"的取舍（决策记录）
+### 4.3 一个关系 = 一条"会话链"（决策记录）
 
-**统一规则：一个"关系" = 一条 conversation，持续累加**——私聊（老板 ↔ 员工）与群聊（`projects/<任务>/`）皆然。
+**规则：一个"关系"（私聊 / 群聊）对应一条会话链；当前活跃的是最新一条 conversation。**
 
-- **私聊**：一条 conversation，永久累加；员工记得与老板的**全部历史**（像长期同事）。长度由 Pi 的 compaction 自动压缩。**不新建会话**；员工"主动发起"也只是在这条私聊里发一条。
-- **群聊**：一条 room conversation，员工发言时**切换 agent 配置**（`configure`）再 `submit`。
+- **默认**：只有一条 conversation，**持续累加**（私聊：老板 ↔ 员工；群聊：一个 room）。长度由 Pi 的 compaction 自动压缩。
+- **"新开会话"**：可随时开一条新会话——**上下文不需要了就重开**；**资产已落盘、旧会话保留可回看**。触发：**用户点击按钮**，或**用户让 agent 触发**（agent 调用"新开会话"信号，本轮结束后生效）。
+- **会话链记录**：每条会话有 `id`、`startedAt`、`endedAt`；新会话记 `prevId`（或在新会话首条消息头带上上一会话 id）。
+- **存放位置**：群聊 → `projects/<任务>/sessions.json`（项目自包含）；私聊 → `.openstaffs/sessions.json`（**不放员工目录**，以免破坏"员工文件夹可搬运 / 下载即招募"）。
+- **群聊**：员工发言时**切换 agent 配置**（`configure`）再 `submit`。
   - 优点：房间日志就是一条 transcript（贴合"聊天记录在 SQLite / 唯一真相"）；`@触发` = 切发言者，语义直白；UI 渲染简单。
   - 代价：每次切换员工会变更 system prompt → provider 提示缓存命中下降。MVP 阶段可接受。
-- **备选（已考虑，未采用）**：
-  - 群聊 = 每成员一条 conversation + 房间流为合并视图。优点：每员工缓存稳定、上下文天然隔离。代价：房间流是"合并派生"而非单一真相；跨员工可见需把他人消息镜像进各会话，复杂度高。
-  - 私聊每次新建会话。代价：破坏连续性、与"拟人"和"一人一窗口"的 IM 直觉相悖。
-  - （可选增强）Pi Durable 的 `fork` 可支持"主会话 + 派生话题线程"，保留但 MVP 不做。
+- **备选（已考虑）**：Pi Durable 原生 `reset()` / `control:{handoff}`（同一 conversation 内开新上下文）；本设计采用**独立 conversation**，便于按会话回看与隔离。
 
-> 员工的**持久记忆在文件夹**（`MEMORY.md`），不在 conversation 里；conversation 只承载"这条关系当下的对话上下文"。这正好实现两层分离。
+> 员工的**持久记忆在文件夹**（`MEMORY.md`），不在 conversation 里；conversation 只承载"这段会话的上下文"。这正好实现两层分离。
 
 ---
 
@@ -201,6 +204,16 @@
 - **冷启动的现实约束**（产品文档已标注）：没有可用模型时无法进行任何 LLM 对话。
 - 因此 **MVP 的首次运行**由一个**非对话的表单**完成：写入供应商与密钥到 `.openstaffs/config.json`；可选**种子免费模型**（如 OpenCode Go 的免费档）使首次对话开箱可用，但不得作为唯一依赖。
 - **0 号员工（Staff0，对话式引导）本期不做**，移到第 2 期；届时才接管"拟人化"入职引导、招募与环境检查。
+
+### 5.7 新开会话
+
+一个关系可用"新开会话"重开上下文（**用户点击按钮**，或**用户让 agent 触发**）：
+
+1. 当前会话记 `endedAt = now`
+2. 追加新会话记录（`prevId` = 上一条），新建一条 Pi conversation
+3. 旧会话保留在 SQLite，可回看；**资产本就在文件夹，不受影响**
+
+**私聊与群聊都有此功能。** 会话清单位置见 §4.3。
 
 ---
 
@@ -268,6 +281,7 @@ Pi Durable 的 `env` 就是插槽：**每条 conversation 的工具调用都跑�
 2. 首次配置（**非对话**表单：供应商 + 密钥；可选种子免费模型）
 3. 职场 IM 与记忆闭环：私聊 / 群聊（`projects/<任务>/` + `members.md`）/ `@触发` / 广播 / SQLite 消息流水 / 老板待办小红点
 4. 员工档案可视读取与编辑（`profile.md` / `MEMORY.md`），可为员工创建/挂载技能（标准 `skills/<name>/SKILL.md`）
+5. **新开会话**：私聊与群聊均可（用户点击，或让 agent 触发）
 
 **非目标（本期不做）：** **0 号员工（Staff0，对话式引导）**、**独立组织架构层（用群聊覆盖）**、自主 Inner Loop、Peer Review、记忆压缩与自动进化、MCP 生态、人才市场、硬档 ACL。
 
