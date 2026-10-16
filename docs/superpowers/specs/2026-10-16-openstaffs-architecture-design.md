@@ -96,6 +96,7 @@
 │     ├─ AGENTS.md          # 【入口】Pi 协议：引入本员工的记忆/档案/职能
 │     ├─ profile.md         # 档案：岗位/职责 + 人格（合并原 SOUL.md）
 │     ├─ MEMORY.md          # 长期记忆（拟人核心；我们的约定）
+│     ├─ config.json        # 员工运行配置：模型供应商 / 模型 / 思考档位
 │     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
 │     │  └─ <技能名>/SKILL.md
 │     ├─ permissions.json   # 可写范围（默认：自己 + 所在项目）
@@ -136,6 +137,7 @@
 | 消息 | transcript entry（`pi.user`/`pi.assistant`/`pi.tool-result`） | **唯一真相**（决策 B） |
 | 员工灵魂/记忆 | `configure({ instructions })` | 员工加载器由入口 `AGENTS.md` 引入 `profile.md` / `MEMORY.md` 后渲染；文件夹是真相源 |
 | 员工技能 | Pi 原生技能发现（`skills/<name>/SKILL.md`） | **纯 Pi 机制，不经 `AGENTS.md`**；只需把员工 `skills/` 纳入 Pi 的技能发现路径 |
+| 员工模型配置 | 员工 `config.json` → per-conversation agent | `model`（**供应商 + 模型**）+ `thinkingLevel`（**思考档位，`off` 即关闭**）；Pi Durable 此层**不含温度**，故**不做温度** |
 | 成员制 ACL | `members.md` + `beforeTool` 钩子 | 见 §6 |
 | 老板待办 | `viewState()` 派生的**未读标记** | **IM 面板上的小红点，不是独立面板** |
 
