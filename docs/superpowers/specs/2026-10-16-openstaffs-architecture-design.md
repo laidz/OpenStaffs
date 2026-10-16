@@ -74,7 +74,7 @@
 | **适配层** | OpenStaffs 自写 | `HarnessPort`：把域操作（起员工、发消息、建群、读消息）翻译成 Pi Durable 调用 |
 | **引擎层** | Pi Durable | conversation / transcript、durable task、storage、multiplayer view、compaction |
 | **工具层** | Pi Durable + 我们的钩子 | `CodingTools`(read/write/edit/bash) + `beforeTool` 钩子裁决 ACL |
-| **状态层（真相源）** | 文件夹 | `AGENTS.md`（员工入口）/ `profile.md` / `MEMORY.md` / `skills/` / `permissions.json` / `data/` / `members.md` |
+| **状态层（真相源）** | 文件夹 | `AGENTS.md`（员工入口）/ `profile.md` / `MEMORY.md` / `skills/` / `permission.json` / `data/` / `members.md` |
 | **协作层** | 基座 SQLite | 消息 = transcript entries |
 
 **铁则（承自产品文档 §2.1）**：状态只在文件夹，协作只在消息，互不落地到对方。
@@ -100,17 +100,18 @@
 │     ├─ conversation_ids.md # 私聊会话链（关系数据；导出员工时排除）
 │     ├─ skills/            # 技能（Pi/Agent Skills 标准：<name>/SKILL.md）
 │     │  └─ <技能名>/SKILL.md
-│     ├─ permissions.json   # 可写范围（默认：自己 + 所在项目）
+│     ├─ permission.json    # 写权限追加（老板维护；基线 = 自己 + 所在项目）
 │     └─ data/              # 自持工作区
 └─ projects/
    └─ <任务名>/
       ├─ AGENTS.md          # 任务规范（Pi 协议：自动加载）
       ├─ data/              # 多方共享工作区
-      ├─ members.md         # 成员名单 = ACL
-      └─ conversation_ids.md # 本群聊的会话链
+      ├─ members.md         # 成员名单
+      ├─ permission.json    # 写权限追加（老板维护）
+      └─ conversation_ids/  # 本群聊各成员的会话链（<成员>.md）
 ```
 
-> **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permissions.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
+> **Pi 协议 vs 我们的约定**：`AGENTS.md` / `SYSTEM.md` / `APPEND_SYSTEM.md` 是 **Pi 固定协议**（Pi 从 agent 目录、当前目录及祖先目录自动加载）；技能遵循 **Pi / Agent Skills 标准**（技能 = 含 `SKILL.md` 的目录）。其余 `profile.md` / `MEMORY.md` / `permission.json` / `members.md` 都是 **OpenStaffs 自己的约定**，由我们读取并渲染，Pi 并不要求。
 > **原则：Pi 有协议的，就用协议；没有的，才自造。** 因此不设 `BOSS.md`（并入 `AGENTS.md`）、不设 `SOUL.md`（并入 `profile.md`）、不设 `SKILLS.md`（改用标准 `skills/<name>/SKILL.md`）。
 
 > **员工目录的 `AGENTS.md` 是"入口"（必须）**：它**引入**该员工的记忆（`MEMORY.md`）、档案（`profile.md`）与职能——"要认识一个员工，从它的 `AGENTS.md` 读起"。
@@ -219,7 +220,7 @@
 2. 追加新会话记录（`prevId` = 上一条），新建一条 Pi conversation
 3. 旧会话保留在 SQLite，可回看；**资产本就在文件夹，不受影响**
 
-**私聊与群聊都有此功能。** 会话链记录在关系 `cwd` 下的 `conversation_ids.md`（见 §4.3）。
+**私聊与群聊都有此功能。** 会话链：私聊 = `agents/<员工>/conversation_ids.md`；群聊 = `projects/<任务>/conversation_ids/<成员>.md`（见 §4.3）。
 
 ---
 
