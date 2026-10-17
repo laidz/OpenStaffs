@@ -23,10 +23,12 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .msg.live .msg-text { color: #5a6270; }
 .msg .tool-line { font-size: 12px; color: #8a9099; }
 .msg.error .msg-text { background: #fff1f0; border-color: #ffa39e; color: #a8071a; }
-/* 气泡悬浮工具栏：复制 / pin（唯一 pin 入口）；所有消息一视同仁 */
-.msg-tools { display: none; gap: 4px; margin-top: 4px; }
+/* 气泡悬浮工具栏：复制 / pin（唯一 pin 入口）；所有消息一视同仁
+   .msg 收窄为 fit-content（贴合气泡），工具条绝对定位在气泡右下角 → 脱离文档流、不挤压气泡 */
+.msg { position: relative; width: fit-content; }
+.msg-tools { display: none; position: absolute; right: 0; top: calc(100% - 8px); gap: 4px; }
 .msg:hover .msg-tools { display: inline-flex; }
-.msg-tool { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 1px 8px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; }
+.msg-tool { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 1px 8px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
 .msg-tool:hover { background: #f0f2f5; }
 /* pinned 气泡：淡红底（在老板蓝底规则之后 → 同权重后者胜）+ 图钉按钮高亮 */
 .msg.pinned .msg-text { background: #fff1f0; border-color: #ffccc7; }
