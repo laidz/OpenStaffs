@@ -76,7 +76,7 @@ description: OpenStaffs 能力与协作手册——员工的工作区与写权�
 
 ## MCP 外部工具
 
-- 你的会话可能带有 `mcp__<alias>__<tool>` 形式的工具；它们由外部 MCP server 提供，能力与参数以工具说明为准。`alias` 缺省 = `mcpServers` 原名。
+- 你的会话可能带有 `mcp__<server>__<tool>` 形式的工具；它们由外部 MCP server 提供，能力与参数以工具说明为准。`server` 就是 `mcpServers` 的 key（只用字母、数字、`_`、`-`）。
 - 工具太多时不会全部直接出现：先用 `tool_search` 搜索，再调用搜到的工具。
 - 你可以在自己的目录写 `agents/<你>/mcp.json` 挂新的 stdio server（`command` / `args` / `env` / `cwd`）。这属于能力自扩，但等于启动本地进程——只挂你信任的 server。
 - **不要把密钥写进 `mcp.json`**：凭据统一由老板放进 `.openstaffs/config.json`，你写 `${config.mcp.<server>.<key>}` 引用；缺凭据时找老板补。密钥尽量放 `env`，写进 `args` 会出现在 `ps` 里。

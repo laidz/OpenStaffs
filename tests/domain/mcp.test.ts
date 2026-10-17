@@ -126,67 +126,47 @@ describe("四层 mcp.json", () => {
     expect(space.invalid).toContain("badArgs");
   });
 
-  it("alias 用于凭据、工具与扩展映射；缺省回退原名", () => {
+  it("server 名只允许安全字符；点号 / 空格名报错并跳过", () => {
+    const ws = createWorkspace(root);
+    const systemFile = path.join(root, "system-mcp.json");
+    writeJson(systemFile, {
+      mcpServers: {
+        "my.server": { command: "npx" },
+        "bad name": { command: "npx" },
+        good_name: { command: "npx" },
+      },
+    });
+
+    const snapshot = loadMcpSnapshot(ws, { systemFile });
+    const source = snapshot.sources[0]!;
+    expect(source.invalid).toEqual(expect.arrayContaining(["my.server", "bad name"]));
+    expect(source.servers.map((item) => item.name)).toEqual(["good_name"]);
+    expect(source.errors.join("\n")).toContain("名字不合法");
+  });
+
+  it("凭据与工具 / 扩展映射直接使用 server 原名", () => {
     const ws = createWorkspace(root);
     writeJson(path.join(root, ".openstaffs", "config.json"), {
-      mcp: { "safe-alias": { token: "ghp_secret" } },
+      mcp: { my_server: { token: "ghp_secret" } },
     });
     const systemFile = path.join(root, "system-mcp.json");
     writeJson(systemFile, {
       mcpServers: {
-        "my.server": {
-          alias: "safe-alias",
+        my_server: {
           command: "npx",
-          env: { TOKEN: "${config.mcp.safe-alias.token}" },
+          env: { TOKEN: "${config.mcp.my_server.token}" },
         },
-        plain: { command: "npx" },
       },
     });
 
     const snapshot = loadMcpSnapshot(ws, { systemFile });
     const source = snapshot.sources[0]!;
     expect(source.errors).toEqual([]);
-    const dotted = source.servers.find((item) => item.name === "my.server")!;
-    const plain = source.servers.find((item) => item.name === "plain")!;
-    expect(dotted.alias).toBe("safe-alias");
-    expect(dotted.env).toEqual({ TOKEN: "ghp_secret" });
-    expect(plain.alias).toBe("plain");
-    expect(mcpToolName(dotted.alias, "echo")).toBe("mcp__safe-alias__echo");
-    expect(mcpExtensionName({ kind: "system" }, dotted.alias)).toBe("mcp:system:safe-alias");
-  });
-
-  it("alias 非法或同一文件内重复时报错并跳过", () => {
-    const ws = createWorkspace(root);
-    const systemFile = path.join(root, "system-mcp.json");
-    writeJson(systemFile, {
-      mcpServers: {
-        bad: { alias: "a.b", command: "npx" },
-        first: { alias: "same", command: "npx" },
-        second: { alias: "same", command: "npx" },
-      },
-    });
-
-    const snapshot = loadMcpSnapshot(ws, { systemFile });
-    const source = snapshot.sources[0]!;
-    expect(source.invalid).toContain("bad");
-    expect(source.invalid).toContain("second");
-    expect(source.servers.map((item) => item.name)).toEqual(["first"]);
-    expect(source.errors.join("\n")).toContain("alias");
-  });
-
-  it("不同层使用相同 alias 时窄者胜，合并仍按原名", () => {
-    const ws = createWorkspace(root);
-    const systemFile = path.join(root, "system-mcp.json");
-    writeJson(systemFile, { mcpServers: { a: { alias: "shared", command: "system" } } });
-    writeJson(path.join(root, "projects", "p1", "mcp.json"), {
-      mcpServers: { b: { alias: "shared", command: "project" } },
-    });
-
-    const snapshot = loadMcpSnapshot(ws, { systemFile });
-    const group = resolveMcpServers(snapshot, { kind: "group", project: "p1" }, "alice").selections;
-    expect(group).toHaveLength(1);
-    expect(group[0]!.name).toBe("b");
-    expect(group[0]!.config.alias).toBe("shared");
+    const server = source.servers[0]!;
+    expect(server.name).toBe("my_server");
+    expect(server.env).toEqual({ TOKEN: "ghp_secret" });
+    expect(mcpToolName(server.name, "echo")).toBe("mcp__my_server__echo");
+    expect(mcpExtensionName({ kind: "system" }, server.name)).toBe("mcp:system:my_server");
   });
 
   it("扩展名与工具名带层级且非法字符被替换", () => {

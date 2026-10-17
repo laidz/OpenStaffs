@@ -81,25 +81,15 @@ describe("MCP 管理器", () => {
     expect(instance.errors()).toEqual([]);
   });
 
-  it("原名含点号时通过 alias 映射扩展 / 工具 / 凭据", async () => {
-    writeJson(path.join(root, ".openstaffs", "config.json"), {
-      mcp: { safe: { token: "ghp_secret" } },
-    });
+  it("server 名含点号时明确报错、不注册", async () => {
     const { instance, systemFile } = manager();
     writeJson(systemFile, {
-      mcpServers: {
-        "my.server": {
-          alias: "safe",
-          ...fixtureServer(),
-          env: { TOKEN: "${config.mcp.safe.token}" },
-        },
-      },
+      mcpServers: { "my.server": fixtureServer() },
     });
     await instance.start();
-    expect(instance.errors()).toEqual([]);
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).toEqual(["mcp:system:safe"]);
-    const tool = instance.extensions()[0]!.tools!.find((item) => item.name === "mcp__safe__echo");
-    expect(tool).toBeDefined();
+    expect(instance.errors().join("\n")).toContain("名字不合法");
+    expect(instance.extensions()).toEqual([]);
+    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).toEqual([]);
   });
 
   it("凭据缺失：明确错误、server 不注册、start 不抛", async () => {
