@@ -7,7 +7,7 @@ export type ServerEvent =
   | { type: "room.delta"; roomKey: string; convId: string; memberId: string; channel: "text" | "thinking"; delta: string }
   | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool"; phase: "start" | "end"; name?: string }
   | { type: "room.failed"; roomKey: string; convId: string; memberId: string; message: string; kind?: string }
-  | { type: "room.unread"; roomKey: string; count: number }
+  | { type: "room.pins"; roomKey: string; count: number }
   | { type: "permission.request"; request: PermissionRequestView }
   | { type: "permission.resolved"; id: string };
 

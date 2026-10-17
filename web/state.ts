@@ -23,7 +23,10 @@ export type State = {
   roomKey?: string;
   messages: RoomMessage[];
   live: Record<string, Live>;
-  unread: Record<string, number>;
+  /** 侧栏红点：每房间被 pin 的消息数（房间当前视图口径）。 */
+  pins: Record<string, number>;
+  /** 当前房间被 pin 的消息键（convId:entryId），用于气泡高亮。 */
+  pinned: string[];
   busy: Record<string, boolean>;
   panel?: "history";
 };
@@ -36,7 +39,8 @@ export const initialState: State = {
   permissionRequests: [],
   messages: [],
   live: {},
-  unread: {},
+  pins: {},
+  pinned: [],
   busy: {},
 };
 
@@ -44,10 +48,11 @@ export type UiEvent =
   | { type: "status"; configured: boolean; bossName: string }
   | { type: "employees"; list: EmployeeSummary[] }
   | { type: "projects"; list: ProjectSummary[] }
-  | { type: "room"; roomKey: string; messages: RoomMessage[] }
+  | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[] }
   | { type: "close-room" }
   | { type: "panel"; panel?: "history" }
-  | { type: "unread"; unread: { total: number; rooms: Record<string, number> } }
+  | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
+  | { type: "pin"; roomKey: string; key: string; pinned: boolean }
   | { type: "permissions"; list: PermissionRequestView[] }
   | { type: "permission-busy"; id: string; busy: boolean }
   | { type: "permission-error"; id: string; error: string }
@@ -84,13 +89,23 @@ export function reduce(state: State, event: UiEvent): State {
     case "projects":
       return { ...state, projects: event.list };
     case "room":
-      return { ...state, roomKey: event.roomKey, messages: event.messages, live: {}, panel: undefined };
+      return { ...state, roomKey: event.roomKey, messages: event.messages, pinned: event.pinned, live: {}, panel: undefined };
     case "close-room":
-      return { ...state, roomKey: undefined, messages: [], live: {}, panel: undefined };
+      return { ...state, roomKey: undefined, messages: [], pinned: [], live: {}, panel: undefined };
     case "panel":
       return { ...state, panel: event.panel };
-    case "unread":
-      return { ...state, unread: event.unread.rooms };
+    case "pins":
+      return { ...state, pins: event.pins.rooms };
+    case "pin": {
+      if (state.roomKey !== event.roomKey) return state; // 非当前房间的本地 pin 事件不生效
+      const next = event.pinned
+        ? state.pinned.includes(event.key)
+          ? state.pinned
+          : [...state.pinned, event.key]
+        : state.pinned.filter((key) => key !== event.key);
+      if (next === state.pinned) return state;
+      return { ...state, pinned: next, pins: { ...state.pins, [event.roomKey]: next.length } };
+    }
     case "permissions":
       return { ...state, permissionRequests: event.list };
     case "permission-busy":
@@ -105,8 +120,8 @@ export function reduce(state: State, event: UiEvent): State {
 }
 
 function reduceSse(state: State, event: ServerEvent): State {
-  if (event.type === "room.unread") {
-    return { ...state, unread: { ...state.unread, [event.roomKey]: event.count } };
+  if (event.type === "room.pins") {
+    return { ...state, pins: { ...state.pins, [event.roomKey]: event.count } };
   }
   // 授权事件是全局的（不属于任何房间视图，也不受当前房间过滤）：先于 roomKey 过滤处理。
   if (event.type === "permission.request") {

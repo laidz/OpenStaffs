@@ -6,8 +6,8 @@ import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
-import { countUnread, mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
-import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
+import { mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
+import { pinCounts, readPins, setPin } from "../app/pins.ts";
 import {
   activeMemberSessions, findSessionOwner, interruptRoom, newSession, roomTranscripts, sessionChains, type Relation,
 } from "../app/conversations.ts";
@@ -130,7 +130,11 @@ async function handleRooms(
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
     const members = await roomTranscripts(deps.ws, harness, relation);
-    json(res, 200, { roomKey, messages: mergeRoomMessages(roomKey, members, memberIds, bossNames) });
+    const merged = mergeRoomMessages(roomKey, members, memberIds, bossNames);
+    // pinned 只回当前视图里可见的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
+    const pinnedKeys = new Set(readPins(deps.ws).pins[roomKey] ?? []);
+    const pinned = merged.filter((m) => pinnedKeys.has(`${m.convId}:${m.entryId}`)).map((m) => `${m.convId}:${m.entryId}`);
+    json(res, 200, { roomKey, messages: merged, pinned });
     return;
   }
 
@@ -198,14 +202,25 @@ async function handleRooms(
     return;
   }
 
-  if (rest.length === 1 && rest[0] === "read" && method === "POST") {
+  if (rest.length === 1 && rest[0] === "pin" && method === "POST") {
+    const body = (await readJsonBody(req)) as { convId?: unknown; entryId?: unknown; pinned?: unknown } | undefined;
+    const convId = typeof body?.convId === "string" ? body.convId : "";
+    const entryId = typeof body?.entryId === "string" ? body.entryId : "";
+    if (convId === "" || entryId === "" || typeof body?.pinned !== "boolean") {
+      json(res, 400, { error: "convId / entryId / pinned 必填" });
+      return;
+    }
     const members = await roomTranscripts(deps.ws, harness, relation);
     const merged = mergeRoomMessages(roomKey, members, memberIds, bossNames);
-    const max = merged.reduce((acc, m) => Math.max(acc, Number(m.entryId)), 0);
-    if (max > 0) markSeen(deps.ws, roomKey, String(max));
-    const count = countUnread(merged, readSeen(deps.ws).seen[roomKey]);
-    deps.hub?.broadcast({ type: "room.unread", roomKey, count });
-    json(res, 200, { ok: true });
+    // 只允许 pin 房间视图里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
+    if (!merged.some((m) => m.convId === convId && m.entryId === entryId)) {
+      json(res, 404, { error: "消息不存在" });
+      return;
+    }
+    const state = setPin(deps.ws, roomKey, `${convId}:${entryId}`, body.pinned);
+    const count = pinCounts([{ key: roomKey, messages: merged }], state).rooms[roomKey] ?? 0;
+    deps.hub?.broadcast({ type: "room.pins", roomKey, count });
+    json(res, 200, { ok: true, count });
     return;
   }
 
@@ -354,7 +369,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
               return;
             }
           }
-          if (segments[1] === "unread" && method === "GET" && harness !== undefined) {
+          if (segments[1] === "pins" && method === "GET" && harness !== undefined) {
             const bossNames = bossNamesFor(deps.ws);
             const rooms: { key: string; messages: ReturnType<typeof mergeRoomMessages> }[] = [];
             for (const employee of listEmployees(deps.ws)) {
@@ -365,7 +380,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
               const key = `group:${project.id}`;
               rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "group", project: project.id }), [], bossNames) });
             }
-            json(res, 200, unreadCounts(rooms, readSeen(deps.ws)));
+            json(res, 200, pinCounts(rooms, readPins(deps.ws)));
             return;
           }
           json(res, 404, { error: "接口不存在" });

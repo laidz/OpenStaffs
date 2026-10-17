@@ -63,7 +63,7 @@ src/
 web/
   api.ts / state.ts / render.ts / main.ts / styles.css   # 改：卡片 UI + bossName 显示
 tests/   （见各任务）
-README.md / docs/手动验收清单.md   # 改：config 字段、status 字段、验收条目
+README.md   # 改：config 字段、status 字段、验收条目
 ```
 
 ---
@@ -2296,10 +2296,10 @@ git commit -m "feat: 授权卡片 UI——右下角堆叠、接受/拒绝、处�
 
 ---
 
-### Task 13: 文档同步（技能手册 / README / 手动验收）
+### Task 13: 文档同步（技能手册 / README）
 
 **Files:**
-- Modify: `src/skills/openstaffs/SKILL.md`、`src/skills/openstaffs-ops/SKILL.md`、`README.md`、`docs/手动验收清单.md`
+- Modify: `src/skills/openstaffs/SKILL.md`、`src/skills/openstaffs-ops/SKILL.md`、`README.md`
 
 **Interfaces:**
 - 无代码接口；产出为文档。验证方式：人工阅读 + 关键句 grep。
@@ -2374,20 +2374,6 @@ config 字段说明（`model` 行后）加：
 - `bossName`：可选，负责人称谓（缺省「老板」；空值自动回落，不可为空）。界面、消息与员工文案都用它。
 ```
 
-- [ ] **Step 4: 更新 `docs/手动验收清单.md`**
-
-1. 第 10 条 status 字段列表改为：`/api/status` 只含 `configured` / `root` / `port` / `model` / `providers`（供应商名单）/ `bossName`。
-2. 末尾追加：
-
-```
-16. **授权弹框（接受）**：私聊让 alice 尝试写工作区外的路径（如 `/tmp/openstaffs-demo/x.md`）→ 被拦且提示可申请；alice 调 `request_permission`（带理由）→ 右下角出现卡片（发起人 / 理由 / 绝对路径）；点「接受」→ `agents/alice/permission.json` 出现该路径、alice 收到「已完成授权」并继续写入成功。
-17. **授权弹框（拒绝）**：再申请一次 → 点「拒绝」→ 无文件写入；alice 收到「已拒绝授权」；再次写仍被拦。
-18. **群里多弹框**：两名成员分别申请 → 两张卡片堆叠、各自处理；批准消息以 `@<该成员> 已完成授权` 开头出现在群里、只触发该成员。
-19. **重启保留**：申请后不处理 → 重启服务 → 刷新页面 → 卡片仍在，可正常处理。
-20. **称谓自定义**：`config` 写 `"bossName": "掌柜"` → 重启 → 界面发言人名 / 环境段 / 工具与弹框相关文案显示「掌柜」；成员回复 `@掌柜` 计入待办红点；`@老板` 仍有效；`bossName` 置空 → 回落「老板」。
-21. **异步认知**：观察 alice 发起申请后的行为：不反复尝试写入、不重复发起；等待期间继续做其他工作或结束本轮；批准后以新一轮继续。
-```
-
 - [ ] **Step 5: 一致性检查**
 
 Run: `grep -n "request_permission" src/skills/openstaffs/SKILL.md src/skills/openstaffs-ops/SKILL.md README.md | head; grep -n "bossName" src/skills/openstaffs-ops/SKILL.md README.md`
@@ -2400,7 +2386,7 @@ Run: `npm test && npm run typecheck`
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/skills/openstaffs/SKILL.md src/skills/openstaffs-ops/SKILL.md README.md docs/手动验收清单.md
+git add src/skills/openstaffs/SKILL.md src/skills/openstaffs-ops/SKILL.md README.md
 git commit -m "docs: 授权申请与称谓单源化同步——技能手册、运维参考、README、验收清单"
 ```
 

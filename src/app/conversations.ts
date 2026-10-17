@@ -201,7 +201,7 @@ export async function roomTranscripts(ws: Workspace, harness: HarnessPort, relat
       const messages = await harness.transcript(session.convId);
       out.push({ memberId: session.memberId, ...(alias === undefined ? {} : { alias }), convId: session.convId, messages });
     } catch {
-      // 坏会话（如链指向不存在的 convId）跳过：一个坏会话不该让整房间的合并视图 / 未读 500。
+      // 坏会话（如链指向不存在的 convId）跳过：一个坏会话不该让整房间的合并视图 / 红点 500。
     }
   }
   return out;

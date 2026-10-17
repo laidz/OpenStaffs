@@ -29,17 +29,19 @@ describe("前端 API 封装", () => {
     await expect(api.send("group:yt", "hi", "r")).rejects.toThrow("群还没有成员");
   });
 
-  it("status/messages/read/unread 的 URL 形状", async () => {
+  it("status/messages/pin/pins 的 URL 形状与请求体", async () => {
     const calls = stubFetch({});
     await api.status();
     await api.messages("group:yt");
-    await api.read("dm:alice");
-    await api.unread();
+    await api.pin("dm:alice", "c1", "10", true);
+    await api.pins();
     expect(calls.map((c) => c.url)).toEqual([
       "/api/status",
       "/api/rooms/group%3Ayt/messages",
-      "/api/rooms/dm%3Aalice/read",
-      "/api/unread",
+      "/api/rooms/dm%3Aalice/pin",
+      "/api/pins",
     ]);
+    expect(calls[2]!.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[2]!.init?.body))).toEqual({ convId: "c1", entryId: "10", pinned: true });
   });
 });

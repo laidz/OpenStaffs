@@ -37,7 +37,13 @@ function renderDynamic(event: UiEvent): void {
       renderPermCards();
       return;
     }
-    // UI 事件（employees/projects/unread 等）只影响侧栏；需要整页的调用点走 "all" 档。
+    // pin 事件同时改当前房间气泡高亮与侧栏红点，两处都要局部更新。
+    if (event.type === "pin") {
+      renderMessages();
+      renderSidebar();
+      return;
+    }
+    // UI 事件（employees/projects/pins 等）只影响侧栏；需要整页的调用点走 "all" 档。
     renderSidebar();
     return;
   }
@@ -59,7 +65,7 @@ function renderDynamic(event: UiEvent): void {
       renderMessages();
       renderLive(); // 员工正式消息到达 → 清掉对应 live 气泡
       return;
-    case "room.unread":
+    case "room.pins":
       renderSidebar();
       return;
     default:
@@ -67,7 +73,7 @@ function renderDynamic(event: UiEvent): void {
   }
 }
 
-/** 侧栏（忙碌点 / 未读徽标 / 高亮）局部更新。 */
+/** 侧栏（忙碌点 / 红点 / 高亮）局部更新。 */
 function renderSidebar(): void {
   const sidebar = document.getElementById("sidebar");
   if (sidebar === null) return;
@@ -80,7 +86,7 @@ function renderMessages(): void {
   const messagesPart = document.getElementById("messages-part");
   if (messagesPart === null) return;
   const stick = nearBottom();
-  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName);
+  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName, state.pinned);
   if (stick) scrollToBottom();
 }
 
@@ -183,7 +189,40 @@ function bindEvents(): void {
   document.getElementById("btn-new-session")?.addEventListener("click", () => guard(newSession()));
   document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
   document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
+  // 气泡工具栏用事件委托挂在消息容器上：renderMessages 整体重建 innerHTML 时监听器不丢。
+  document.getElementById("msg-list")?.addEventListener("click", (event) => {
+    const button = (event.target as Element | null)?.closest<HTMLButtonElement>("button[data-action]");
+    if (button !== null && button !== undefined) void messageAction(button);
+  });
   bindPermCards();
+}
+
+/** 气泡工具栏动作：复制 Markdown 原文 / 切换 pin（先乐观更新，失败回滚）。 */
+async function messageAction(button: HTMLButtonElement): Promise<void> {
+  const msgEl = button.closest<HTMLElement>(".msg");
+  const roomKey = state.roomKey;
+  const convId = msgEl?.dataset.convId;
+  const entryId = msgEl?.dataset.entryId;
+  if (msgEl === null || roomKey === undefined || convId === undefined || entryId === undefined) return;
+  const key = `${convId}:${entryId}`;
+  if (button.dataset.action === "copy") {
+    const message = state.messages.find((m) => `${m.convId}:${m.entryId}` === key);
+    if (message === undefined) return;
+    try {
+      await navigator.clipboard.writeText(message.text); // Markdown 原文，不是渲染结果
+    } catch (error) {
+      reportError(error);
+    }
+    return;
+  }
+  const pinned = !state.pinned.includes(key);
+  dispatch({ type: "pin", roomKey, key, pinned });
+  try {
+    await api.pin(roomKey, convId, entryId, pinned);
+  } catch (error) {
+    dispatch({ type: "pin", roomKey, key, pinned: !pinned }); // 回滚
+    reportError(error);
+  }
 }
 
 /** 授权卡片局部更新；无容器（setup 页等）时跳过。 */
@@ -221,52 +260,36 @@ async function resolvePermission(id: string, decision: "accept" | "reject"): Pro
   }
 }
 
-async function refreshUnread(): Promise<void> {
-  const unread = await api.unread();
-  dispatch({ type: "unread", unread });
-}
-
-let readTimer: number | undefined;
-function scheduleRead(): void {
-  if (document.visibilityState !== "visible" || state.roomKey === undefined) return;
-  const roomKey = state.roomKey;
-  window.clearTimeout(readTimer);
-  readTimer = window.setTimeout(() => {
-    void api.read(roomKey).then(refreshUnread).catch(() => {});
-  }, 600);
+async function refreshPins(): Promise<void> {
+  const pins = await api.pins();
+  dispatch({ type: "pins", pins });
 }
 
 function onServerEvent(event: ServerEvent): void {
-  if (event.type !== "room.message" || state.roomKey !== event.roomKey || event.message.speaker.kind === "boss") {
-    dispatch({ type: "sse", event });
-    return;
-  }
   dispatch({ type: "sse", event });
-  scheduleRead(); // 当前房间有新消息且窗口可见 → 防抖标记已读
 }
 
 async function refreshAll(): Promise<void> {
-  const [employees, projects, unread, permissions] = await Promise.all([
+  const [employees, projects, pins, permissions] = await Promise.all([
     api.employees(),
     api.projects(),
-    api.unread(),
+    api.pins(),
     api.permissionRequests(),
   ]);
   dispatch({ type: "employees", list: employees });
   dispatch({ type: "projects", list: projects });
-  dispatch({ type: "unread", unread });
+  dispatch({ type: "pins", pins });
   dispatch({ type: "permissions", list: permissions.requests });
   if (state.roomKey !== undefined) {
     const roomKey = state.roomKey;
-    const { messages } = await api.messages(roomKey);
-    dispatch({ type: "room", roomKey, messages }, "all");
+    const { messages, pinned } = await api.messages(roomKey);
+    dispatch({ type: "room", roomKey, messages, pinned }, "all");
   }
 }
 
 async function enterRoom(roomKey: string): Promise<void> {
-  const { messages } = await api.messages(roomKey);
-  dispatch({ type: "room", roomKey, messages }, "all");
-  void api.read(roomKey).then(refreshUnread).catch(() => {});
+  const { messages, pinned } = await api.messages(roomKey);
+  dispatch({ type: "room", roomKey, messages, pinned }, "all");
 }
 
 async function sendCurrent(): Promise<void> {
@@ -377,25 +400,24 @@ async function main(): Promise<void> {
     status = await api.status();
     dispatch({ type: "status", configured: status.configured, bossName: status.bossName }, "all");
     if (!status.configured) return;
-    const [employees, projects, unread, permissions] = await Promise.all([
+    const [employees, projects, pins, permissions] = await Promise.all([
       api.employees(),
       api.projects(),
-      api.unread(),
+      api.pins(),
       api.permissionRequests(),
     ]);
     dispatch({ type: "employees", list: employees }, "all");
     dispatch({ type: "projects", list: projects }, "all");
-    dispatch({ type: "unread", unread }, "all");
+    dispatch({ type: "pins", pins }, "all");
     dispatch({ type: "permissions", list: permissions.requests }, "all");
 
     connectEvents({
       onEvent: onServerEvent,
       onReconnect: () => void refreshAll().catch(() => {}),
     });
+    // 切回页面时重拉红点（别的标签页可能改过 pin）
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && state.roomKey !== undefined) {
-        void api.read(state.roomKey).then(refreshUnread).catch(() => {});
-      }
+      if (document.visibilityState === "visible") void refreshPins().catch(() => {});
     });
   } catch (error) {
     app.innerHTML = `<main class="setup"><h1>OpenStaffs</h1><p>服务不可用：${escapeHtml(error instanceof Error ? error.message : String(error))}</p></main>`;

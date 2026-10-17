@@ -145,9 +145,3 @@ export function mergeRoomMessages(
   }
   return [...plain, ...deduped.values()].sort((a, b) => Number(a.entryId) - Number(b.entryId));
 }
-
-/** 未读数（老板待办口径）：entryId 严格大于 watermark 且“发给老板”的员工消息；群聊里成员互聊不点红点。 */
-export function countUnread(messages: RoomMessage[], watermark: number | undefined): number {
-  const seen = watermark === undefined ? 0 : watermark;
-  return messages.filter((m) => m.speaker.kind === "employee" && m.bossDirected && Number(m.entryId) > seen).length;
-}

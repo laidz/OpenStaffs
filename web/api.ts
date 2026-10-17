@@ -6,7 +6,7 @@ export type { PermissionRequestView } from "../src/app/permission-flow.ts";
 export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[]; bossName: string };
 export type EmployeeSummary = { id: string; alias?: string; model: string };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
-export type RoomMessages = { roomKey: string; messages: RoomMessage[] };
+export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
 export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null };
 
@@ -48,9 +48,14 @@ export const api = {
     request<{ convId: string; memberId: string; messages: RoomMessage[] }>(
       `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/messages`,
     ),
-  read: (roomKey: string) => request<{ ok: boolean }>(`${roomPath(roomKey)}/read`, { method: "POST" }),
+  pin: (roomKey: string, convId: string, entryId: string, pinned: boolean) =>
+    request<{ ok: boolean; count: number }>(`${roomPath(roomKey)}/pin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ convId, entryId, pinned }),
+    }),
   interrupt: (roomKey: string) => request<{ aborted: string[] }>(`${roomPath(roomKey)}/interrupt`, { method: "POST" }),
-  unread: () => request<{ total: number; rooms: Record<string, number> }>("/api/unread"),
+  pins: () => request<{ total: number; rooms: Record<string, number> }>("/api/pins"),
   permissionRequests: () => request<{ requests: PermissionRequestView[] }>("/api/permission-requests"),
   resolvePermission: (id: string, decision: "accept" | "reject") =>
     request<{ ok: boolean; warning?: string }>(`/api/permission-requests/${encodeURIComponent(id)}/resolve`, {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage } from "../../web/render.ts";
+import { chatHtml, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
@@ -141,5 +141,53 @@ describe("授权卡片", () => {
 
   it("空列表 → 空容器", () => {
     expect(permissionCardsHtml(initialState)).toBe('<div class="perm-cards" id="perm-cards"></div>');
+  });
+});
+
+describe("气泡工具栏与 pin 高亮", () => {
+  const employee: RoomMessage = { convId: "c1", entryId: "2", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "好", bossDirected: true };
+  const other: RoomMessage = { convId: "c1", entryId: "3", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "再", bossDirected: true };
+
+  it("每条消息带消息键与工具栏（复制 / pin），默认未 pin", () => {
+    const html = messageHtml(employee);
+    expect(html).toContain('data-conv-id="c1"');
+    expect(html).toContain('data-entry-id="2"');
+    expect(html).toContain('data-action="copy"');
+    expect(html).toContain('data-action="pin"');
+    expect(html).not.toContain("pinned");
+  });
+
+  it("pinned 消息：加 pinned 类名（淡红底/图钉由样式负责）", () => {
+    expect(messageHtml(employee, "老板", true)).toContain('class="msg employee pinned"');
+  });
+
+  it("messagesHtml 按 pinned 集合标记对应气泡", () => {
+    expect(messagesHtml([employee, other], "老板", ["c1:3"])).toContain('<div class="msg employee pinned" data-conv-id="c1" data-entry-id="3">');
+    expect(messagesHtml([employee, other], "老板", [])).not.toContain("pinned");
+  });
+
+  it("chatHtml 把当前房间 pinned 集合透传给气泡", () => {
+    const state = {
+      ...initialState,
+      configured: true,
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
+      roomKey: "dm:alice",
+      messages: [{ convId: "c1", entryId: "5", roomKey: "dm:alice", speaker: { kind: "employee" as const, id: "alice" }, text: "x", bossDirected: true }],
+      pinned: ["c1:5"],
+    };
+    expect(chatHtml(state)).toContain('class="msg employee pinned"');
+  });
+
+  it("sidebarHtml：红点 = 该房间 pin 计数", () => {
+    const state = {
+      ...initialState,
+      configured: true,
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
+      projects: [{ id: "yt", alias: "油管", members: [] }],
+      pins: { "dm:alice": 2, "group:yt": 1 },
+    };
+    const html = sidebarHtml(state);
+    expect(html).toContain('<span class="badge">2</span>');
+    expect(html).toContain('<span class="badge">1</span>');
   });
 });

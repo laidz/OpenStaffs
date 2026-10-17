@@ -333,7 +333,7 @@ describe("应用用例", () => {
     }
   });
 
-  it("roomTranscripts：链指向不存在的 convId 时跳过该成员（不让整房间的合并视图/未读 500）", async () => {
+  it("roomTranscripts：链指向不存在的 convId 时跳过该成员（不让整房间的合并视图/红点 500）", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
     const ws = createWorkspace(root);

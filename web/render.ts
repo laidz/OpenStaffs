@@ -29,19 +29,19 @@ export function sidebarHtml(state: State): string {
   const employeeItems = state.employees
     .map((employee) => {
       const roomKey = `dm:${employee.id}`;
-      const unread = state.unread[roomKey] ?? 0;
+      const pins = state.pins[roomKey] ?? 0;
       const busy = state.busy[employee.id] === true ? '<span class="dot"></span>' : "";
       const active = state.roomKey === roomKey ? " active" : "";
-      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(employee.alias ?? employee.id)}${busy}</span>${unread > 0 ? `<span class="badge">${unread}</span>` : ""}</button>`;
+      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(employee.alias ?? employee.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
     })
     .join("");
   const projectItems = state.projects
     .map((project) => {
       const roomKey = `group:${project.id}`;
-      const unread = state.unread[roomKey] ?? 0;
+      const pins = state.pins[roomKey] ?? 0;
       const busy = project.members.some((m) => state.busy[m.id] === true) ? '<span class="dot"></span>' : "";
       const active = state.roomKey === roomKey ? " active" : "";
-      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${unread > 0 ? `<span class="badge">${unread}</span>` : ""}</button>`;
+      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
     })
     .join("");
   return `<aside class="sidebar" id="sidebar">
@@ -50,18 +50,23 @@ export function sidebarHtml(state: State): string {
   </aside>`;
 }
 
-export function messageHtml(message: RoomMessage, bossName = "老板"): string {
+export function messageHtml(message: RoomMessage, bossName = "老板", pinned = false): string {
   const speaker = message.speaker;
   const boss = speaker.kind === "boss";
   const name = speaker.kind === "boss" ? bossName : (speaker.alias ?? speaker.id);
   // 老板消息原样展示（转义 + 样式换行）；员工消息按 Markdown 渲染（UI 层，见 markdown.ts）
   const body = boss ? escapeHtml(message.text) : markdownHtml(message.text);
   const bodyClass = boss ? "msg-text" : "msg-text md";
-  return `<div class="msg ${boss ? "boss" : "employee"}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div></div>`;
+  // 悬浮工具栏：复制（Markdown 原文）与 pin（逐条标记的唯一入口）。所有消息一视同仁。
+  const tools = `<div class="msg-tools"><button type="button" class="msg-tool" data-action="copy" title="复制 Markdown 原文">复制</button><button type="button" class="msg-tool" data-action="pin" title="加图钉（给自己留提醒）">📌</button></div>`;
+  const pinnedClass = pinned ? " pinned" : "";
+  return `<div class="msg ${boss ? "boss" : "employee"}${pinnedClass}" data-conv-id="${escapeHtml(message.convId)}" data-entry-id="${escapeHtml(message.entryId)}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div>${tools}</div>`;
 }
 
-export function messagesHtml(messages: RoomMessage[], bossName = "老板"): string {
-  return messages.length === 0 ? `<div class="empty">还没有消息，发一条试试。</div>` : messages.map((message) => messageHtml(message, bossName)).join("");
+export function messagesHtml(messages: RoomMessage[], bossName = "老板", pinned: Iterable<string> = []): string {
+  if (messages.length === 0) return `<div class="empty">还没有消息，发一条试试。</div>`;
+  const pinnedSet = new Set(pinned);
+  return messages.map((message) => messageHtml(message, bossName, pinnedSet.has(`${message.convId}:${message.entryId}`))).join("");
 }
 
 export function liveHtml(live: Record<string, Live>): string {
@@ -108,7 +113,7 @@ export function chatHtml(state: State): string {
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>
     <div class="msg-list" id="msg-list">
-      <div id="messages-part">${messagesHtml(state.messages, state.bossName)}</div>
+      <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned)}</div>
       <div id="live-area">${liveHtml(state.live)}</div>
     </div>
     <div class="composer">

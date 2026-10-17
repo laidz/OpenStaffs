@@ -10,7 +10,7 @@ function msg(entryId: string, convId: string, kind: "boss" | "employee", text: s
 
 function inRoom(): State {
   let state = reduce(initialState, { type: "status", configured: true, bossName: "老板" });
-  state = reduce(state, { type: "room", roomKey: "dm:alice", messages: [] });
+  state = reduce(state, { type: "room", roomKey: "dm:alice", messages: [], pinned: [] });
   return state;
 }
 
@@ -119,24 +119,52 @@ describe("前端状态归约", () => {
     expect(crossRoomDelta).toBe(before);
   });
 
-  it("非当前房间事件：只更新忙碌/未读，不污染消息", () => {
+  it("非当前房间事件：只更新忙碌/红点，不污染消息", () => {
     let state = inRoom();
     state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "group:yt", message: msg("30", "cx", "employee", "别处") } });
     expect(state.messages).toHaveLength(0);
-    state = reduce(state, { type: "sse", event: { type: "room.unread", roomKey: "group:yt", count: 2 } });
-    expect(state.unread["group:yt"]).toBe(2);
+    state = reduce(state, { type: "sse", event: { type: "room.pins", roomKey: "group:yt", count: 2 } });
+    expect(state.pins["group:yt"]).toBe(2);
   });
 
-  it("room / close-room / unread / panel 状态迁移", () => {
+  it("pin 标记：room 事件带入 pinned 集合；pin 事件更新当前房间高亮与红点；room.pins 更新侧栏", () => {
+    let state = reduce(initialState, { type: "status", configured: true, bossName: "老板" });
+    state = reduce(state, { type: "room", roomKey: "dm:alice", messages: [], pinned: ["c1:10"] });
+    expect(state.pinned).toEqual(["c1:10"]);
+
+    state = reduce(state, { type: "pin", roomKey: "dm:alice", key: "c1:11", pinned: true });
+    expect(state.pinned).toEqual(["c1:10", "c1:11"]);
+    expect(state.pins["dm:alice"]).toBe(2);
+
+    state = reduce(state, { type: "pin", roomKey: "dm:alice", key: "c1:10", pinned: false });
+    expect(state.pinned).toEqual(["c1:11"]);
+    expect(state.pins["dm:alice"]).toBe(1);
+
+    // 非当前房间的 pin 事件：不污染当前房间高亮
+    const cross = reduce(state, { type: "pin", roomKey: "group:yt", key: "c9:1", pinned: true });
+    expect(cross.pinned).toEqual(["c1:11"]);
+
+    // 全量刷新（进入页面 / 重连补齐）
+    state = reduce(state, { type: "pins", pins: { total: 1, rooms: { "dm:alice": 1 } } });
+    expect(state.pins).toEqual({ "dm:alice": 1 });
+
+    // 离开房间清空 pinned
+    state = reduce(state, { type: "close-room" });
+    expect(state.pinned).toEqual([]);
+  });
+
+  it("room / close-room / panel 状态迁移", () => {
     let state = inRoom();
     state = reduce(state, { type: "panel", panel: "history" });
     expect(state.panel).toBe("history");
-    state = reduce(state, { type: "room", roomKey: "group:yt", messages: [msg("1", "c1", "boss", "hi")] });
+    state = reduce(state, { type: "room", roomKey: "group:yt", messages: [msg("1", "c1", "boss", "hi")], pinned: ["c1:1"] });
     expect(state.roomKey).toBe("group:yt");
+    expect(state.pinned).toEqual(["c1:1"]);
     expect(state.panel).toBeUndefined();
     state = reduce(state, { type: "close-room" });
     expect(state.roomKey).toBeUndefined();
     expect(state.messages).toHaveLength(0);
+    expect(state.pinned).toEqual([]);
   });
 
   it("授权请求：全量替换、SSE 增量去重（新在前）、busy/error 与本地移除", () => {

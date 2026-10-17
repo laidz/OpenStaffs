@@ -50,7 +50,7 @@ describe("SSE 订阅", () => {
       "room.delta",
       "room.activity",
       "room.failed",
-      "room.unread",
+      "room.pins",
       "permission.request",
       "permission.resolved",
       "open",

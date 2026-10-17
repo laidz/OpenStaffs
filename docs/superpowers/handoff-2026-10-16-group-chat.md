@@ -88,7 +88,7 @@
 
 - 验证：`npm test && npm run typecheck`（写作时基线 150/150；功能演进后以当前为准——现为 191/191）。
 - git：本地分支开发、**不 push 分支**；完成后 **squash 一条**回 master；**不要 git pull**；远程名是 `github`（HTTPS 凭据：`git -c credential.helper='!f() { echo username=laidz; echo password=$(gh auth token); }; f' push github master`）。
-- 改动行为后跑一遍手动验收（`docs/手动验收清单.md`，原 README 清单）；文档同步遵循仓库 `AGENTS.md` 的全覆盖矩阵（能力→`openstaffs` 技能；运维→`openstaffs-ops` 技能；上手→`README.md`；愿景→`docs/产品规划.md`）。
+- 改动行为后自行手动验证（`npm test` 覆盖不到的真实模型链路）；文档同步遵循仓库 `AGENTS.md` 的全覆盖矩阵（能力→`openstaffs` 技能；运维→`openstaffs-ops` 技能；上手→`README.md`；愿景→`docs/产品规划.md`）。
 - **动手前先问用户**：任务 1 防循环策略、任务 2 增量/注入形态（这两个直接决定体验与成本）。
 
 ## 5. 现在开始

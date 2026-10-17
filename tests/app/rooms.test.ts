@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countUnread, mergeRoomMessages, normalizeChatMessage, parseRoomKey, roomKeyOf, type MemberTranscript } from "../../src/app/rooms.ts";
+import { mergeRoomMessages, normalizeChatMessage, parseRoomKey, roomKeyOf, type MemberTranscript } from "../../src/app/rooms.ts";
 import type { ChatMessage } from "../../src/harness/port.ts";
 
 function chat(id: string, role: "user" | "assistant", text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
@@ -120,21 +120,6 @@ describe("房间合并视图", () => {
     expect(directed?.bossDirected).toBe(false);
   });
 
-  it("countUnread：watermark 之后的员工消息计数，老板消息不计", () => {
-    const members: MemberTranscript[] = [
-      { memberId: "alice", convId: "c1", messages: [
-        chat("5", "assistant", "旧回答"),
-        chat("10", "user", "老板问", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_1" } }),
-        chat("11", "assistant", "新回答"),
-        chat("12", "assistant", "再答"),
-      ] },
-    ];
-    const merged = mergeRoomMessages("dm:alice", members);
-    expect(countUnread(merged, undefined)).toBe(3);
-    expect(countUnread(merged, 10)).toBe(2);
-    expect(countUnread(merged, 12)).toBe(0);
-  });
-
   it("空输入、空会话不产生消息", () => {
     expect(mergeRoomMessages("dm:alice", [])).toEqual([]);
     expect(normalizeChatMessage("dm:alice", { memberId: "alice", convId: "c1", messages: [] }, chat("1", "assistant", ""))).toEqual({
@@ -181,22 +166,6 @@ describe("群聊 @前缀约定（历史整洁 + 待办口径）", () => {
     const m = normalizeChatMessage("dm:alice", alice, chat("9", "assistant", "好的"));
     expect(m?.text).toBe("好的");
     expect(m?.bossDirected).toBe(true);
-  });
-
-  it("群聊红点口径：只统计给老板的消息（成员互聊不点）", () => {
-    const merged = mergeRoomMessages(
-      "group:demo",
-      [
-        { memberId: "alice", convId: "c1", messages: [
-          chat("10", "assistant", "@bob 请评审"),
-          chat("11", "assistant", "好的，已完成"),
-          chat("12", "assistant", "@老板 汇报：已提交"),
-        ] },
-      ],
-      memberIds,
-    );
-    expect(countUnread(merged, undefined)).toBe(2);
-    expect(countUnread(merged, 11)).toBe(1);
   });
 
   it("bossNames 双认：@掌柜 视为给老板（不补前缀）；fallback 用当前称谓（首项）", () => {

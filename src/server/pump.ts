@@ -5,9 +5,8 @@ import { bossNamesFor } from "../domain/config.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
-import { activeMemberSessions, roomTranscripts, type SessionDefaults } from "../app/conversations.ts";
-import { countUnread, mergeRoomMessages, normalizeChatMessage, parseRoomKey, type MemberTranscript } from "../app/rooms.ts";
-import { readSeen } from "../app/unread.ts";
+import { activeMemberSessions, type SessionDefaults } from "../app/conversations.ts";
+import { normalizeChatMessage, parseRoomKey, type MemberTranscript } from "../app/rooms.ts";
 import type { SseHub } from "./sse.ts";
 
 export type RoomRef = { roomKey: string; memberId: string; alias?: string };
@@ -25,7 +24,7 @@ type Deps = {
 /** in-flight 注册的占位：promise 供并发复用；state.cancelled 标记 in-flight 期间的 unregister。 */
 type Pending = { promise: Promise<void>; state: { cancelled: boolean } };
 
-/** 订阅活跃会话的归一化事件并广播；员工发言后重算未读。 */
+/** 订阅活跃会话的归一化事件并广播。 */
 export class Pump {
   #refs = new Map<string, () => Promise<void>>();
   /** 同一 convId 的并发 register 复用同一 in-flight 占用，防双订阅/重复广播（delta 无去重字段，重影可感）。 */
@@ -127,8 +126,7 @@ export class Pump {
           const message = normalizeChatMessage(ref.roomKey, member, event.message, memberIds, bossNamesFor(this.#deps.ws));
           if (message === undefined) return;
           hub.broadcast({ type: "room.message", roomKey: ref.roomKey, message });
-          if (message.speaker.kind === "employee") void this.#pushUnread(ref.roomKey);
-          // 员工群回复开头的 @触发其他成员（老板消息在发送时已路由；转发副本 kind=chat.mention 不在此列）。
+          // 群回复开头的 @触发其他成员（老板消息在发送时已路由；转发副本 kind=chat.mention 不在此列）。
           if (event.message.role === "assistant") void this.#triggerFromReply(convId, ref, event.message);
           return;
         }
@@ -147,20 +145,6 @@ export class Pump {
       }
     } catch {
       // 事件处理失败绝不能外抛（见上：抛错会被 Pi 静默终结订阅）；广播失败不影响会话运行。
-    }
-  }
-
-  async #pushUnread(roomKey: string): Promise<void> {
-    try {
-      const relation = parseRoomKey(roomKey);
-      if (relation === undefined) return;
-      const memberIds = relation.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
-      const members = await roomTranscripts(this.#deps.ws, this.#deps.harness, relation);
-      const messages = mergeRoomMessages(roomKey, members, memberIds, bossNamesFor(this.#deps.ws));
-      const seen = readSeen(this.#deps.ws);
-      this.#deps.hub.broadcast({ type: "room.unread", roomKey, count: countUnread(messages, seen.seen[roomKey]) });
-    } catch {
-      // 未读重算失败不影响推流
     }
   }
 

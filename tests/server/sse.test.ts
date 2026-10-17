@@ -107,7 +107,7 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 8000): P
 }
 
 describe("SSE 全链路", () => {
-  it("发消息后推送：room.message(user) → delta → room.message(assistant) → room.unread", async () => {
+  it("发消息后推送：room.message(user) → delta → room.message(assistant)；pin 后推 room.pins", async () => {
     const dir = path.join(root, "agents", "alice");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
@@ -163,12 +163,19 @@ describe("SSE 全链路", () => {
       expect(events.some((e) => e.type === "room.delta" && e.delta.length > 0)).toBe(true);
       const assistant = events.find((e) => e.type === "room.message" && e.message.speaker.kind === "employee");
       expect(assistant?.type === "room.message" ? assistant.message.text : "").toContain("流式回答内容");
-      await waitUntil(() => events.some((e) => e.type === "room.unread" && e.roomKey === "dm:alice"));
+      // 新消息到达不改变红点（pin 由老板主动触发）→ 不应有 room.pins
+      expect(events.some((e) => e.type === "room.pins")).toBe(false);
 
-      // 裁决 A2（R5）：标记已读后服务端重算并推 room.unread（红点无需等前端轮询即清零）
-      const read = await fetch(`${base}/api/rooms/dm:alice/read`, { method: "POST" });
-      expect(read.status).toBe(200);
-      await waitUntil(() => events.some((e) => e.type === "room.unread" && e.roomKey === "dm:alice" && e.count === 0));
+      // 老板 pin 一条 → 服务端落盘并广播新的红点计数
+      const employee = events.find((e) => e.type === "room.message" && e.message.speaker.kind === "employee");
+      if (employee?.type !== "room.message") throw new Error("缺少员工消息");
+      const pin = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ convId: employee.message.convId, entryId: employee.message.entryId, pinned: true }),
+      });
+      expect(pin.status).toBe(200);
+      await waitUntil(() => events.some((e) => e.type === "room.pins" && e.roomKey === "dm:alice" && e.count === 1));
     } finally {
       abort.abort(); // 客户端断开（hub 依 req close 清理）；否则常驻 SSE 连接会让 server.close() 一直阻塞
       await new Promise<void>((resolve) => server.close(() => resolve()));

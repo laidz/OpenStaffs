@@ -265,7 +265,6 @@ resolvePermissionRequest(deps, id, decision): Promise<{ ok: true; warning?: stri
   - config 表更新 `bossName` 描述（缺省、不可为空 / 移除）；
   - 「员工目录」表与故障对照表补授权相关条目。
 - `README.md`：config 示例与字段表补 `bossName`（如无则加）。
-- `docs/手动验收清单.md`：新增授权弹框与称谓自定义验收条目（见 §10）；第 10 条 status 字段列表加 `bossName`。
 
 ---
 
@@ -284,7 +283,7 @@ resolvePermissionRequest(deps, id, decision): Promise<{ ok: true; warning?: stri
 | 修改 | `src/server/http.ts`、`src/server/sse.ts`、`src/server/main.ts` | 端点 / 事件 / 装配 / status.bossName |
 | 修改 | `web/api.ts`、`web/state.ts`、`web/render.ts`、`web/main.ts`、`web/styles.css` | 卡片 UI + bossName 显示 |
 | 修改 | `src/prompts/dm.md`、`src/prompts/group.md` | 措辞与 @ 语法文案 |
-| 修改 | `src/skills/openstaffs/SKILL.md`、`src/skills/openstaffs-ops/SKILL.md`、`README.md`、`docs/手动验收清单.md` | 文档同步（§8.6） |
+| 修改 | `src/skills/openstaffs/SKILL.md`、`src/skills/openstaffs-ops/SKILL.md`、`README.md` | 文档同步（§8.6） |
 
 ---
 
@@ -307,7 +306,7 @@ resolvePermissionRequest(deps, id, decision): Promise<{ ok: true; warning?: stri
 
 ---
 
-## 11. 手动验收（追加到 `docs/手动验收清单.md`）
+## 11. 手动验收场景
 
 | # | 场景 | 预期 |
 |---|---|---|

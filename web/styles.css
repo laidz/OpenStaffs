@@ -23,6 +23,14 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .msg.live .msg-text { color: #5a6270; }
 .msg .tool-line { font-size: 12px; color: #8a9099; }
 .msg.error .msg-text { background: #fff1f0; border-color: #ffa39e; color: #a8071a; }
+/* 气泡悬浮工具栏：复制 / pin（唯一 pin 入口）；所有消息一视同仁 */
+.msg-tools { display: none; gap: 4px; margin-top: 4px; }
+.msg:hover .msg-tools { display: inline-flex; }
+.msg-tool { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 1px 8px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; }
+.msg-tool:hover { background: #f0f2f5; }
+/* pinned 气泡：淡红底（在老板蓝底规则之后 → 同权重后者胜）+ 图钉按钮高亮 */
+.msg.pinned .msg-text { background: #fff1f0; border-color: #ffccc7; }
+.msg.pinned .msg-tool[data-action="pin"] { background: #fff1f0; border-color: #ffa39e; }
 /* 员工消息 Markdown 渲染（.md 容器）：换行由块级排版负责，不依赖 pre-wrap */
 .msg-text.md { white-space: normal; }
 .msg-text.md > :first-child { margin-top: 0; }

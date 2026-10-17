@@ -50,7 +50,7 @@ describe("HTTP 骨架", () => {
       expect(await status.json()).toEqual({ configured: false, root: ws.root, port: 4319, bossName: "老板" });
 
       expect((await fetch(`${base}/api/employees`)).status).toBe(409);
-      expect((await fetch(`${base}/api/unread`)).status).toBe(409);
+      expect((await fetch(`${base}/api/pins`)).status).toBe(409);
       expect((await fetch(`${base}/api/permission-requests`)).status).toBe(409);
       expect(
         (await fetch(`${base}/api/permission-requests/pr_x/resolve`, {
@@ -313,11 +313,9 @@ describe("房间 API", () => {
       });
       expect(badMember.status).toBe(400);
 
-      // unread：新会话为空 → 无法直接产生未读；此处只验证 read/unread 接口形状
-      const read = await fetch(`${base}/api/rooms/dm:alice/read`, { method: "POST" });
-      expect(read.status).toBe(200);
-      const unread = (await (await fetch(`${base}/api/unread`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(typeof unread.total).toBe("number");
+      // pins：新会话为空 → 红点为 0；此处只验证 /api/pins 接口形状
+      const pins = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
+      expect(typeof pins.total).toBe("number");
     } finally {
       await close();
     }
@@ -374,7 +372,7 @@ describe("房间 API", () => {
     }
   });
 
-  it("未读闭环：员工回复产生未读 → read 推进水位后清零", async () => {
+  it("pin 闭环：新消息红点 0 → pin 一条 → 1 → 取消 → 0；不存在的消息 404", async () => {
     const { base, close } = await startWithFaux(["alice"], []);
     try {
       const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
@@ -384,17 +382,51 @@ describe("房间 API", () => {
       });
       expect(post.status).toBe(202);
 
-      const before = await waitFor(async () => {
-        const body = (await (await fetch(`${base}/api/unread`)).json()) as { total: number; rooms: Record<string, number> };
-        return (body.rooms["dm:alice"] ?? 0) >= 1 ? body : undefined;
+      const merged = await waitFor(async () => {
+        const res = await fetch(`${base}/api/rooms/dm:alice/messages`);
+        const body = (await res.json()) as {
+          messages: { convId: string; entryId: string; speaker: { kind: string } }[];
+          pinned: string[];
+        };
+        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
       });
-      expect(before.total).toBeGreaterThanOrEqual(1);
+      // 新消息默认未 pin：红点为 0
+      expect(merged.pinned).toEqual([]);
+      const before = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
+      expect(before.rooms["dm:alice"] ?? 0).toBe(0);
 
-      const read = await fetch(`${base}/api/rooms/dm:alice/read`, { method: "POST" });
-      expect(read.status).toBe(200);
+      const employee = merged.messages.find((m) => m.speaker.kind === "employee")!;
+      const pin = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ convId: employee.convId, entryId: employee.entryId, pinned: true }),
+      });
+      expect(pin.status).toBe(200);
+      expect((await pin.json()) as { ok: boolean; count: number }).toMatchObject({ ok: true, count: 1 });
 
-      const after = (await (await fetch(`${base}/api/unread`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(after.rooms["dm:alice"] ?? 0).toBe(0);
+      const after = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
+      expect(after.rooms["dm:alice"]).toBe(1);
+
+      // messages GET 透出当前房间的 pin 集合（前端据此高亮）
+      const merged2 = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { pinned: string[] };
+      expect(merged2.pinned).toEqual([`${employee.convId}:${employee.entryId}`]);
+
+      const unpin = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ convId: employee.convId, entryId: employee.entryId, pinned: false }),
+      });
+      expect((await unpin.json()) as { count: number }).toMatchObject({ count: 0 });
+      const cleared = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
+      expect(cleared.rooms["dm:alice"] ?? 0).toBe(0);
+
+      // 视图里不存在的消息 → 404（不往 pin 存储里塞垃圾）
+      const ghost = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ convId: "nope", entryId: "999", pinned: true }),
+      });
+      expect(ghost.status).toBe(404);
     } finally {
       await close();
     }

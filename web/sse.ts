@@ -5,7 +5,7 @@ const EVENT_TYPES = [
   "room.delta",
   "room.activity",
   "room.failed",
-  "room.unread",
+  "room.pins",
   "permission.request",
   "permission.resolved",
 ] as const;
