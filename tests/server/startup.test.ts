@@ -29,7 +29,7 @@ function expectError(result: ReturnType<typeof resolve>, contains: string) {
   if (!result.ok) expect(result.error).toContain(contains);
 }
 
-describe("启动选项解析：项目目录必填、端口可选", () => {
+describe("启动选项解析：办公空间目录必填、端口可选", () => {
   it("CLI 指定目录 → ok（realpath 归一）；符号链接同样归一；未给端口 → undefined", () => {
     expectOk(resolve(["node", "main.ts", officeDir]), fs.realpathSync(officeDir), undefined);
     expectOk(resolve(["node", "main.ts", linkPath]), fs.realpathSync(officeDir), undefined);
@@ -51,17 +51,17 @@ describe("启动选项解析：项目目录必填、端口可选", () => {
 
   it("目录缺失/无效 → 报错（提示用法，含 -- 与 OPENSTAFFS_ROOT）", () => {
     const missing = resolve(["node", "main.ts"]);
-    expectError(missing, "必须指定项目目录");
+    expectError(missing, "必须指定办公空间目录");
     if (!missing.ok) {
       expect(missing.error).toContain("npm start --");
       expect(missing.error).toContain("OPENSTAFFS_ROOT");
     }
-    expectError(resolve(["node", "main.ts", "  "], { OPENSTAFFS_ROOT: "" }), "必须指定项目目录");
-    expectError(resolve(["node", "main.ts", path.join(base, "nope")]), "不存在");
+    expectError(resolve(["node", "main.ts", "  "], { OPENSTAFFS_ROOT: "" }), "必须指定办公空间目录");
+    expectError(resolve(["node", "main.ts", path.join(base, "nope")]), "办公空间目录不存在或不是目录");
     expectError(resolve(["node", "main.ts", filePath]), "不存在或不是目录");
   });
 
-  it("项目目录 = 框架目录（含符号链接形态）→ 拒绝", () => {
+  it("办公空间目录 = 框架目录（含符号链接形态）→ 拒绝", () => {
     expectError(resolve(["node", "main.ts", frameworkDir]), "不能是框架目录");
     const frameworkLink = path.join(base, "framework-link");
     fs.symlinkSync(frameworkDir, frameworkLink);

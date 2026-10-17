@@ -46,39 +46,48 @@
 
 ## 批次 3 · 空间层：命名、技能来源、生效时机
 
-- [ ] **层级命名统一（含涉及的地方更新）**
+- [x] **层级命名统一（含涉及的地方更新）**
 
-  说明：现在是 4 层，但名字混用——根被叫「办公目录／办公数据根／项目目录」，最上层被叫「框架内置」。定稿：
-  - 系统（系统内置）= src/prompts/、src/skills/
-  - 空间（办公空间）= 办公空间根下的 AGENTS.md、prompts/、skills/
-  - 项目（群聊）= projects/{项目}/
-  - 员工 = agents/{员工}/
-  - 要做：这 4 个名字写进手册／README／UI／报错文案；指根一律「办公空间」，中间层一律「项目（群聊）」，「框架内置技能」→「系统内置技能」。
+  说明：现在是 4 层，但名字混用——根被叫「办公目录／办公数据根／项目目录」，最上层被叫「框架内置」。**级别是逻辑级别（谁的内容、谁是权威方、改了影响谁），不是文件夹**；文件夹只是它的落点。定稿：
+
+  - 系统（别名：框架、OpenStaffs 本体）＝ 框架本身；落点 src/prompts/、src/skills/、src/mcp.json
+  - 空间（办公空间；别名：空间、办公室、运行实例）＝ 一个运行实例 + 指定的运行目录，逻辑上包含该目录下全部 agents、projects 及附属；落点 AGENTS.md、agents/、projects/、openstaffs/、.openstaffs/
+  - 项目（别名：群聊、群）＝ 空间内一个协作单位；落点 projects/{项目}/
+  - 员工（别名：agent、职员、同事）＝ 空间内一个 Agent；落点 agents/{员工}/
+
+  - 要做：4 个主名（含别名）写进手册／README／UI／报错文案；指根一律「办公空间」；中间层一律「项目（群聊）」；「框架内置技能」→「系统内置技能」；手册里补一张级别定义表（画面二·表 A）。
   - 涉及：src/server/startup.ts（3 处报错文案）、web/render.ts（左侧栏「项目」）、README.md、docs/产品规划.md、src/skills/openstaffs*/SKILL.md。
   - 不动：projects/ 目录名、project_name／project_id 变量、内部类型名（Workspace 等）。
-  - 一并写进文档——空间内文件夹定位：
-    - .openstaffs/（隐藏）= 机器私有：含密钥的 config.json、运行时 state.sqlite、state.json；不放要版本化／随员工整包迁移的老板资产。
-    - 其余凡老板手写的一律显性：AGENTS.md、agents/、projects/、skills/、prompts/。
-    - 模板覆盖从 .openstaffs/prompts/ 移到 办公空间根/prompts/{dm,group}.md（老板手写、要版本化 → 必须显性）。无存量使用（现有办公空间没有 prompts/ 目录），直接换路径，不做旧路径兜底读。
-  - 目标形态见「参考画面」（在批次 4 末尾）。
+  - 一并写进文档——空间目录的两分：
+    - .openstaffs/（隐藏）＝ **机器私有**：含密钥的 config.json、运行时 state.sqlite、state.json。
+    - openstaffs/（可见）＝ **老板的能力与附属**：skills/、mcp.json（可版本化、随空间整包迁移）。
+    - 根目录只留门面：AGENTS.md、agents/、projects/。
+    - **环境段模板不再可覆盖**：删掉「.openstaffs/prompts/ 覆盖框架模板」这套机制——要加规矩就写空间 AGENTS.md（追加注入、排在环境段之后）；改环境段本身属系统级（改框架代码）。无存量使用。涉及 src/domain/prompt.ts 的 promptTemplatePath（只留框架内置）、tests/domain/prompt.test.ts 与 tests/app/conversations.test.ts 里的覆盖用例、以及手册中「模板 / 环境段」的说法。
+  - 目标形态见「参考画面」（在本批次末尾）。
 
-- [ ] **config.json 新增 skillPaths 项**
+  **落地（2026-10-17）**：4 个主名 + 别名写进两份手册、README 与产品规划；指根统一「办公空间」，`src/server/startup.ts` 3 处报错文案改口径；「框架内置技能」→「系统内置技能」；运维手册补级别定义表（表 A）。**空间目录两分**：可见的 `openstaffs/`（`skills/`、`mcp.json`）+ 机器私有的 `.openstaffs/`；`.openstaffs/prompts/` 覆盖机制已删除——环境段只留系统内置 `src/prompts/`，`promptTemplatePath(kind)` 不再收 `ws`。UI 侧栏标题按 D13 保持「项目」。
+
+- [x] **config.json 新增 skillPaths 项**
 
   说明：值为引用的外部 skills 目录（用户通常已有一大堆全局技能，各种 agent 工具都在引用），实现全局技能注入。
   - 与下面「技能来源扩展」合并实施。
 
-- [ ] **技能来源扩展：空间级技能 + 外部 skillPaths**（与上面 skillPaths 条合并实施）
+  **落地（2026-10-17）**：`src/domain/config.ts` 新增 `readSkillPaths(ws)`（像 `bossName` 一样独立读取，不进 `WorkspaceConfig`）；三种写法：`~` / `~/…` → 家目录、绝对路径原样、其余相对办公空间根；去重，坏条目 / 空串跳过，坏 JSON / 非数组 → `[]`。
+
+- [x] **技能来源扩展：空间级技能 + 外部 skillPaths**（与上面 skillPaths 条合并实施）
 
   说明：给技能补上「空间级」这一层，并支持引用外部技能目录。
-  - 空间级落点 = 办公空间根/skills/：与 agents/{员工}/skills/、projects/{项目}/skills/ 形成三处同名对称，好找好说；不放 .openstaffs/（会被 gitignore、Finder 里看不见 → 能力包无法版本化、不能随员工整包迁移）。
+  - 空间级落点 = openstaffs/skills/（空间级附属统一收在 openstaffs/ 下）；项目级、员工级平铺在各自目录：projects/{项目}/skills/、agents/{员工}/skills/。不放 .openstaffs/（会被 gitignore、Finder 里看不见 → 能力包无法版本化、不能随空间整包迁移）。
   - config.json 新增 skillPaths：引用外部技能目录（老板的全局技能库，多个 agent 工具共用）。空间级 = 老板的地盘，员工写不进去。
   - 优先级链：项目 → 员工 → 空间 → 系统（同名先出现者胜；外部 skillPaths 算空间级，插入位置待定）。
   - 生效：技能清单随会话快照（新开会话生效）；SKILL.md 正文按需 read，改完即时生效。
   - 代码落点：src/app/conversations.ts 的 skillDirsFor()、src/domain/config.ts（读 skillPaths）、src/domain/skills.ts（支持外部路径）。
-  - 待定细节：skillPaths 路径语法（绝对路径／相对办公空间根）、作用域（是否所有会话都注入）、清单条数上限。
-  - 目标形态见「参考画面」（在批次 4 末尾）。
+  - 待定细节：skillPaths 路径语法（绝对路径／相对空间目录）、作用域（是否所有会话都注入）、清单条数上限。
+  - 目标形态见「参考画面」（在本批次末尾）。
 
-- [ ] **注入生效时机统一（整理 + 优化）**
+  **落地（2026-10-17）**：`src/domain/paths.ts` 新增 `SPACE_DIR_NAME` / `spaceDir` / `spaceSkillsDir`；`skillDirsFor` / `instructionsFor` 接外部目录（默认 `[]`，既有调用不破）；`specFor` 读一次 `readSkillPaths(ws)` 传入 → 优先级链**项目 → 员工 → 空间（`openstaffs/skills/` → 外部 `skillPaths`，按书写顺序）→ 系统**，同名先出现者胜；私聊 / 群聊都注入。
+
+- [x] **注入生效时机统一（整理 + 优化）**
 
   说明：每类注入各说一套「何时生效」，老板记不住；其实只由 3 种机制决定，跟文件放哪儿无关。
 
@@ -96,52 +105,56 @@
 
   涉及：src/skills/openstaffs-ops/SKILL.md（改动生效方式表）、README.md、web/（可选提示）。
 
-- [ ] **MCP 骨架：只写文档，不实现**
+  **落地（2026-10-17）**：运维手册「改动生效方式」改写为 3 档机制表（启动初始化 = 重启 / 会话装配 = 新开会话 / 运行中按需读取 = 即时；另列「直读展示 = 刷新页面」），每档列出归属项；README 与能力手册同步口径。UI 提示未做（本批次内记为可选）。
+
+- [x] **MCP 骨架：只写文档，不实现**
 
   说明：把「4 层 × mcp.json」的约定写进手册与文档，让实现在批次 4 有据可依。本任务只动文档。
-  - 每层一个 mcp.json：系统 = src/mcp.json；空间 = 办公空间根/mcp.json；项目 = projects/{项目}/mcp.json；员工 = agents/{员工}/mcp.json。
+  - 每层一个 mcp.json：系统 = src/mcp.json；空间 = openstaffs/mcp.json；项目 = projects/{项目}/mcp.json；员工 = agents/{员工}/mcp.json（项目级、员工级平铺，不套 openstaffs/）。
   - 合并规则：同名 server 窄者胜（项目 → 员工 → 空间 → 系统），不同名的都挂上。
   - 凭据：一律引用 .openstaffs/config.json，mcp.json 里不写明文。
   - 生效档位：启动注册（属三档机制里的「重启」档）。
   - 落点：src/skills/openstaffs-ops/SKILL.md（目录树 + 生效方式表）、docs/产品规划.md、参考画面（文末「MCP 细则」）。
 
-## 批次 4 · MCP 实现
-
-- [ ] **MCP 四层一致（实现）**
-
-  说明：按批次 3 定下的骨架，把 4 层 mcp.json 真正接起来。风险性质与批次 3 不同——这是接外部进程、扩大工具面（员工可自挂 server = 本地任意进程执行面），需要独立的验收标准与一次安全审阅。
-  - 解析与合并：读 4 层 mcp.json，按同名窄者胜合并成会话级 server 集。
-  - 凭据：从 .openstaffs/config.json 取，按骨架定的引用语法解析；缺失时明确报错，不静默降级。
-  - 生命周期：启动／健康／超时／崩溃重连；连不上不能拖死会话启动。
-  - 工具注册：接进 pi-durable registry（工具多时走 deferred + tool_search），按会话过滤出可用 server。
-  - 生效：新增／改动 server 要重启进程。
-  - 验收要有：连不上、卡死、工具名冲突、凭据缺失、员工自挂 server 的边界，各一条。
-  - 落点：src/harness/pi-durable.ts（注册）、src/domain/config.ts（凭据）、新的 mcp 模块、测试与手册。
+  **落地（2026-10-17）**：四层 `mcp.json` 约定写进运维手册「MCP 约定」与产品规划「空间层命名与落点」；凭据走 `.openstaffs/config.json`、同名窄者胜、启动注册。实现（解析 / 合并 / 凭据 / 生命周期 / 注册）留待批次 4。
 
 ### 参考画面
 
-供批次 3（层级命名）与批次 4（MCP）对齐术语用；做文档更新时按这两张表写。
+本批次（空间层：命名与落点）以这里的表为准；批次 4 的 MCP 实现照表 B 最后一列走。
 
 #### 画面一 · 空间目录
 
-| 路径 | 层 | 放什么 | 谁写 |
+| 路径 | 级别 | 放什么 | 谁写 |
 | --- | --- | --- | --- |
 | AGENTS.md | 空间 | 空间总纲（prompt） | 老板 |
-| agents/ | 员工 | 员工能力包：AGENTS.md + profile.md + MEMORY.md + skills/ + mcp.json | 各员工本人 |
-| projects/ | 项目 | 项目（群聊）：members.md + AGENTS.md + skills/ + mcp.json | 群成员 |
-| skills/ | 空间 | 空间技能（本次新增） | 老板 |
-| prompts/ | 空间 | 环境段模板覆盖：dm.md、group.md | 老板 |
-| mcp.json | 空间 | 本空间挂载的 MCP server（未来） | 老板 |
+| agents/ | 员工 | 每个 agent 的家（平铺）：AGENTS.md + profile.md + MEMORY.md + skills/ + mcp.json | 各员工本人 |
+| projects/ | 项目 | 每个项目（群聊）的家（平铺）：members.md + AGENTS.md + skills/ + mcp.json | 群成员 |
+| openstaffs/ | 空间 | 老板的能力与附属：skills/、mcp.json | 老板 |
 | .openstaffs/ | — | 机器私有：config.json（含密钥）、state.sqlite、state.json | 程序读写；老板改配置 |
 
-#### 画面二 · 4 层 × 3 类注入
+#### 画面二 · 逻辑级别与落点
 
-| 层 | 位置 | prompt | skills | MCP |
-| --- | --- | --- | --- | --- |
-| 系统 | src/ | prompts/{dm,group}.md（兜底模板） | skills/ | mcp.json（未来） |
-| 空间 | 办公空间根/ | AGENTS.md + prompts/*.md | skills/ + config.skillPaths | mcp.json（未来） |
-| 项目 | projects/{项目}/ | AGENTS.md（项目规范） | skills/ | mcp.json（未来） |
-| 员工 | agents/{员工}/ | AGENTS.md + profile.md + MEMORY.md | skills/ | mcp.json（未来） |
+**表 A · 逻辑级别**（级别用来定位：内容属于谁、谁是权威方、改了影响谁）
+
+| 级别 | 常用别名 | 是什么 | 逻辑上包含 | 权威方 | 改动代价 |
+| --- | --- | --- | --- | --- | --- |
+| 系统 | 框架、OpenStaffs 本体 | OpenStaffs 框架本身 | 内置模板、内置技能、内置工具 | 框架作者 | 改代码／升级框架 |
+| 空间 | 办公空间、空间、办公室、运行实例 | 一个运行实例 + 指定的运行目录 | 该目录下全部 agents、projects 及其附属 | 老板 | 改文件即可 |
+| 项目 | 群聊、群 | 空间内一个协作单位 | 项目成员 + 共享工作区 | 群成员 | 改文件即可 |
+| 员工 | agent、职员、同事 | 空间内一个 Agent | 人格／记忆／技能／权限 | 本人（+老板） | 改文件即可 |
+
+**表 B · 各级别内容的落点**（落点从级别推出，不是级别本身）
+
+| 级别 | prompt（规范） | skills（能力） | MCP（外部能力） |
+| --- | --- | --- | --- |
+| 系统 | src/prompts/ | src/skills/ | src/mcp.json（未来） |
+| 空间 | 空间目录/AGENTS.md | openstaffs/skills/ | openstaffs/mcp.json（未来） |
+| 项目 | projects/{项目}/AGENTS.md | projects/{项目}/skills/ | projects/{项目}/mcp.json（未来） |
+| 员工 | agents/{员工}/AGENTS.md + profile.md + MEMORY.md | agents/{员工}/skills/ | agents/{员工}/mcp.json（未来） |
+
+两点注：
+- **只有空间级套 openstaffs/**（空间目录是门面，只留 AGENTS.md、agents/、projects/）；项目级、员工级平铺——它们的目录本身就是自己的家。
+- 别名只用于口语理解，文档正文一律用主名。
 
 三类机制不同，别混：
 - **prompt = 叠加**：四段全注入，宽→窄：环境段 → 空间总纲 → 项目规范 → 员工档案。
@@ -155,28 +168,39 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
 
 生效时机：prompt 与 skills 清单 = 新开会话；skills 正文 = 改完即时生效；MCP = 新增 server 要重启（见 MCP 细则）。
 
-第四层术语：定「员工」（手册／UI／工具文案都在用）；「职员」只作口语，不进文档。
+## 批次 4 · MCP 实现
+
+- [ ] **MCP 四层一致（实现）**
+
+  说明：按批次 3 定下的骨架，把 4 层 mcp.json 真正接起来。风险性质与批次 3 不同——这是接外部进程、扩大工具面（员工可自挂 server = 本地任意进程执行面），需要独立的验收标准与一次安全审阅。
+  - 解析与合并：读 4 层 mcp.json（src/mcp.json、openstaffs/mcp.json、projects/{项目}/mcp.json、agents/{员工}/mcp.json），按同名窄者胜合并成会话级 server 集。
+  - 凭据：从 .openstaffs/config.json 取，按骨架定的引用语法解析；缺失时明确报错，不静默降级。
+  - 生命周期：启动／健康／超时／崩溃重连；连不上不能拖死会话启动。
+  - 工具注册：接进 pi-durable registry（工具多时走 deferred + tool_search），按会话过滤出可用 server。
+  - 生效：新增／改动 server 要重启进程。
+  - 验收要有：连不上、卡死、工具名冲突、凭据缺失、员工自挂 server 的边界，各一条。
+  - 落点：src/harness/pi-durable.ts（注册）、src/domain/config.ts（凭据）、新的 mcp 模块、测试与手册。
 
 ## 批次 5 · 会话信息与模型配置
 
-- [ ] **会话信息展示：模型／供应商／上下文用量**
+- [ ] **会话信息展示：模型／供应商／思考强度／上下文用量**
 
-  说明：UI 上显示当前会话的模型与供应商（model 字段全值，如 provider/modelId）、以及上下文大小与使用比（如「200K，20%」）。
+  说明：UI 上显示当前会话的模型与供应商（model 字段全值，如 provider/modelId）、**思考强度**、以及上下文大小与使用比（如「200K，20%」）。
   - 口径：显示该会话**实际在用**的值——model 与思考强度都是会话创建时固化的快照，不是配置文件的现值（与「生效时机」口径一致）。
-  - 数据来源（已核实）：pi-durable 有 per-conversation 用量记账（pi.usage）与 compaction 的 contextWindow／reserveTokens；pi-ai 的模型目录带 contextWindow。需要后端新增接口／SSE，把「会话 → model 全值 + 已用上下文 + 模型窗口」给前端。
-  - 落点：src/harness（读会话 agent.model 与 usage）、src/server（新接口或事件）、web/（信息条）。
+  - 思考强度展示口径：档位以**模型目录**（pi-ai 的 Model.thinkingLevelMap）判定是否支持（null＝该档不支持）。**配置里写了某档、但该模型不支持时，展示 null**——不回落成别的档，也不原样显示那个无效值。（会话快照里 config 原值仍保留，判定只发生在展示层。）
+  - 数据来源（已核实）：pi-durable 有 per-conversation 用量记账（pi.usage）与 compaction 的 contextWindow／reserveTokens；pi-ai 的模型目录带 contextWindow 与 thinkingLevelMap。需要后端新增接口／SSE，把「会话 → model 全值 + thinkingLevel + 已用上下文 + 模型窗口」给前端。
+  - 落点：src/harness（读会话 agent.model／thinkingLevel 与 usage）、src/server（新接口或事件）、web/（信息条）。
 
-- [ ] **思考强度可配置：补齐到所有能配模型的地方**
+- [ ] **思考强度可配置：补齐到所有能配模型的地方（不涉及 UI）**
 
-  说明：现状是**只有员工级能配**——agents/{员工}/config.json 的 thinkingLevel（employee.ts 解析 → conversations.ts 装配 → 传给 pi 会话）；运维手册只露出一行「thinkingLevel｜思考级别（可选）」，没写取值范围。
-  - 缺的：全局 config.json 没有（WorkspaceConfig 只有 providers／model／port）；新开会话默认值没有（SessionDefaults 只有 model）；UI 没有入口。
+  说明：现状是**只有员工级能配**——agents/{员工}/config.json 的 thinkingLevel（employee.ts 解析 → conversations.ts 装配 → 传给 pi 会话）；运维手册只露出一行「thinkingLevel｜思考级别（可选）」，没写取值范围。本次只做**配置层**补齐：强度**仅在 config 中可配置**，**不加 UI 入口、不改前端**。
+  - 缺的：全局 config.json 没有（WorkspaceConfig 只有 providers／model／port）；新开会话默认值没有（SessionDefaults 只有 model）。
   - 取值范围：**不能写死**。档位候选是 off／minimal／low／medium／high／xhigh／max，但每个模型只支持其中一部分（pi-ai 的 Model 带 thinkingLevelMap：缺键用供应商默认、null 表示该档不支持），不同供应商能不能翻译出某个档也不一样（响应里另有 providerThinkingLevel 是供应商原生档）。
-  - 因此：UI 与校验都要**按所选模型动态取可用档位**（从模型目录读 thinkingLevelMap）；手册不列固定清单，只写「档位由模型决定，UI 会列出可选项」。
-  - 现状有个口子：员工级配的 thinkingLevel 直接透传（未校验），配了模型不支持的档会怎样（供应商拒绝？静默忽略？）要先确认再定校验策略。
-  - 优先级与兜底：思考强度是跟 model 走同一套层级（员工 > 全局），还是各自独立？先定清楚再实现；现有行为是 model 非法时 thinkingLevel 仍保留。
-  - 落点：src/domain/config.ts、src/domain/types.ts、src/app/conversations.ts、web/、src/skills/openstaffs-ops/SKILL.md。
+  - 校验策略（配置端不涉及 UI）：配置端**不拦非法档**、不做按所选模型的动态校验，允许写任意值（含模型不支持的档）；不支持的档由**展示层兜底为 null**（见上一个任务的展示口径）。手册不列固定清单，只写「档位由模型决定；配置里写了模型不支持的档，会以 null 呈现」。
+  - 优先级与兜底：思考强度**独立于 model** 单独解析（与现有行为一致：model 非法时 thinkingLevel 仍保留）；层级为**员工 > 全局**，另有会话级默认值兜底。
+  - 落点：src/domain/config.ts、src/domain/types.ts、src/app/conversations.ts、src/skills/openstaffs-ops/SKILL.md。**不涉及 web/ 与 UI。**
 
 ## 备注
 
-- 在途／进行中：批次 1 已开工；feat/permission-request 上还有未提交的授权卡片 UI 改动（7 个文件）。其余批次开工时从 master 切分支。
+- 状态：批次 1–3 已落地（见各自「落地」）；批次 4、5 待开工，开工时从 master 切分支。
 - MCP 四层一致（每层一个 mcp.json）已定形：骨架随批次 3 写进文档，实现见批次 4。

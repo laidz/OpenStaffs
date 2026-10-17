@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir, type Workspace } from "../domain/paths.ts";
+import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir, spaceSkillsDir, type Workspace } from "../domain/paths.ts";
 import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
-import { resolveEmployeeModel } from "../domain/config.ts";
+import { readSkillPaths, resolveEmployeeModel } from "../domain/config.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
@@ -35,11 +35,18 @@ function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): str
     : groupConversationIdsFile(ws, relation.project, speakerId);
 }
 
-/** 技能根目录：群聊 = 项目 + 员工 + 框架内置；私聊 = 员工 + 框架内置（越窄越优先）。 */
-export function skillDirsFor(ws: Workspace, relation: Relation, speaker: Employee): string[] {
+/**
+ * 技能根目录（越窄越优先，同名先出现者胜）：
+ * 群聊 = 项目 + 员工 + 空间 + 外部 skillPaths + 系统内置；私聊 = 员工 + 空间 + 外部 + 系统内置。
+ */
+export function skillDirsFor(
+  ws: Workspace, relation: Relation, speaker: Employee, externalSkillDirs: readonly string[] = [],
+): string[] {
   const dirs: string[] = [];
   if (relation.kind === "group") dirs.push(path.join(projectDir(ws, relation.project), "skills"));
   dirs.push(path.join(employeeDir(ws, speaker.id), "skills"));
+  dirs.push(spaceSkillsDir(ws));
+  dirs.push(...externalSkillDirs);
   dirs.push(FRAMEWORK_SKILLS_DIR);
   return dirs;
 }
@@ -63,8 +70,10 @@ export function promptContextFor(ws: Workspace, relation: Relation, speaker: Emp
   };
 }
 
-/** 会话快照（仅 startSession/新开会话时渲染一次）：框架环境段 → 根总纲 → 项目规范（群聊）→ 员工 → 技能。 */
-export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
+/** 会话快照（仅 startSession/新开会话时渲染一次）：系统环境段 → 空间总纲 → 项目规范（群聊）→ 员工 → 技能。 */
+export function instructionsFor(
+  ws: Workspace, relation: Relation, speaker: Employee, externalSkillDirs: readonly string[] = [],
+): string {
   const parts: string[] = [];
   const environment = renderEnvironment(promptContextFor(ws, relation, speaker));
   if (environment !== "") parts.push(environment);
@@ -75,7 +84,7 @@ export function instructionsFor(ws: Workspace, relation: Relation, speaker: Empl
     if (projectAgents !== "") parts.push(projectAgents);
   }
   parts.push(renderInstructions(speaker));
-  parts.push(renderSkills(listSkills(skillDirsFor(ws, relation, speaker))));
+  parts.push(renderSkills(listSkills(skillDirsFor(ws, relation, speaker, externalSkillDirs))));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
 
@@ -102,7 +111,8 @@ function specFor(ws: Workspace, relation: Relation, speaker: Employee, defaults?
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
   return {
     cwd,
-    instructions: instructionsFor(ws, relation, speaker),
+    // 技能清单随会话快照固化：这里读一次（新开会话才重读）
+    instructions: instructionsFor(ws, relation, speaker, readSkillPaths(ws)),
     model: { provider: model.provider, modelId: model.modelId },
     ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
     access: accessFor(ws, relation, speaker),

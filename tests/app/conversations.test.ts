@@ -12,6 +12,7 @@ import {
   permissionFilesFor, relationKey, roomTranscripts, sessionChains, skillDirsFor, type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
+import { readSkillPaths } from "../../src/domain/config.ts";
 import { FRAMEWORK_SKILLS_DIR } from "../../src/domain/skills.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 
@@ -167,19 +168,80 @@ describe("应用用例", () => {
     }
   });
 
-  it("技能目录：群聊 = 项目 + 员工 + 框架内置；私聊 = 员工 + 框架内置（越窄越优先）", () => {
+  it("技能目录：项目 → 员工 → 空间 → 外部 skillPaths → 系统（越窄越优先）", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const speaker = loadEmployee(ws, "alice");
-    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
+    const external = ["/ext/one", "/ext/two"];
+    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker, external)).toEqual([
       path.join(root, "agents", "alice", "skills"),
+      path.join(root, "openstaffs", "skills"),
+      ...external,
       FRAMEWORK_SKILLS_DIR,
     ]);
-    expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
+    expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker, external)).toEqual([
       path.join(root, "projects", "yt", "skills"),
       path.join(root, "agents", "alice", "skills"),
+      path.join(root, "openstaffs", "skills"),
+      ...external,
       FRAMEWORK_SKILLS_DIR,
     ]);
+    // 不传外部目录（默认参数）：只少那几项，链与顺序不变
+    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
+      path.join(root, "agents", "alice", "skills"),
+      path.join(root, "openstaffs", "skills"),
+      FRAMEWORK_SKILLS_DIR,
+    ]);
+  });
+
+  it("空间级技能随会话注入（私聊与群聊都注入），且同名时窄者胜", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const spaceSkill = path.join(root, "openstaffs", "skills", "s", "SKILL.md");
+    fs.mkdirSync(path.dirname(spaceSkill), { recursive: true });
+    fs.writeFileSync(spaceSkill, "---\nname: 空间技能\ndescription: 来自空间\n---\n");
+    const agentSkill = path.join(root, "agents", "alice", "skills", "a", "SKILL.md");
+    fs.mkdirSync(path.dirname(agentSkill), { recursive: true });
+    fs.writeFileSync(agentSkill, "---\nname: 空间技能\ndescription: 来自员工\n---\n");
+    const spaceOnlySkill = path.join(root, "openstaffs", "skills", "space-only", "SKILL.md");
+    fs.mkdirSync(path.dirname(spaceOnlySkill), { recursive: true });
+    fs.writeFileSync(spaceOnlySkill, "---\nname: 空间独有\ndescription: 只在空间有\n---\n");
+    const speaker = loadEmployee(ws, "alice");
+
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm).toContain("- 空间技能：来自员工"); // 员工（窄）胜空间（宽）
+    expect(dm).not.toContain("来自空间");
+    expect(dm).toContain("- 空间独有：只在空间有"); // 空间独有的技能未被漏掉
+
+    const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+    expect(group).toContain("- 空间技能：来自员工");
+    expect(group).toContain("- 空间独有：只在空间有");
+  });
+
+  it("外部 skillPaths 的技能随会话注入（所有会话），来源在空间之后", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const extDir = path.join(root, "ext-skills");
+    const extSkill = path.join(extDir, "x", "SKILL.md");
+    fs.mkdirSync(path.dirname(extSkill), { recursive: true });
+    fs.writeFileSync(extSkill, "---\nname: 外部技能\ndescription: 来自外部库\n---\n");
+    const spaceCollide = path.join(root, "openstaffs", "skills", "collide", "SKILL.md");
+    fs.mkdirSync(path.dirname(spaceCollide), { recursive: true });
+    fs.writeFileSync(spaceCollide, "---\nname: 撞名\ndescription: 来自空间撞名\n---\n");
+    const extCollide = path.join(extDir, "collide", "SKILL.md");
+    fs.mkdirSync(path.dirname(extCollide), { recursive: true });
+    fs.writeFileSync(extCollide, "---\nname: 撞名\ndescription: 来自外部撞名\n---\n");
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".openstaffs", "config.json"),
+      JSON.stringify({ skillPaths: ["ext-skills"] }), // 相对办公空间根
+    );
+    const speaker = loadEmployee(ws, "alice");
+
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker, readSkillPaths(ws));
+    expect(dm).toContain("- 外部技能：来自外部库");
+    expect(dm).toContain("- 撞名：来自空间撞名"); // 空间目录在链中先于外部目录
+    expect(dm).not.toContain("来自外部撞名");
   });
 
   it("内置基础技能随默认会话注入：列出 openstaffs 系列技能并给出 SKILL.md 位置", () => {
@@ -248,18 +310,6 @@ describe("应用用例", () => {
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
     expect(dm).toContain("OpenStaffs");
     expect(dm).not.toContain("演示项目");
-  });
-
-  it("instructionsFor：办公目录覆盖的环境模板生效且置顶", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
-    const override = path.join(root, ".openstaffs", "prompts", "dm.md");
-    fs.mkdirSync(path.dirname(override), { recursive: true });
-    fs.writeFileSync(override, "自定义环境段：{{agent_id}}");
-    const speaker = loadEmployee(ws, "alice");
-    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
-    expect(dm.startsWith("自定义环境段：alice")).toBe(true);
-    expect(dm).toContain("你是 alice。");
   });
 
   it("员工未配模型时用 defaults 兜底可对话；无 defaults 则失败（不静默）", async () => {
@@ -368,6 +418,9 @@ describe("应用用例", () => {
     fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave。");
     fs.writeFileSync(path.join(dir, "profile.md"), "档案版本一。");
     fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+    const spaceSkill = path.join(root, "openstaffs", "skills", "space-e2e", "SKILL.md");
+    fs.mkdirSync(path.dirname(spaceSkill), { recursive: true });
+    fs.writeFileSync(spaceSkill, "---\nname: 端到端空间技能\ndescription: 来自空间-e2e\n---\n");
 
     const systems: string[] = [];
     const recordSystem = (messages: readonly { role: string; content: unknown }[]): void => {
@@ -412,6 +465,7 @@ describe("应用用例", () => {
 
       expect(systems).toHaveLength(3);
       expect(systems[0]).toContain("档案版本一。");
+      expect(systems[0]).toContain("端到端空间技能"); // 真实会话创建路径（specFor）把空间级技能塞进了 instructions
       expect(systems[1]).toContain("档案版本一。"); // 会话进行中：文件变更不生效
       expect(systems[2]).toContain("档案版本二。"); // 新开会话：读到新档案
     } finally {

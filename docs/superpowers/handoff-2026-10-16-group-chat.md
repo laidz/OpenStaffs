@@ -74,7 +74,7 @@
     ```
 - **注意**：任务 1/2 落地后，末两句事实会变（成员之间可见、成员可互相 @）——所以任务 3 的**措辞应与 1/2 的 spec 一次定稿**（建议在 1/2 spec 之后做，或并入同一 spec 的最后一节）。
 - **代码位置**：`src/app/conversations.ts` 的 `instructionsFor`、`tests/app/conversations.test.ts`、README/spec 同步。
-- **✅ 落地（2026-10-17 核对）**：环境段已实现——模板 `src/prompts/dm.md`（私聊）/ `group.md`（群聊）；变量集中在 `src/domain/prompt-vars.ts`（`agent_name`、`agent_id`、`boss_name`、`workdir`、`project_name`、`project_id`、`members`、`member_count`）；可用项目目录的 `.openstaffs/prompts/` 覆盖；会话创建时固化。成员间"互不可见 + 用 `send_message` 触发"的事实已同步进模板措辞。提交 `a6b6c48`。
+- **✅ 落地（2026-10-17 核对）**：环境段已实现——模板 `src/prompts/dm.md`（私聊）/ `group.md`（群聊）；变量集中在 `src/domain/prompt-vars.ts`（`agent_name`、`agent_id`、`boss_name`、`workdir`、`project_name`、`project_id`、`members`、`member_count`）；可用项目目录的 `.openstaffs/prompts/` 覆盖；会话创建时固化。成员间"互不可见 + 用 `send_message` 触发"的事实已同步进模板措辞。提交 `a6b6c48`。（注：批次 3 已删除该覆盖机制——环境段只留系统内置，见 docs/superpowers/specs/2026-10-17-space-layer-design.md §5。）
 
 ## 3. 必读（按顺序）
 

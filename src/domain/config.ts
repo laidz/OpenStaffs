@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { stateDir, type Workspace } from "./paths.ts";
 import type { ModelChoice } from "./types.ts";
@@ -91,6 +92,39 @@ export function readBossName(ws: Workspace): string {
       : DEFAULT_BOSS_NAME;
   } catch {
     return DEFAULT_BOSS_NAME;
+  }
+}
+
+/**
+ * 外部技能目录（config.json 的 skillPaths）：老板的全局技能库，多个 agent 工具共用。
+ * 写法：`~` 开头 → 家目录；绝对路径 → 原样；其余 → 相对办公空间根目录。
+ * 去重（先出现者胜）；文件缺失 / 坏 JSON / 非数组 / 坏条目 → 跳过（不崩）。
+ */
+export function readSkillPaths(ws: Workspace): string[] {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(configFile(ws), "utf8");
+  } catch {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as { skillPaths?: unknown };
+    if (!Array.isArray(parsed.skillPaths)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of parsed.skillPaths) {
+      const text = requiredString(entry);
+      if (text === undefined) continue;
+      const abs = text === "~" || text.startsWith("~/")
+        ? path.join(os.homedir(), text.slice(1))
+        : path.resolve(ws.root, text);
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      out.push(abs);
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

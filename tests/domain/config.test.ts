@@ -4,7 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import {
-  bossNamesFor, DEFAULT_PORT, configFile, parseModelRef, readBossName, readConfig, resolveEmployeeModel,
+  bossNamesFor, DEFAULT_PORT, configFile, parseModelRef, readBossName, readConfig, readSkillPaths,
+  resolveEmployeeModel,
 } from "../../src/domain/config.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-config-"));
@@ -99,5 +100,67 @@ describe("bossNamesFor（@提及双认）", () => {
     expect(bossNamesFor(ws)).toEqual(["老板", "boss"]);
     fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "boss" }));
     expect(bossNamesFor(ws)).toEqual(["boss", "老板"]);
+  });
+});
+
+describe("readSkillPaths（外部技能目录）", () => {
+  it("三种写法：~ 开头按家目录、绝对路径原样、相对路径按办公空间根；顺序保留", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({
+      skillPaths: ["~/global-skills", "/abs/skills", "vendor/skills"],
+    }));
+    expect(readSkillPaths(ws)).toEqual([
+      path.join(os.homedir(), "global-skills"),
+      "/abs/skills",
+      path.join(root, "vendor", "skills"),
+    ]);
+  });
+
+  it("去重（同一目录两种写法算同一条，先出现者胜）", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({
+      skillPaths: ["/abs/skills", "/abs/skills/", "/abs/./skills"],
+    }));
+    expect(readSkillPaths(ws)).toEqual(["/abs/skills"]);
+  });
+
+  it("坏条目跳过：非数组 / 混入 null、数字、空串 / 数组本身不是数组", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: [null, 42, "  ", "/ok"] }));
+    expect(readSkillPaths(ws)).toEqual(["/ok"]);
+    fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: "/not-an-array" }));
+    expect(readSkillPaths(ws)).toEqual([]);
+    fs.writeFileSync(configFile(ws), JSON.stringify({}));
+    expect(readSkillPaths(ws)).toEqual([]);
+  });
+
+  it("文件缺失 / 坏 JSON → []（不崩）", () => {
+    const ws = createWorkspace(root);
+    expect(readSkillPaths(ws)).toEqual([]);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), "{坏");
+    expect(readSkillPaths(ws)).toEqual([]);
+  });
+
+  it("裸 ~ 与 ~/x 都解析到家目录；与绝对家目录写法互认为同一条", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: ["~", "~/g"] }));
+    expect(readSkillPaths(ws)).toEqual([os.homedir(), path.join(os.homedir(), "g")]);
+
+    fs.writeFileSync(configFile(ws), JSON.stringify({
+      skillPaths: ["~/x", path.join(os.homedir(), "x"), "/after"],
+    }));
+    expect(readSkillPaths(ws)).toEqual([path.join(os.homedir(), "x"), "/after"]);
+  });
+
+  it("坏条目不影响后续条目的顺序", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: [null, "/a", 7, "b", "  ", "/c"] }));
+    expect(readSkillPaths(ws)).toEqual(["/a", path.join(root, "b"), "/c"]);
   });
 });

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** 框架内置技能目录（本文件在 src/domain → src/skills）。 */
+/** 系统内置技能目录（本文件在 src/domain → src/skills）。 */
 export const FRAMEWORK_SKILLS_DIR = fileURLToPath(new URL("../skills/", import.meta.url));
 
 export type Skill = {

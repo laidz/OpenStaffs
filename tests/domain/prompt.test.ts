@@ -60,23 +60,22 @@ describe("模板渲染", () => {
 });
 
 describe("模板文件定位", () => {
-  it("默认指向框架模板（src/prompts/<kind>.md）", () => {
-    const ws = createWorkspace(root);
-    const dm = promptTemplatePath(ws, "dm");
-    const group = promptTemplatePath(ws, "group");
+  it("模板固定指向系统内置（src/prompts/<kind>.md）；空间不可覆盖", () => {
+    const dm = promptTemplatePath("dm");
+    const group = promptTemplatePath("group");
     expect(dm.endsWith(path.join("src", "prompts", "dm.md"))).toBe(true);
     expect(group.endsWith(path.join("src", "prompts", "group.md"))).toBe(true);
     expect(fs.existsSync(dm)).toBe(true);
     expect(fs.existsSync(group)).toBe(true);
   });
 
-  it("办公目录覆盖优先，且不影响另一种会话", () => {
-    const ws = createWorkspace(root);
+  it("空间不可覆盖：磁盘上存在 .openstaffs/prompts/dm.md 也不影响输出", () => {
+    seedEmployee("alice");
     const override = path.join(root, ".openstaffs", "prompts", "dm.md");
     fs.mkdirSync(path.dirname(override), { recursive: true });
-    fs.writeFileSync(override, "覆盖段");
-    expect(promptTemplatePath(ws, "dm")).toBe(override);
-    expect(promptTemplatePath(ws, "group").endsWith(path.join("src", "prompts", "group.md"))).toBe(true);
+    fs.writeFileSync(override, "覆盖段：不该出现");
+    expect(promptTemplatePath("dm").endsWith(path.join("src", "prompts", "dm.md"))).toBe(true);
+    expect(renderEnvironment(dmCtx("alice"))).not.toContain("覆盖段");
   });
 });
 
@@ -89,22 +88,6 @@ describe("环境段渲染", () => {
     expect(out).toContain(path.join(root, "agents", "alice"));
     expect(out).not.toContain("{{");
     expect(out).toBe(out.trim());
-  });
-
-  it("办公覆盖模板生效", () => {
-    seedEmployee("alice");
-    const override = path.join(root, ".openstaffs", "prompts", "dm.md");
-    fs.mkdirSync(path.dirname(override), { recursive: true });
-    fs.writeFileSync(override, "自定义：{{agent_id}}@{{workdir}}");
-    expect(renderEnvironment(dmCtx("alice"))).toBe(`自定义：alice@${path.join(root, "agents", "alice")}`);
-  });
-
-  it("覆盖文件为空 → 环境段为空串（不产出空段）", () => {
-    seedEmployee("alice");
-    const override = path.join(root, ".openstaffs", "prompts", "dm.md");
-    fs.mkdirSync(path.dirname(override), { recursive: true });
-    fs.writeFileSync(override, "   \n");
-    expect(renderEnvironment(dmCtx("alice"))).toBe("");
   });
 
   it("bossName 自定义：环境段用真称谓，@ 语法教真称谓", () => {

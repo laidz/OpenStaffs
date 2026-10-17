@@ -2,8 +2,8 @@
 
 OpenStaffs 是本机上的「AI 办公室」框架（Node ≥ 22.19，直接用 Node 运行 TypeScript，无需编译）。
 
-- 框架代码：`src/`、`web/`、`tests/`；入口 `npm start -- <项目目录> [端口]`。
-- 办公数据（`agents/`、`projects/`、`.openstaffs/`）在用户另行指定的**项目目录**里，与框架分离。
+- 框架代码：`src/`、`web/`、`tests/`；入口 `npm start -- <办公空间目录> [端口]`。
+- 办公数据（`agents/`、`projects/`、`openstaffs/`、`.openstaffs/`）在用户另行指定的**办公空间目录**里，与框架分离。
 - 架构与决策：`docs/superpowers/specs/`；实现计划与执行日志：`docs/superpowers/plans/`；产品规划：`docs/产品规划.md`。
 
 ## 约定：变更必须同步更新文档（全覆盖）

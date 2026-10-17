@@ -37,3 +37,14 @@ export function conversationIdsFile(_ws: Workspace, dir: string): string {
 export function groupConversationIdsFile(ws: Workspace, name: string, agentId: string): string {
   return path.join(projectDir(ws, name), "conversation_ids", `${agentId}.md`);
 }
+
+/** 空间级附属目录名：老板的能力与附属（skills/、mcp.json）；可见、可版本化、随空间整包迁移。 */
+export const SPACE_DIR_NAME = "openstaffs";
+
+export function spaceDir(ws: Workspace): string {
+  return path.join(ws.root, SPACE_DIR_NAME);
+}
+
+export function spaceSkillsDir(ws: Workspace): string {
+  return path.join(spaceDir(ws), "skills");
+}

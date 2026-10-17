@@ -1,18 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { stateDir, type Workspace } from "./paths.ts";
 import { promptVariables, type PromptVarContext } from "./prompt-vars.ts";
 
 export type PromptKind = "dm" | "group";
 
-/** 框架内置模板目录（本文件在 src/domain → src/prompts）。 */
+/** 系统内置模板目录（本文件在 src/domain → src/prompts）。 */
 const FRAMEWORK_PROMPT_DIR = fileURLToPath(new URL("../prompts/", import.meta.url));
 
-/** 模板路径：办公目录 `.openstaffs/prompts/<kind>.md` 存在则覆盖，否则用框架内置。 */
-export function promptTemplatePath(ws: Workspace, kind: PromptKind): string {
-  const override = path.join(stateDir(ws), "prompts", `${kind}.md`);
-  return fs.existsSync(override) ? override : path.join(FRAMEWORK_PROMPT_DIR, `${kind}.md`);
+/** 模板路径：固定指向系统内置（环境段属系统级，不可被空间覆盖；要加规矩写空间 AGENTS.md）。 */
+export function promptTemplatePath(kind: PromptKind): string {
+  return path.join(FRAMEWORK_PROMPT_DIR, `${kind}.md`);
 }
 
 function readFileOrEmpty(file: string): string {
@@ -66,9 +64,9 @@ export function renderTemplate(text: string, ctx: PromptVarContext): string {
   return text.replace(/\{\{([^{}]*)\}\}/gu, (_match, expr: string) => formatValue(resolveExpression(expr.trim(), ctx)));
 }
 
-/** 渲染框架环境段；模板缺失 / 为空 → 空串（不产出空段）。 */
+/** 渲染系统环境段；模板缺失 / 为空 → 空串（不产出空段）。 */
 export function renderEnvironment(ctx: PromptVarContext): string {
-  const template = readFileOrEmpty(promptTemplatePath(ctx.ws, ctx.kind)).trim();
+  const template = readFileOrEmpty(promptTemplatePath(ctx.kind)).trim();
   if (template === "") return "";
   return renderTemplate(template, ctx).trim();
 }

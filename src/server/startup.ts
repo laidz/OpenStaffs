@@ -10,7 +10,7 @@ const USAGE =
 
 /**
  * 解析启动选项：
- * - 项目目录**必填**（CLI 第二参优先，其次 `OPENSTAFFS_ROOT`）——不默认 cwd、不允许等于框架目录（框架与办公数据分离）；
+ * - 办公空间目录**必填**（CLI 第二参优先，其次 `OPENSTAFFS_ROOT`）——不默认 cwd、不允许等于框架目录（框架与办公数据分离）；
  * - 端口可选（CLI 第三参优先，其次 `OPENSTAFFS_PORT`）——未提供时返回 undefined，由调用方回落 config.json / 默认值。
  */
 export function resolveStartOptions(options: {
@@ -22,11 +22,11 @@ export function resolveStartOptions(options: {
   const envRoot = options.env.OPENSTAFFS_ROOT;
   const chosenRoot = argRoot !== undefined && argRoot.trim() !== "" ? argRoot : envRoot;
   if (chosenRoot === undefined || chosenRoot.trim() === "") {
-    return { ok: false, error: `必须指定项目目录（办公数据根）。${USAGE}` };
+    return { ok: false, error: `必须指定办公空间目录。${USAGE}` };
   }
   const resolved = path.resolve(chosenRoot);
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
-    return { ok: false, error: `项目目录不存在或不是目录：${resolved}` };
+    return { ok: false, error: `办公空间目录不存在或不是目录：${resolved}` };
   }
   let root: string;
   let frameworkDir: string;
@@ -37,7 +37,7 @@ export function resolveStartOptions(options: {
     return { ok: false, error: `无法解析路径：${error instanceof Error ? error.message : String(error)}` };
   }
   if (root === frameworkDir) {
-    return { ok: false, error: "项目目录不能是框架目录本身：办公数据请使用独立目录（框架与办公数据分离）" };
+    return { ok: false, error: "办公空间目录不能是框架目录本身：办公数据请使用独立目录（框架与办公数据分离）" };
   }
 
   const argPort = options.argv[3];
