@@ -120,6 +120,40 @@ describe("房间合并视图", () => {
     expect(directed?.bossDirected).toBe(false);
   });
 
+  it("工具投递到成员（user + data.author=他人，消息落在收件人会话）→ 显示层补 @收件人，不补 @老板", () => {
+    const alice: MemberTranscript = { memberId: "alice", convId: "c1", messages: [] };
+    const bob: MemberTranscript = { memberId: "bob", convId: "c2", messages: [] };
+    const delivered = chat("20", "user", "权限已到位，你可以改主项目了。", { kind: "chat.message", data: { author: "alice" } });
+
+    const group = normalizeChatMessage("group:demo", bob, delivered, ["alice", "bob"]);
+    expect(group?.speaker).toEqual({ kind: "employee", id: "alice" });
+    expect(group?.text).toBe("@bob 权限已到位，你可以改主项目了。");
+    expect(group?.bossDirected).toBe(false);
+
+    // 投递到老板私聊（dm）不补前缀
+    const dm = normalizeChatMessage("dm:alice", alice, delivered, []);
+    expect(dm?.text).toBe("权限已到位，你可以改主项目了。");
+  });
+
+  it("工具投递到成员：正文自带 @前缀块则不重复补；@ 了别人也不改写", () => {
+    const bob: MemberTranscript = { memberId: "bob", convId: "c2", messages: [] };
+    const explicit = chat("21", "user", "@bob 先出三件草稿", { kind: "chat.message", data: { author: "alice" } });
+    expect(normalizeChatMessage("group:demo", bob, explicit, ["alice", "bob"])?.text).toBe("@bob 先出三件草稿");
+
+    const toBoss = chat("22", "user", "@老板 已办", { kind: "chat.message", data: { author: "alice" } });
+    const m = normalizeChatMessage("group:demo", bob, toBoss, ["alice", "bob"]);
+    expect(m?.text).toBe("@老板 已办");
+  });
+
+  it("员工主动发言（历史 user 形态，落在自己会话）→ 与 assistant 形态同口径：群聊补 @老板", () => {
+    const alice: MemberTranscript = { memberId: "alice", convId: "c1", messages: [] };
+    const posted = chat("23", "user", "我主动汇报", { kind: "chat.message", data: { author: "alice" } });
+    const group = normalizeChatMessage("group:demo", alice, posted, ["alice", "bob"]);
+    expect(group?.text).toBe("@老板 我主动汇报");
+    expect(group?.bossDirected).toBe(true);
+    expect(normalizeChatMessage("dm:alice", alice, posted, [])?.text).toBe("我主动汇报");
+  });
+
   it("空输入、空会话不产生消息", () => {
     expect(mergeRoomMessages("dm:alice", [])).toEqual([]);
     expect(normalizeChatMessage("dm:alice", { memberId: "alice", convId: "c1", messages: [] }, chat("1", "assistant", ""))).toEqual({

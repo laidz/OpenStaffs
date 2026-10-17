@@ -65,6 +65,8 @@ function authorOf(chat: ChatMessage): string | undefined {
  *   解析不出有效对象（写错 id / 标点粘连 / 只 @ 自己 / 只有 @ 没正文）→ 视为“发给老板”：显示/历史层
  *   补当前称谓（bossNames 首项，缺省「老板」，不改写落盘原文）；
  * - user 且 kind 为 chat.message / pi.user：data.author 是员工 id（员工主动发言 / 工具投递）→ 归属该员工；否则 → 老板发言；
+ *   群聊里工具投递（send_message member:<id>）的消息落在**收件人**的会话 → 显示层补 `@收件人`（正文自带
+ *   @前缀块则不改写）；其余群消息照旧：没写 @ / @ 不到有效对象 → 补 `@老板`；
  * - 其余 user 条目（如 pi.compaction / pi.reset 等合成条目）→ undefined（跳过）。
  * bossDirected：群聊按前缀块是否含负责人（双认列表）判定（见 RoomMessage）；私聊发言一律算给老板。
  */
@@ -95,13 +97,26 @@ export function normalizeChatMessage(
   if (chat.role === "user" && (chat.kind === "chat.message" || chat.kind === "pi.user")) {
     const author = authorOf(chat);
     if (author !== undefined && author !== BOSS_ID) {
+      // 工具投递（send_message member:<id>）：消息落在**收件人**的会话里 → 收件人 = 本会话的主人。
+      const recipient = isGroup && member.memberId !== author ? member.memberId : undefined;
+      const trimmed = chat.text.trim();
+      const prefixEnd = leadingMentionLength(trimmed);
+      const deliveries = prefixEnd === 0 ? [] : planRouting(trimmed, memberIds);
+      const reachesOtherMember = hasBodyAfterPrefix(trimmed) && deliveries.some((delivery) => delivery.to !== author);
+      const bossTargeted = parseMentions(trimmed, memberIds, bossNames).targets.includes(BOSS_ID);
+      // 与 assistant 分支同口径：群消息一律以 @ 开头且落到确定对象（投递到某成员 → 补 @收件人；否则照旧补 @老板）。
+      const needsHeader =
+        trimmed !== "" &&
+        (recipient !== undefined ? prefixEnd === 0 : prefixEnd === 0 || (!reachesOtherMember && !bossTargeted));
+      const fallback = isGroup && needsHeader;
+      const mention = recipient !== undefined ? `@${recipient}` : `@${bossNames[0]!}`;
       return {
         convId: member.convId,
         entryId: chat.id,
         roomKey,
         speaker: { kind: "employee", id: author },
-        text: chat.text,
-        bossDirected: isGroup ? parseMentions(chat.text.trim(), memberIds, bossNames).targets.includes(BOSS_ID) : true,
+        text: fallback ? `${mention} ${chat.text}` : chat.text,
+        bossDirected: isGroup ? recipient === undefined && (fallback || bossTargeted) : true,
       };
     }
     return {
