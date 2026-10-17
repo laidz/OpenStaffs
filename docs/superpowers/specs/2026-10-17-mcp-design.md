@@ -34,9 +34,10 @@
 | M1 | **仓库内最小 stdio 客户端** | 不引 `@modelcontextprotocol/sdk`；只实现 `initialize`、`notifications/initialized`、`tools/list`、`tools/call`、`ping`，协议版本 `2024-11-05`。 |
 | M2 | **`mcpServers` 为唯一顶层结构** | 与主流 MCP 配置一致：`{"mcpServers": {"<name>": {...}}}`；每层一个文件，平铺 server。 |
 | M3 | **合并顺序：系统 → 空间 → 员工 → 项目** | 后者窄者胜；不同名全部保留。群聊含项目层，私聊不含。 |
-| M4 | **凭据语法定稿** | `${config.mcp.<server>.<key>}`；值来自 `.openstaffs/config.json` 的 `mcp.<server>.<key>`。只替换这一种占位符，其它 `${...}` 原样保留。 |
+| M4 | **凭据语法定稿** | `${config.mcp.<alias>.<key>}`；值来自 `.openstaffs/config.json` 的 `mcp.<alias>.<key>`。只替换这一种占位符，其它 `${...}` 原样保留。 |
+| M12 | **server alias** | `mcpServers.<名字>.alias` 可选；缺省 = 原名。对外映射（工具名、扩展名、凭据引用、日志）统一用 alias；只允许 `[A-Za-z0-9_-]+`。合并 / 同名覆盖仍按原名。 |
 | M5 | **配置错误只废掉该 server** | 坏 JSON、缺 `command`、凭据缺失等记明确日志并跳过该 server；不使整个服务启动失败，也不回落到更宽层的同名定义。 |
-| M6 | **每个 server 一个扩展** | 扩展名 `mcp:<scope>:<server>`；工具名 `mcp__<server>__<tool>`。MCP 扩展不默认选中，会话创建时按合并结果 `extensions.add`。 |
+| M6 | **每个 server 一个扩展** | 扩展名 `mcp:<scope>:<alias>`；工具名 `mcp__<alias>__<tool>`。MCP 扩展不默认选中，会话创建时按合并结果 `extensions.add`。 |
 | M7 | **工具清单在启动时固化** | 启动连接成功后 `tools/list` 一次；重连只恢复调用能力，不刷新清单。新增 / 改工具仍需重启，符合「MCP 注册属启动档」。 |
 | M8 | **MCP 工具总数超过 20 时全部 deferred** | 同时安装并默认选中 `tool_search`；否则工具直接可见。阈值是常量，不开放配置。 |
 | M9 | **子进程环境最小化** | 只继承 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`TMPDIR`、`TMP`、`TEMP`、`LANG`、`LC_ALL`、`TZ`，再加 `mcp.json` 的 `env`；不整包继承主进程环境。 |
@@ -53,6 +54,7 @@
 {
   "mcpServers": {
     "github": {
+      "alias": "github",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
@@ -69,6 +71,7 @@
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
+| `alias` | 否 | 对外映射名；缺省 = 原名。只允许 `[A-Za-z0-9_-]+`（不能含点号）。工具名、扩展名、凭据引用都用它。 |
 | `command` | 是 | 可执行文件；含 `/` 时按 `cwd` 解析，否则走 `PATH`。不经过 shell。 |
 | `args` | 否 | 字符串数组。 |
 | `env` | 否 | 字符串到字符串的 map；覆盖继承的环境变量。 |
@@ -105,6 +108,7 @@
 - 独立读取（像 `skillPaths` / `bossName`），不并进 `WorkspaceConfig`；未配置模式下也能读。
 - `mcp` 缺失 / 坏 JSON / 非对象 / 值非字符串 → 该项视为缺失。
 - 占位符必须被解析成非空字符串；缺失时该 server 报错并跳过，错误信息包含 server 名与凭据键名，**不包含其它凭据值**。
+- 占位符的 server 段用 **alias**；原名含点号时给 alias 即可避免解析歧义。
 - 占位符可出现在 `command`、`args`、`env`、`cwd` 的字符串值里。
 - 日志永不打印解析后的字符串；`args` 里的明文密钥会出现在进程参数中（`ps` 可见），手册明确要求用 `env`。
 
@@ -146,12 +150,14 @@ system → space → employee:<id>（全部员工，按 id 排序）→ project:
 
 按上述宽 → 窄顺序赋值到 `Map<serverName, definition>`，同名后者覆盖。项目层在群里最窄，因此同名时项目胜；私聊没有项目层。
 
+对外身份是 alias：不同原名但 alias 相同时，按同样的宽 → 窄顺序窄者胜（会话里只选一个）；同一文件内 alias 重复视为配置错误，后者跳过。
+
 **坏定义遮蔽**：某窄层文件里声明了同名 server 但配置非法（含凭据缺失），该名字标记为 invalid，不回落到宽层；会话解析时排除，启动日志已给出原因。
 
 ### 4.3 工具注册
 
-- 扩展名：`mcp:<scopeKey>:<server>`，`scopeKey` 为 `system` / `space` / `employee:<id>` / `project:<id>`。
-- 工具名：`mcp__<server>__<tool>`；`server` / `tool` 中非 `[A-Za-z0-9_-]` 字符替换为 `_`。
+- 扩展名：`mcp:<scopeKey>:<alias>`，`scopeKey` 为 `system` / `space` / `employee:<id>` / `project:<id>`。
+- 工具名：`mcp__<alias>__<tool>`；`tool` 中非 `[A-Za-z0-9_-]` 字符替换为 `_`（alias 本身已限制为安全字符）。
 - 同一个 server 内 sanitize 后重名：先出现者胜，其余跳过；管理器记日志。
 - 跨 server 由前缀天然隔离；同名 server 跨层只会在不同会话里各选一个扩展，不会同时选中。
 - `parameters` 使用 MCP 的 `inputSchema`（要求 `type: "object"`）；缺失或非对象 schema → 空对象 schema。

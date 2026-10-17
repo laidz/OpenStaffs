@@ -165,6 +165,7 @@ MCP server 是外部进程，通过 stdio 提供工具。四层各一个 `mcp.js
 {
   "mcpServers": {
     "github": {
+      "alias": "github",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${config.mcp.github.token}" },
@@ -175,10 +176,11 @@ MCP server 是外部进程，通过 stdio 提供工具。四层各一个 `mcp.js
 }
 ```
 
-- 合并：系统 → 空间 → 员工 → 项目，同名**窄者胜**；不同名都挂。私聊没有项目层。
-- 凭据：**不写明文**。密钥放 `.openstaffs/config.json` 的 `mcp.<server>.<key>`，`mcp.json` 只写 `${config.mcp.<server>.<key>}`。缺凭据时该 server 报错并跳过，不回落到宽层。**密钥优先放 `env`**：写进 `args` 会出现在进程参数里（`ps` 可见）。
+- **别名 `alias`**：对外映射名，缺省 = `mcpServers` 里的原名。工具名、扩展名、凭据引用都用 alias；只允许字母、数字、`_`、`-`，不能含点号。原名含点号/特殊字符时，给一个安全 alias 即可（合并 / 同名覆盖仍按原名）。
+- 合并：系统 → 空间 → 员工 → 项目，同名**窄者胜**；不同名都挂。私聊没有项目层。不同原名字但 alias 相同时，窄者胜。
+- 凭据：**不写明文**。密钥放 `.openstaffs/config.json` 的 `mcp.<alias>.<key>`，`mcp.json` 只写 `${config.mcp.<alias>.<key>}`。缺凭据时该 server 报错并跳过，不回落到宽层。**密钥优先放 `env`**：写进 `args` 会出现在进程参数里（`ps` 可见）。
 - 生效：启动时连接并注册工具；新增 / 改 server 或工具要**重启**。某层是否生效随会话装配——要**新开会话**。
-- 工具名：`mcp__<server>__<tool>`。工具总数超过 20 时全部延迟加载，先用 `tool_search` 搜索再调用。
+- 工具名：`mcp__<alias>__<tool>`。工具总数超过 20 时全部延迟加载，先用 `tool_search` 搜索再调用。
 - 生命周期：启动并行连接（`initialize` + `tools/list` 各受 10s 连接超时约束）；30s 心跳，工具调用在途时跳过心跳；连续 2 次心跳失败才重连；崩溃按 1s、2s、4s… 退避重连，最多 5 次；服务退出时清理子进程。
 - 员工可以自己写 `agents/{员工}/mcp.json` 挂 server；这等于允许启动本地任意进程。只挂你信任的 server；带密钥的 server 仍需老板把凭据加进 `config.json`。
 - 排查：看服务端日志里的 `[mcp]` 行；坏 JSON、缺字段、缺凭据、连接失败都会点名具体文件 / server / 凭据键。

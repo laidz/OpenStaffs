@@ -13,7 +13,10 @@ export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 60_000;
 export const MCP_DEFERRED_THRESHOLD = 20;
 
 export type McpServerConfig = {
+  /** mcp.json 里的原始 key（合并 / 窄者胜按它判定）。 */
   name: string;
+  /** 对外映射名：工具前缀、扩展名、凭据引用都用它；缺省 = name。 */
+  alias: string;
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -78,6 +81,19 @@ function requiredString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
+/** alias 必须能安全用于工具名 / 扩展名 / 凭据键：不含点号、空白或其它标点。 */
+const SAFE_ALIAS = /^[A-Za-z0-9_-]+$/u;
+
+function readAlias(value: unknown, name: string): { alias?: string; error?: string } {
+  if (value === undefined) return { alias: name };
+  const alias = requiredString(value);
+  if (alias === undefined) return { error: "alias 必须是非空字符串" };
+  if (!SAFE_ALIAS.test(alias)) {
+    return { error: `alias 不合法：${JSON.stringify(alias)}（只允许字母、数字、_、-，且不能含点号）` };
+  }
+  return { alias };
+}
+
 const CREDENTIAL_REF = /\$\{config\.mcp\.([A-Za-z0-9_-]+)\.([^}]+)\}/gu;
 
 /** 只替换 `${config.mcp.<server>.<key>}`；其它 `${...}` 原样保留。缺凭据 → undefined + 错误文案。 */
@@ -109,6 +125,9 @@ function parseServer(
   credentials: McpCredentials,
 ): { config?: McpServerConfig; error?: string } {
   if (!isObject(value)) return { error: "配置必须是对象" };
+  const aliasResult = readAlias(value.alias, name);
+  if (aliasResult.alias === undefined) return { error: aliasResult.error };
+  const alias = aliasResult.alias;
   const interpolateErrors: string[] = [];
   const commandRaw = requiredString(value.command);
   if (commandRaw === undefined) return { error: "缺少 command" };
@@ -154,7 +173,7 @@ function parseServer(
     timeoutMs = value.timeoutMs;
   }
 
-  return { config: { name, command, args, env, cwd, timeoutMs } };
+  return { config: { name, alias, command, args, env, cwd, timeoutMs } };
 }
 
 /** 读一个 mcp.json：缺失视为空；坏 JSON / 坏 server 记在 source.errors。 */
@@ -178,6 +197,7 @@ export function readMcpSource(scope: McpScope, file: string, credentials: McpCre
     source.errors.push(`MCP 配置的 mcpServers 必须是对象：${file}`);
     return source;
   }
+  const aliasOwners = new Map<string, string>();
   for (const [rawName, value] of Object.entries(parsed.mcpServers)) {
     const name = rawName.trim();
     if (name === "") {
@@ -191,7 +211,15 @@ export function readMcpSource(scope: McpScope, file: string, credentials: McpCre
       source.errors.push(`MCP server "${name}" 配置错误（${file}）：${parsedServer.error ?? "未知错误"}`);
       continue;
     }
-    source.servers.push(parsedServer.config);
+    const config = parsedServer.config;
+    const owner = aliasOwners.get(config.alias);
+    if (owner !== undefined) {
+      source.invalid.push(name);
+      source.errors.push(`MCP server "${name}" 的 alias "${config.alias}" 与 "${owner}" 重复（${file}）`);
+      continue;
+    }
+    aliasOwners.set(config.alias, name);
+    source.servers.push(config);
   }
   return source;
 }
@@ -241,7 +269,11 @@ export function resolveMcpServers(
       merged.set(config.name, { name: config.name, scope: source.scope, config });
     }
   }
-  return {
-    selections: [...merged.values()].filter((value): value is McpSelection => value !== "invalid"),
-  };
+  // 对外可见的 server 身份是 alias：不同原名字但 alias 相同时，窄者胜。
+  const byAlias = new Map<string, McpSelection>();
+  for (const value of merged.values()) {
+    if (value === "invalid") continue;
+    byAlias.set(value.config.alias, value);
+  }
+  return { selections: [...byAlias.values()] };
 }

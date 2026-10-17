@@ -23,7 +23,10 @@ export type McpManagerOptions = {
 
 type Runtime = {
   key: string;
+  /** mcp.json 原始 key（仅日志辅助）。 */
   serverName: string;
+  /** 对外映射名（工具 / 扩展 / 凭据）。 */
+  alias: string;
   scope: McpScope;
   selection: McpSelection;
   client?: McpStdioClient;
@@ -92,8 +95,9 @@ export class McpManager implements McpSessionResolver {
     for (const source of this.#snapshot.sources) {
       for (const config of source.servers) {
         this.#runtimes.push({
-          key: mcpExtensionName(source.scope, config.name),
+          key: mcpExtensionName(source.scope, config.alias),
           serverName: config.name,
+          alias: config.alias,
           scope: source.scope,
           selection: { name: config.name, scope: source.scope, config },
           tools: [],
@@ -127,7 +131,7 @@ export class McpManager implements McpSessionResolver {
     if (runtime.tools.length === 0 || runtime.extension !== undefined) return;
     runtime.extension = createMcpExtension({
       scopeKey: mcpScopeKey(runtime.scope),
-      serverName: runtime.serverName,
+      serverName: runtime.alias,
       tools: runtime.tools,
       deferred: this.#needsToolSearch,
       call: (tool, args) => this.#call(runtime, tool, args),
@@ -144,7 +148,7 @@ export class McpManager implements McpSessionResolver {
       this.#stopHeartbeat(runtime);
       const config = runtime.selection.config;
       const client = new McpStdioClient({
-        serverName: runtime.serverName,
+        serverName: runtime.alias,
         command: config.command,
         args: config.args,
         env: childEnv(config.env),
@@ -159,7 +163,7 @@ export class McpManager implements McpSessionResolver {
           runtime.client = undefined;
           this.#stopHeartbeat(runtime);
           if (!wasReady) return; // 首次连接就没成功：不具备工具清单，重连也无法注册，等重启
-          this.#log(`[mcp] server "${runtime.serverName}" ${reason}；准备重连`);
+          this.#log(`[mcp] server "${runtime.alias}" ${reason}；准备重连`);
           this.#scheduleReconnect(runtime);
         },
       });
@@ -206,7 +210,7 @@ export class McpManager implements McpSessionResolver {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           runtime.heartbeatFailures += 1;
-          this.#log(`[mcp] server "${runtime.serverName}" 心跳失败（${runtime.heartbeatFailures}/2）：${message}`);
+          this.#log(`[mcp] server "${runtime.alias}" 心跳失败（${runtime.heartbeatFailures}/2）：${message}`);
           if (runtime.heartbeatFailures < 2) return;
           this.#stopHeartbeat(runtime);
           runtime.ready = false;
@@ -235,7 +239,7 @@ export class McpManager implements McpSessionResolver {
     runtime.reconnectAttempts += 1;
     const max = this.#options.reconnectMaxAttempts ?? 5;
     if (runtime.reconnectAttempts > max) {
-      const message = `MCP server "${runtime.serverName}" 重连次数已用尽（${max} 次），需要重启服务`;
+      const message = `MCP server "${runtime.alias}" 重连次数已用尽（${max} 次），需要重启服务`;
       this.#errors.push(message);
       this.#log(`[mcp] ${message}`);
       return;
@@ -261,11 +265,11 @@ export class McpManager implements McpSessionResolver {
         await this.#connect(runtime);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`MCP server "${runtime.serverName}" 未连接：${message}`);
+        throw new Error(`MCP server "${runtime.alias}" 未连接：${message}`);
       }
     }
     if (!runtime.ready || runtime.client === undefined) {
-      throw new Error(`MCP server "${runtime.serverName}" 未连接`);
+      throw new Error(`MCP server "${runtime.alias}" 未连接`);
     }
     runtime.inflight += 1;
     try {
@@ -283,7 +287,7 @@ export class McpManager implements McpSessionResolver {
     const byKey = new Map(this.#runtimes.map((runtime) => [runtime.key, runtime]));
     const names: string[] = [];
     for (const selection of resolveMcpServers(this.#snapshot, relation, speakerId).selections) {
-      const runtime = byKey.get(mcpExtensionName(selection.scope, selection.name));
+      const runtime = byKey.get(mcpExtensionName(selection.scope, selection.config.alias));
       if (runtime?.extension !== undefined) names.push(runtime.extension.name);
     }
     return names;

@@ -184,7 +184,8 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
   **落地（2026-10-17）**：
   - 新增 `src/domain/mcp.ts`（四层解析、合并、凭据插值、会话级选择）、`src/harness/mcp-client.ts`（最小 stdio JSON-RPC）、`src/harness/mcp-manager.ts`（连接 / 心跳 / 重连 / 扩展生成）、`src/harness/mcp-extension.ts`（工具映射）；`src/mcp.json` 提供系统级空模板。
   - 凭据语法定稿：`.openstaffs/config.json` 的 `mcp.<server>.<key>`，`mcp.json` 写 `${config.mcp.<server>.<key>}`；缺失时点名 server / 凭据键并跳过，不回落到宽层。
-  - 合并顺序：系统 → 空间 → 员工 → 项目（窄者胜）；会话创建时按关系 / 发言人固化扩展选择。工具名 `mcp__<server>__<tool>`；总数 > 20 时全部 deferred 并启用 `tool_search`。
+  - 合并顺序：系统 → 空间 → 员工 → 项目（窄者胜）；会话创建时按关系 / 发言人固化扩展选择。工具名 `mcp__<alias>__<tool>`；总数 > 20 时全部 deferred 并启用 `tool_search`。
+  - server 支持 `alias`（缺省 = 原名）：工具名、扩展名、凭据引用统一用 alias；alias 只允许字母 / 数字 / `_` / `-`，不能含点号。合并 / 同名覆盖仍按原名；不同原名但 alias 相同时窄者胜，同文件 alias 重复报错跳过后者。
   - 生命周期：启动并行连接（单个连接超时 10s）、30s 心跳、1s/2s/4s… 退避重连最多 5 次、SIGTERM→SIGKILL 进程组清理；子进程只继承白名单环境变量 + 显式 `env`。
   - 测试：配置解析 / 凭据、stdio 客户端（含分页、超时、卡死）、工具映射、管理器（崩溃重连、阈值、重名、员工隔离）、端到端真实 server 调用。
   - **安全审阅结论（2026-10-17）**：
