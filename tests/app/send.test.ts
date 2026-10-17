@@ -37,6 +37,7 @@ class FakePort implements HarnessPort {
     return convId.startsWith("conv-");
   }
   async append(): Promise<void> {}
+  async abort(): Promise<void> {}
   sessionInfo(): undefined {
     return undefined;
   }

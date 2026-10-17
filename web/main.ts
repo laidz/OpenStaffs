@@ -123,6 +123,7 @@ function bindEvents(): void {
   });
   document.getElementById("btn-new-session")?.addEventListener("click", () => guard(newSession()));
   document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
+  document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
 }
 
 async function refreshUnread(): Promise<void> {
@@ -215,6 +216,11 @@ async function newSession(): Promise<void> {
   if (!window.confirm(`确定新开${label}会话？当前会话将结束（可在历史中回看）。`)) return;
   await api.newSession(roomKey, memberId);
   await enterRoom(roomKey);
+}
+
+async function interruptCurrent(): Promise<void> {
+  if (state.roomKey === undefined) return;
+  await api.interrupt(state.roomKey);
 }
 
 async function openHistory(): Promise<void> {

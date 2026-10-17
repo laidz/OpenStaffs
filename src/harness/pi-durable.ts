@@ -201,6 +201,10 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
         ctx,
       );
     },
+    async abort(convId) {
+      const conv = await conversation(convId as unknown as ConversationId);
+      await conv.abort(ctx);
+    },
     async watch(convId, listener) {
       // Pi 文档地址要求数值 ConversationId（字符串会被 resolveAddress 拒绝）；借会话读回拿到规范 id。
       const conv = await conversation(convId as unknown as ConversationId);

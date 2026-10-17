@@ -68,6 +68,19 @@ describe("前端状态归约", () => {
     expect(state.busy["alice"]).toBe(false);
   });
 
+  it("run end 清掉残留的流式气泡（中断后不留幽灵）；错误气泡保留", () => {
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "text", delta: "说到一半" } });
+    expect(state.live["c1"]?.text).toBe("说到一半");
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "run", phase: "end" } });
+    expect(state.live["c1"]).toBeUndefined();
+
+    let failed = inRoom();
+    failed = reduce(failed, { type: "sse", event: { type: "room.failed", roomKey: "dm:alice", convId: "c1", memberId: "alice", message: "模型不可用", kind: "model" } });
+    failed = reduce(failed, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "run", phase: "end" } });
+    expect(failed.live["c1"]?.error).toBe("模型不可用");
+  });
+
   it("room.failed 的错误提示在新一轮增量 / run 开始时清除（同一会话重试不被旧错误遮蔽）", () => {
     let state = inRoom();
     state = reduce(state, { type: "sse", event: { type: "room.failed", roomKey: "dm:alice", convId: "c1", memberId: "alice", message: "模型超时" } });

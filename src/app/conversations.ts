@@ -163,6 +163,22 @@ export function activeMemberSessions(ws: Workspace, relation: Relation): { membe
   return out;
 }
 
+/** 房间级中断：中止该关系下各成员的活跃会话；best-effort（坏会话失败不连坐其它）。 */
+export async function interruptRoom(
+  ws: Workspace, harness: HarnessPort, relation: Relation,
+): Promise<{ aborted: string[] }> {
+  const aborted: string[] = [];
+  for (const session of activeMemberSessions(ws, relation)) {
+    try {
+      await harness.abort(session.convId);
+      aborted.push(session.convId);
+    } catch {
+      // 坏会话（链指向不存在的 convId 等）跳过：一个失败不该让整房间中断失败。
+    }
+  }
+  return { aborted };
+}
+
 /** convId 属于关系下哪个成员（含已结束的会话行）；不属于返回 undefined。 */
 export function findSessionOwner(ws: Workspace, relation: Relation, convId: string): string | undefined {
   for (const chain of sessionChains(ws, relation)) {

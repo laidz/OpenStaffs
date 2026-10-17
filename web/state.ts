@@ -128,6 +128,12 @@ function reduceSse(state: State, event: ServerEvent): State {
           delete cleared.error;
           return { ...state, busy, live: { ...state.live, [event.convId]: cleared } };
         }
+        // run 结束仍留有 live：多为被中断（正常结束会先落 assistant message 并清掉）。清掉残影，避免幽灵气泡。
+        if (event.phase === "end" && existing !== undefined && existing.error === undefined) {
+          const live = { ...state.live };
+          delete live[event.convId];
+          return { ...state, busy, live };
+        }
         return { ...state, busy };
       }
       const existing = liveOf(state, event.convId, event.memberId);

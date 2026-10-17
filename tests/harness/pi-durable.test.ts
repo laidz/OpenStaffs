@@ -228,6 +228,42 @@ describe("提交与推流", () => {
     }
   });
 
+  it("abort：中止在跑的生成（不再出 delta）并回到空闲，可继续发下一条", async () => {
+    const { models } = fauxModels(
+      [
+        fauxAssistantMessage("这是一段会慢慢流出来的很长很长的回答，用来验证中途中断是否生效。"),
+        fauxAssistantMessage("中断后仍能回答"),
+      ],
+      { tokensPerSecond: 20, tokenSize: { min: 1, max: 1 } },
+    );
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-abort.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      const events: HarnessEvent[] = [];
+      const unsubscribe = await harness.watch(convId, (e) => events.push(e));
+      try {
+        await harness.submit(convId, "写一段长文");
+        await waitFor(() => events.some((e) => e.type === "delta" && e.delta.length > 0));
+        await harness.abort(convId);
+        await new Promise((r) => setTimeout(r, 80)); // 让中止前已在途的事件排干
+        const settled = events.filter((e) => e.type === "delta").length;
+        await new Promise((r) => setTimeout(r, 400));
+        expect(events.filter((e) => e.type === "delta").length).toBe(settled); // 生成已停
+        expect(events.some((e) => e.type === "run" && e.phase === "end")).toBe(true);
+
+        const reply = await harness.send(convId, "还在吗"); // 空闲 → 能继续
+        expect(reply.text).toBe("中断后仍能回答");
+      } finally {
+        await unsubscribe();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("watch 推送 delta / 落盘消息 / run 起止", async () => {
     const { models } = fauxModels([fauxAssistantMessage("你好呀，我是 alice，很高兴见到你，今天有什么可以帮你的吗？")], {
       tokensPerSecond: 20,

@@ -8,7 +8,7 @@ import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
-  activeMemberSessions, findSessionOwner, instructionsFor, newSession, openDm, openGroup,
+  activeMemberSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
   permissionFilesFor, relationKey, roomTranscripts, sessionChains, skillDirsFor, type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
@@ -300,6 +300,33 @@ describe("应用用例", () => {
       const transcripts = await roomTranscripts(ws, harness, { kind: "group", project: "yt" });
       expect(transcripts).toHaveLength(1);
       expect(transcripts[0]!.memberId).toBe("alice");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("interruptRoom：逐个中止各成员活跃会话；坏会话跳过不连坐", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedEmployee("carol");
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n- carol\n");
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const a = await openGroup(ws, harness, "yt", "alice");
+      const b = await openGroup(ws, harness, "yt", "bob");
+      // carol 的链写坏：活跃行指向不存在的会话
+      const carolFile = path.join(root, "projects", "yt", "conversation_ids", "carol.md");
+      fs.mkdirSync(path.dirname(carolFile), { recursive: true });
+      fs.writeFileSync(
+        carolFile,
+        ["# 会话链", "", "| id | started | ended | previous |", "|----|---------|-------|----------|", "| conv:不存在 | 2026-10-16T00:00:00Z |  | - |", ""].join("\n"),
+      );
+
+      const result = await interruptRoom(ws, harness, { kind: "group", project: "yt" });
+      expect(result.aborted.sort()).toEqual([a, b].sort());
     } finally {
       await harness.close();
     }

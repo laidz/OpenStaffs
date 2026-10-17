@@ -283,6 +283,20 @@ describe("房间 API", () => {
     }
   });
 
+  it("interrupt：房间级中断返回 aborted（无在跑也 200）；不存在的房间 404", async () => {
+    const { base, close } = await startWithFaux(["alice"], []);
+    try {
+      const res = await fetch(`${base}/api/rooms/dm:alice/interrupt`, { method: "POST" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { aborted: string[] };
+      expect(Array.isArray(body.aborted)).toBe(true);
+      expect(body.aborted).toEqual([]); // 尚未建会话
+      expect((await fetch(`${base}/api/rooms/dm:nobody/interrupt`, { method: "POST" })).status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+
   it("不存在的房间 404", async () => {
     const { base, close } = await startWithFaux([], []);
     try {

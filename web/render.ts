@@ -94,6 +94,7 @@ export function chatHtml(state: State): string {
       ${memberSelect}
       <button id="btn-new-session">新开会话</button>
       <button id="btn-history">历史</button>
+      <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>
     <div class="msg-list" id="msg-list">
       <div id="messages-part">${messagesHtml(state.messages)}</div>

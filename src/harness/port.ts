@@ -62,6 +62,8 @@ export interface HarnessPort {
   submit(convId: string, text: string, meta?: InputMeta): Promise<void>;
   /** 追加一条被动条目：可见（进入房间视图）但不触发模型回答。用于员工主动发言。 */
   append(convId: string, entry: PostEntry): Promise<void>;
+  /** 中止该会话在跑的任务并撤回排队未开始的输入；无在跑任务时为空操作。 */
+  abort(convId: string): Promise<void>;
   /** 订阅该会话的归一化事件；返回退订函数。 */
   watch(convId: string, listener: (event: HarnessEvent) => void): Promise<() => Promise<void>>;
   transcript(convId: string): Promise<ChatMessage[]>;

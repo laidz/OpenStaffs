@@ -46,5 +46,6 @@ export const api = {
       `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/messages`,
     ),
   read: (roomKey: string) => request<{ ok: boolean }>(`${roomPath(roomKey)}/read`, { method: "POST" }),
+  interrupt: (roomKey: string) => request<{ aborted: string[] }>(`${roomPath(roomKey)}/interrupt`, { method: "POST" }),
   unread: () => request<{ total: number; rooms: Record<string, number> }>("/api/unread"),
 };

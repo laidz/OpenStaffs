@@ -9,7 +9,7 @@ import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { countUnread, mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
 import {
-  activeMemberSessions, findSessionOwner, newSession, roomTranscripts, sessionChains, type Relation,
+  activeMemberSessions, findSessionOwner, interruptRoom, newSession, roomTranscripts, sessionChains, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, sendToRoom } from "../app/send.ts";
 import type { HarnessPort } from "../harness/port.ts";
@@ -183,6 +183,11 @@ async function handleRooms(
       // 忽略：见上
     }
     json(res, 200, { convId });
+    return;
+  }
+
+  if (rest.length === 1 && rest[0] === "interrupt" && method === "POST") {
+    json(res, 200, await interruptRoom(deps.ws, harness, relation));
     return;
   }
 
