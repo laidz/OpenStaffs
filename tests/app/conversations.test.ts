@@ -182,13 +182,14 @@ describe("应用用例", () => {
     ]);
   });
 
-  it("内置基础技能随默认会话注入：列出 openstaffs 技能并给出 SKILL.md 位置", () => {
+  it("内置基础技能随默认会话注入：列出 openstaffs 系列技能并给出 SKILL.md 位置", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const speaker = loadEmployee(ws, "alice");
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
     expect(dm).toContain("openstaffs");
     expect(dm).toContain(path.join("src", "skills", "openstaffs", "SKILL.md"));
+    expect(dm).toContain(path.join("src", "skills", "openstaffs-ops", "SKILL.md"));
   });
 
   it("instructions 注入技能（名称 + 描述 + 位置；群技能在前）", () => {
