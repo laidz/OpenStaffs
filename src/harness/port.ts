@@ -30,7 +30,7 @@ export type InputMeta = {
   requestId?: string;
 };
 
-/** 被动条目：只落一条消息（不触发模型回答）。 */
+/** 己方发言条目：以 assistant 形态落一条消息（不触发模型回答）。 */
 export type PostEntry = {
   /** entry kind（如 chat.message）。 */
   kind: string;
@@ -60,7 +60,10 @@ export interface HarnessPort {
   send(convId: string, text: string): Promise<ChatMessage>;
   /** 提交输入，不等待回答（admission 完成即返回）。 */
   submit(convId: string, text: string, meta?: InputMeta): Promise<void>;
-  /** 追加一条被动条目：可见（进入房间视图）但不触发模型回答。用于员工主动发言。 */
+  /**
+   * 追加一条己方发言：以 assistant 形态落盘（模型视角 =「我说过的话」，不会像 user 那样引发自我回显），
+   * 可见（进入房间视图）但不触发模型回答。用于员工主动发言（send_message）。
+   */
   append(convId: string, entry: PostEntry): Promise<void>;
   /** 中止该会话在跑的任务并撤回排队未开始的输入；无在跑任务时为空操作。 */
   abort(convId: string): Promise<void>;

@@ -5,7 +5,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPiHarness, mapPiEvent } from "../../src/harness/pi-durable.ts";
-import type { ConversationSpec, HarnessEvent } from "../../src/harness/port.ts";
+import type { ConversationSpec, HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import type { AccessContext } from "../../src/domain/access-control.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-harness-"));
@@ -222,7 +222,50 @@ describe("提交与推流", () => {
       const posted = history.find((m) => m.text === "我主动说一句");
       expect(posted?.kind).toBe("chat.message");
       expect((posted?.data as { author?: string } | undefined)?.author).toBe("alice");
-      expect(history.some((m) => m.role === "assistant")).toBe(false); // 未触发 run
+      // 不触发模型回答：append 只有 chat.message 条目，没有模型产出的 pi.assistant 条目。
+      expect(history.some((m) => m.kind === "pi.assistant")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("append 的员工发言在后续模型上下文中是 assistant 形态（防自我回显）", async () => {
+    // 回归：曾以 user 形态落盘 → 下一轮生成把它当用户新输入，模型复读自己的消息（「回显」）。
+    const seen: { role: string; text: string }[] = [];
+    let harness: HarnessPort | undefined;
+    let convId = "";
+    let appended = false;
+    const contextText = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content.flatMap((b: { type?: string; text?: string }) => (b?.type === "text" ? [b.text ?? ""] : [])).join("");
+    };
+    const { models } = fauxModels([
+      async () => {
+        if (!appended) {
+          appended = true;
+          // 与 send_message 的真实路径一致：run 进行中调用（busy → 排队，postTools boundary 后进入上下文）。
+          await harness!.append(convId, { kind: "chat.message", text: "我主动说一句", data: { author: "alice" } });
+        }
+        return fauxAssistantMessage(fauxToolCall("bash", { command: "echo ok" }), { stopReason: "toolUse" });
+      },
+      (context: { messages: readonly { role: string; content: unknown }[] }) => {
+        for (const message of context.messages) {
+          if (contextText(message.content).includes("我主动说一句")) seen.push({ role: message.role, text: "我主动说一句" });
+        }
+        return fauxAssistantMessage("完成");
+      },
+    ]);
+    harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-echo.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      convId = await harness.startSession(spec(cwd));
+      const reply = await harness.send(convId, "干活");
+      expect(reply.text).toBe("完成");
+      // 必须以「己方发言」（assistant）进入上下文；若以 user 进入，模型会把这条当输入再回复一次（回显）。
+      expect(seen).toEqual([{ role: "assistant", text: "我主动说一句" }]);
     } finally {
       await harness.close();
     }

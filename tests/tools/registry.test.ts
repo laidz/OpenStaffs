@@ -130,7 +130,8 @@ describe("send_message", () => {
       const history = await harness.transcript(dmConv);
       const posted = history.find((m) => m.text === "汇报一下");
       expect((posted?.data as { author?: string } | undefined)?.author).toBe("alice");
-      expect(history.some((m) => m.role === "assistant")).toBe(false);
+      // 不触发模型回答：append 只有 chat.message 条目，没有模型产出的 pi.assistant 条目。
+      expect(history.some((m) => m.kind === "pi.assistant")).toBe(false);
     } finally {
       await harness.close();
     }

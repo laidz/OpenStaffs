@@ -86,7 +86,7 @@ describe("房间合并视图", () => {
     expect(merged[1]!.speaker).toEqual({ kind: "employee", id: "alice" });
   });
 
-  it("员工主动发言 / 工具投递（data.author = 员工 id）归属该员工，而非老板", () => {
+  it("员工主动发言 / 工具投递（历史形态 user + data.author = 员工 id）归属该员工，而非老板（向后兼容）", () => {
     const merged = mergeRoomMessages("group:demo", [
       { memberId: "alice", convId: "c1", messages: [
         chat("7", "user", "我主动汇报", { kind: "chat.message", data: { author: "alice" } }),
@@ -99,6 +99,25 @@ describe("房间合并视图", () => {
       { kind: "employee", id: "alice" },
       { kind: "employee", id: "alice" },
     ]);
+  });
+
+  it("员工主动发言（新形态 assistant + chat.message）归属该员工；私聊原样、群聊没写 @ 视为发给老板", () => {
+    const alice: MemberTranscript = { memberId: "alice", convId: "c1", messages: [] };
+    const posted = chat("9", "assistant", "我主动汇报", { kind: "chat.message", data: { author: "alice" } });
+
+    const dm = normalizeChatMessage("dm:alice", alice, posted, []);
+    expect(dm?.speaker).toEqual({ kind: "employee", id: "alice" });
+    expect(dm?.text).toBe("我主动汇报");
+    expect(dm?.bossDirected).toBe(true);
+
+    const group = normalizeChatMessage("group:demo", alice, posted, ["alice", "bob"]);
+    expect(group?.speaker).toEqual({ kind: "employee", id: "alice" });
+    expect(group?.text).toBe("@老板 我主动汇报");
+    expect(group?.bossDirected).toBe(true);
+
+    const directed = normalizeChatMessage("group:demo", alice, chat("10", "assistant", "@bob 帮我看", { kind: "chat.message", data: { author: "alice" } }), ["alice", "bob"]);
+    expect(directed?.text).toBe("@bob 帮我看");
+    expect(directed?.bossDirected).toBe(false);
   });
 
   it("countUnread：watermark 之后的员工消息计数，老板消息不计", () => {

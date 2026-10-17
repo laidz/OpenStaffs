@@ -189,13 +189,37 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
     },
     async append(convId, entry) {
       const conv = await conversation(convId as unknown as ConversationId);
+      // 员工主动发言（send_message）：以 assistant 形态落盘——模型视角是「我自己说过的话」。
+      // 不能写成 user：带 model 的写条目会在下一轮生成时进入上下文，user 形态会被模型当成
+      // 用户新输入而再回复一次（自我回显）；assistant 形态则不会。
+      // usage 零值：Pi 的上下文估算只把 usage>0 的消息当计量基准，零值会被跳过（不污染估算）。
+      const ref = (await conv.agent(ctx)).model;
+      const resolved = ref === undefined ? undefined : models.getModel(ref.provider, ref.modelId);
       await conv.submit(
         {
           type: "write",
           entry: {
             kind: entry.kind,
             ...(entry.data === undefined ? {} : { data: entry.data as never }),
-            model: [{ role: "user", content: entry.text, timestamp: Date.now() }],
+            model: [
+              {
+                role: "assistant",
+                content: [{ type: "text", text: entry.text }],
+                api: resolved?.api ?? "openstaffs",
+                provider: ref?.provider ?? "openstaffs",
+                model: resolved?.id ?? ref?.modelId ?? "append",
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 0,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+                stopReason: "stop",
+                timestamp: Date.now(),
+              },
+            ],
           },
         },
         ctx,
