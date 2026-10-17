@@ -90,4 +90,16 @@ describe("renderSkills", () => {
     expect(text).toContain("- 写报告：生成周报");
     expect(text).toContain("- nop");
   });
+
+  it("目录项带 SKILL.md 位置（供 agent 按需 read 激活）", () => {
+    const text = renderSkills([{ name: "写报告", description: "生成周报", dir: "/x/report" }]);
+    expect(text).toContain(`位置：${path.join("/x/report", "SKILL.md")}`);
+  });
+
+  it("带「按位置 read」的用法说明", () => {
+    const text = renderSkills([{ name: "s", description: "d", dir: "/x/s" }]);
+    expect(text).toContain("当任务匹配某技能的描述时");
+    expect(text).toContain("read");
+    expect(text).toContain(path.join("/x/s", "SKILL.md"));
+  });
 });

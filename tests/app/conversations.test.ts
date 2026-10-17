@@ -12,6 +12,7 @@ import {
   permissionFilesFor, relationKey, roomTranscripts, sessionChains, skillDirsFor, type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
+import { FRAMEWORK_SKILLS_DIR } from "../../src/domain/skills.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
@@ -166,20 +167,31 @@ describe("应用用例", () => {
     }
   });
 
-  it("技能目录：私聊只有员工 skills；群聊 = 项目 skills + 员工 skills", () => {
+  it("技能目录：群聊 = 项目 + 员工 + 框架内置；私聊 = 员工 + 框架内置（越窄越优先）", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const speaker = loadEmployee(ws, "alice");
     expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
       path.join(root, "agents", "alice", "skills"),
+      FRAMEWORK_SKILLS_DIR,
     ]);
     expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
       path.join(root, "projects", "yt", "skills"),
       path.join(root, "agents", "alice", "skills"),
+      FRAMEWORK_SKILLS_DIR,
     ]);
   });
 
-  it("instructions 注入技能（只给 name+description；群技能在前）", () => {
+  it("内置基础技能随默认会话注入：列出 openstaffs 技能并给出 SKILL.md 位置", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const speaker = loadEmployee(ws, "alice");
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm).toContain("openstaffs");
+    expect(dm).toContain(path.join("src", "skills", "openstaffs", "SKILL.md"));
+  });
+
+  it("instructions 注入技能（名称 + 描述 + 位置；群技能在前）", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const groupSkill = path.join(root, "projects", "yt", "skills", "g", "SKILL.md");

@@ -96,6 +96,12 @@ description: 按公司模板生成周报
 
 员工技能只对该员工自己的会话生效；想让一群成员共享同一技能，请放进**项目目录**的 `skills/`（见下节「创建项目 / 群聊」）。
 
+**技能遵循 [Agent Skills](https://agentskills.io/) 标准**：每个技能是一个含 `SKILL.md` 的目录（YAML frontmatter 的 `name` / `description` + 正文）。会话创建时，框架把「可用技能」目录（名称、描述、`SKILL.md` **位置**）注入系统提示词；员工在任务匹配某技能描述时，用 `read` 读取该 `SKILL.md` 全文再执行——**正文不进常驻上下文**（渐进式披露）。
+
+**框架内置技能**：`src/skills/<技能名>/SKILL.md`，对**所有**会话（私聊与群聊）可用，**优先级最低**（同名时被项目 / 员工技能覆盖）。OpenStaffs 自带一个基础技能 **`openstaffs`**（能力与协作手册），随每个会话注入。
+
+> **约定**：新增能力时**必须**同步更新 `src/skills/openstaffs/SKILL.md` 与 `README.md`，保证员工侧能力暴露完备（见仓库根 `AGENTS.md`）。
+
 工作区根部的 `AGENTS.md`（可选）会作为总纲注入所有会话。
 
 ## 创建项目 / 群聊（`projects/<id>/`）

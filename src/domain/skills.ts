@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** 框架内置技能目录（本文件在 src/domain → src/skills）。 */
+export const FRAMEWORK_SKILLS_DIR = fileURLToPath(new URL("../skills/", import.meta.url));
 
 export type Skill = {
   name: string;
@@ -72,11 +76,21 @@ export function listSkills(dirs: string[]): Skill[] {
   return skills;
 }
 
-/** 渲染为注入 instructions 的技能清单；无技能时返回空串。 */
+/**
+ * 渲染为注入 instructions 的技能目录；无技能时返回空串。
+ * 遵循 Agent Skills 标准：目录给出 name / description / location，正文由 agent 按需用 read 激活。
+ */
 export function renderSkills(skills: Skill[]): string {
   if (skills.length === 0) return "";
-  const lines = skills.map((skill) =>
-    skill.description === "" ? `- ${skill.name}` : `- ${skill.name}：${skill.description}`,
-  );
-  return ["## 可用技能", ...lines].join("\n");
+  const lines = [
+    "## 可用技能",
+    "当任务匹配某技能的描述时，用 read 工具读取其「位置」给出的 SKILL.md 全文，再按其指引执行；技能内的相对路径相对 SKILL.md 所在目录解析。",
+    "",
+  ];
+  for (const skill of skills) {
+    const location = path.join(skill.dir, "SKILL.md");
+    const label = skill.description === "" ? skill.name : `${skill.name}：${skill.description}`;
+    lines.push(`- ${label}　位置：${location}`);
+  }
+  return lines.join("\n");
 }

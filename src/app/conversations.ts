@@ -5,7 +5,7 @@ import { loadEmployee, renderInstructions, type Employee } from "../domain/emplo
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { resolveEmployeeModel, type ModelRefLike } from "../domain/config.ts";
-import { listSkills, renderSkills } from "../domain/skills.ts";
+import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
@@ -36,11 +36,12 @@ function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): str
     : groupConversationIdsFile(ws, relation.project, speakerId);
 }
 
-/** 技能根目录：群聊 = 项目 skills + 员工 skills（群在前）；私聊 = 员工 skills。 */
+/** 技能根目录：群聊 = 项目 + 员工 + 框架内置；私聊 = 员工 + 框架内置（越窄越优先）。 */
 export function skillDirsFor(ws: Workspace, relation: Relation, speaker: Employee): string[] {
   const dirs: string[] = [];
   if (relation.kind === "group") dirs.push(path.join(projectDir(ws, relation.project), "skills"));
   dirs.push(path.join(employeeDir(ws, speaker.id), "skills"));
+  dirs.push(FRAMEWORK_SKILLS_DIR);
   return dirs;
 }
 
