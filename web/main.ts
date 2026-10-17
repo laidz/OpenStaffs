@@ -1,6 +1,7 @@
 import { api, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
 import { escapeHtml, layoutHtml, liveHtml, messagesHtml, setupPage, sidebarHtml } from "./render.ts";
+import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
 
@@ -103,6 +104,45 @@ function guard(promise: Promise<unknown>): void {
   void promise.catch(reportError);
 }
 
+function composerInput(): HTMLTextAreaElement | null {
+  return document.getElementById("composer-input") as HTMLTextAreaElement | null;
+}
+
+/** 当前房间的成员上下文：群聊给出成员 id 列表（非群聊为空）。 */
+function roomMembers(): { isGroup: boolean; memberIds: string[] } {
+  const roomKey = state.roomKey;
+  if (roomKey?.startsWith("group:") === true) {
+    const project = state.projects.find((p) => `group:${p.id}` === roomKey);
+    return { isGroup: true, memberIds: (project?.members ?? []).map((m) => m.id) };
+  }
+  return { isGroup: false, memberIds: [] };
+}
+
+/** 当前群聊正文里 @ 到的成员（非群聊恒为空）；与后端路由解析完全一致。 */
+function composerTargets(): string[] {
+  const input = composerInput();
+  const { isGroup, memberIds } = roomMembers();
+  return input !== null && isGroup ? targetsOf(input.value, memberIds) : [];
+}
+
+/**
+ * 群聊门禁：正文是定向的唯一真相源——复选框与发送按钮都从正文推导（勾选会写入/移除正文开头的 @ 前缀块）。
+ * 无有效 @（未勾选任何成员）或只有 @ 没有正文时禁发：原来的“不 @ 则广播”在 UI 里永远到不了。
+ */
+function syncComposerUi(): void {
+  const { isGroup, memberIds } = roomMembers();
+  const input = composerInput();
+  const targets = composerTargets();
+  if (isGroup) {
+    for (const box of app.querySelectorAll<HTMLInputElement>("#composer-targets input[data-target]")) {
+      box.checked = targets.includes(box.dataset.target!);
+    }
+  }
+  const canSend = input !== null && (!isGroup || groupSendable(input.value, memberIds));
+  const button = document.getElementById("composer-send") as HTMLButtonElement | null;
+  if (button !== null) button.disabled = sending || !canSend;
+}
+
 function bindRoomButtons(): void {
   for (const element of app.querySelectorAll<HTMLElement>("[data-room]")) {
     element.addEventListener("click", () => guard(enterRoom(element.dataset.room!)));
@@ -121,6 +161,16 @@ function bindEvents(): void {
       void sendCurrent();
     }
   });
+  input?.addEventListener("input", () => syncComposerUi());
+  for (const box of app.querySelectorAll<HTMLInputElement>("#composer-targets input[data-target]")) {
+    box.addEventListener("change", () => {
+      const area = composerInput();
+      if (area === null) return;
+      area.value = toggleTarget(area.value, box.dataset.target!, box.checked);
+      syncComposerUi();
+      area.focus();
+    });
+  }
   document.getElementById("btn-new-session")?.addEventListener("click", () => guard(newSession()));
   document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
   document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
@@ -171,16 +221,27 @@ async function enterRoom(roomKey: string): Promise<void> {
 async function sendCurrent(): Promise<void> {
   if (sending || state.roomKey === undefined) return;
   const roomKey = state.roomKey;
-  const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  const input = composerInput();
   const text = input?.value.trim() ?? "";
   if (text === "") return;
+  const isGroup = roomKey.startsWith("group:");
+  const targets = composerTargets();
+  // 兜底门禁：群聊需「有效对象 + 前缀外的正文」（按钮已禁用、Enter 也走这里）；后端同样会拒绝无对象。
+  if (isGroup && !groupSendable(input?.value ?? "", roomMembers().memberIds)) return;
   const button = document.getElementById("composer-send") as HTMLButtonElement | null;
   sending = true;
   if (button !== null) button.disabled = true;
   try {
-    const result = await api.send(roomKey, text, crypto.randomUUID());
-    if (input !== null) input.value = "";
-    if (result.deliveries.length === 0) window.alert("未触发任何成员（可能只 @ 了老板）");
+    await api.send(roomKey, text, crypto.randomUUID());
+    // 发送期间用户又改了输入（或点了别的成员）则不覆盖；未改动才重置为“保留勾选”的草稿。
+    if (input !== null && input.value.trim() === text) {
+      if (isGroup) {
+        input.value = draftAfterSend(targets); // 保留勾选对象的 @ 前缀：接着发下一条无需重新勾选
+        input.focus();
+      } else {
+        input.value = "";
+      }
+    }
     // R9 兜底：服务端 pump 订阅晚于 submit，新房间的首条 boss 消息不会经 SSE 推来。
     // 重拉当前房间，仅把**尚未见过**的消息喂入 reducer（复合键过滤：只为新消息触发一次重渲）。
     try {
@@ -198,7 +259,7 @@ async function sendCurrent(): Promise<void> {
     reportError(error);
   } finally {
     sending = false;
-    if (button !== null) button.disabled = false;
+    syncComposerUi();
   }
 }
 

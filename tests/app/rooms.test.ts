@@ -57,7 +57,7 @@ describe("房间合并视图", () => {
     expect(merged[2]!.speaker).toEqual({ kind: "employee", id: "alice", alias: "Alice" });
   });
 
-  it("老板广播消息按 roomMessageId 去重取最小 entryId；无 roomMessageId 的不去重", () => {
+  it("老板多投递消息按 roomMessageId 去重取最小 entryId；无 roomMessageId 的不去重", () => {
     const members: MemberTranscript[] = [
       { memberId: "alice", convId: "c1", messages: [chat("15", "user", "广播", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_x" } })] },
       { memberId: "bob", convId: "c2", messages: [chat("16", "user", "广播", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_x" } })] },
@@ -119,7 +119,64 @@ describe("房间合并视图", () => {
   it("空输入、空会话不产生消息", () => {
     expect(mergeRoomMessages("dm:alice", [])).toEqual([]);
     expect(normalizeChatMessage("dm:alice", { memberId: "alice", convId: "c1", messages: [] }, chat("1", "assistant", ""))).toEqual({
-      convId: "c1", entryId: "1", roomKey: "dm:alice", speaker: { kind: "employee", id: "alice" }, text: "",
+      convId: "c1", entryId: "1", roomKey: "dm:alice", speaker: { kind: "employee", id: "alice" }, text: "", bossDirected: true,
     });
+  });
+});
+
+describe("群聊 @前缀约定（历史整洁 + 待办口径）", () => {
+  const memberIds = ["alice", "bob"];
+  const alice: MemberTranscript = { memberId: "alice", convId: "c1", messages: [] };
+
+  it("群回复没以 @ 开头 → 显示层补 @老板，且计为给老板", () => {
+    const m = normalizeChatMessage("group:demo", alice, chat("9", "assistant", "好的，已完成"), memberIds);
+    expect(m?.text).toBe("@老板 好的，已完成");
+    expect(m?.bossDirected).toBe(true);
+  });
+
+  it("以 @成员 开头 → 原样保留，不算给老板", () => {
+    const m = normalizeChatMessage("group:demo", alice, chat("9", "assistant", "@bob 请评审"), memberIds);
+    expect(m?.text).toBe("@bob 请评审");
+    expect(m?.bossDirected).toBe(false);
+  });
+
+  it("显式 @老板（含与成员并列）→ 计入给老板", () => {
+    expect(normalizeChatMessage("group:demo", alice, chat("9", "assistant", "@老板 汇报：已完成"), memberIds)?.bossDirected).toBe(true);
+    expect(normalizeChatMessage("group:demo", alice, chat("9", "assistant", "@bob @老板 请同步"), memberIds)?.bossDirected).toBe(true);
+  });
+
+  it("开头 @ 了但解析不出有效对象（写错 id / 标点粘连 / 只 @ 自己 / 只有 @ 没正文）→ 同样视为发给老板", () => {
+    for (const text of ["@alice，你好", "@ghost 你好", "@所有人 注意", "@alice 备忘", "@bob"]) {
+      const m = normalizeChatMessage("group:demo", alice, chat("9", "assistant", text), memberIds);
+      expect(m?.text).toBe(`@老板 ${text}`);
+      expect(m?.bossDirected).toBe(true);
+    }
+  });
+
+  it("正文中/尾的 @老板 不算（只认前缀块）", () => {
+    expect(normalizeChatMessage("group:demo", alice, chat("9", "assistant", "@bob 请转告 @老板"), memberIds)?.bossDirected).toBe(false);
+    expect(normalizeChatMessage("group:demo", alice, chat("9", "assistant", "已汇报 @老板"), memberIds)?.text).toBe("@老板 已汇报 @老板");
+  });
+
+  it("私聊：不补 @老板，但一律计为给老板", () => {
+    const m = normalizeChatMessage("dm:alice", alice, chat("9", "assistant", "好的"));
+    expect(m?.text).toBe("好的");
+    expect(m?.bossDirected).toBe(true);
+  });
+
+  it("群聊红点口径：只统计给老板的消息（成员互聊不点）", () => {
+    const merged = mergeRoomMessages(
+      "group:demo",
+      [
+        { memberId: "alice", convId: "c1", messages: [
+          chat("10", "assistant", "@bob 请评审"),
+          chat("11", "assistant", "好的，已完成"),
+          chat("12", "assistant", "@老板 汇报：已提交"),
+        ] },
+      ],
+      memberIds,
+    );
+    expect(countUnread(merged, undefined)).toBe(2);
+    expect(countUnread(merged, 11)).toBe(1);
   });
 });

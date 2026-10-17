@@ -1,15 +1,25 @@
 import { loadEmployee, listEmployees } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
+import { parseMembers } from "../domain/access-control.ts";
 import type { Workspace } from "../domain/paths.ts";
-import type { HarnessEvent, HarnessPort } from "../harness/port.ts";
-import { activeMemberSessions, roomTranscripts } from "../app/conversations.ts";
+import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
+import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
+import { activeMemberSessions, roomTranscripts, type SessionDefaults } from "../app/conversations.ts";
 import { countUnread, mergeRoomMessages, normalizeChatMessage, parseRoomKey, type MemberTranscript } from "../app/rooms.ts";
 import { readSeen } from "../app/unread.ts";
 import type { SseHub } from "./sse.ts";
 
 export type RoomRef = { roomKey: string; memberId: string; alias?: string };
 
-type Deps = { ws: Workspace; harness: HarnessPort; hub: SseHub };
+type Deps = {
+  ws: Workspace;
+  harness: HarnessPort;
+  hub: SseHub;
+  /** 与 HTTP 发送共享的 per-key 队列：同成员的老板消息与 @触发按顺序进入。缺省自建。 */
+  queue?: KeyedQueue;
+  /** 触发投递时的会话默认模型（缺省 = 员工自配/无兜底）。 */
+  getDefaults?: () => SessionDefaults | undefined;
+};
 
 /** in-flight 注册的占位：promise 供并发复用；state.cancelled 标记 in-flight 期间的 unregister。 */
 type Pending = { promise: Promise<void>; state: { cancelled: boolean } };
@@ -20,10 +30,14 @@ export class Pump {
   /** 同一 convId 的并发 register 复用同一 in-flight 占用，防双订阅/重复广播（delta 无去重字段，重影可感）。 */
   #pending = new Map<string, Pending>();
   readonly #deps: Deps;
+  readonly #queue: KeyedQueue;
+  readonly #getDefaults: () => SessionDefaults | undefined;
 
   // 不用参数属性：Node 的 strip-only TS 模式（npm start = node src/server/main.ts）不支持，会在加载时抛 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX。
   constructor(deps: Deps) {
     this.#deps = deps;
+    this.#queue = deps.queue ?? new KeyedQueue();
+    this.#getDefaults = deps.getDefaults ?? (() => undefined);
   }
 
   async register(convId: string, ref: { roomKey: string; memberId: string }): Promise<void> {
@@ -106,11 +120,15 @@ export class Pump {
           hub.broadcast({ type: "room.delta", roomKey: ref.roomKey, convId, memberId: ref.memberId, channel: event.channel, delta: event.delta });
           return;
         case "message": {
+          const relation = parseRoomKey(ref.roomKey);
+          const memberIds = relation?.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
           const member: MemberTranscript = { memberId: ref.memberId, ...(ref.alias === undefined ? {} : { alias: ref.alias }), convId, messages: [] };
-          const message = normalizeChatMessage(ref.roomKey, member, event.message);
+          const message = normalizeChatMessage(ref.roomKey, member, event.message, memberIds);
           if (message === undefined) return;
           hub.broadcast({ type: "room.message", roomKey: ref.roomKey, message });
           if (message.speaker.kind === "employee") void this.#pushUnread(ref.roomKey);
+          // 员工群回复开头的 @触发其他成员（老板消息在发送时已路由；转发副本 kind=chat.mention 不在此列）。
+          if (event.message.role === "assistant") void this.#triggerFromReply(convId, ref, event.message);
           return;
         }
         case "run":
@@ -135,12 +153,40 @@ export class Pump {
     try {
       const relation = parseRoomKey(roomKey);
       if (relation === undefined) return;
+      const memberIds = relation.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
       const members = await roomTranscripts(this.#deps.ws, this.#deps.harness, relation);
-      const messages = mergeRoomMessages(roomKey, members);
+      const messages = mergeRoomMessages(roomKey, members, memberIds);
       const seen = readSeen(this.#deps.ws);
       this.#deps.hub.broadcast({ type: "room.unread", roomKey, count: countUnread(messages, seen.seen[roomKey]) });
     } catch {
       // 未读重算失败不影响推流
+    }
+  }
+
+  /** 群回复的 @前缀触发：把回复投递给被 @ 到的成员，并订阅新触发的会话；失败只记日志，绝不影响推流。 */
+  async #triggerFromReply(convId: string, ref: RoomRef, message: ChatMessage): Promise<void> {
+    try {
+      const relation = parseRoomKey(ref.roomKey);
+      if (relation === undefined || relation.kind !== "group") return;
+      const defaults = this.#getDefaults();
+      const reports = await triggerFromGroupReply(this.#deps.ws, this.#deps.harness, {
+        queue: this.#queue,
+        ...(defaults === undefined ? {} : { defaults }),
+        project: relation.project,
+        senderId: ref.memberId,
+        convId,
+        entryId: message.id,
+        text: message.text,
+      });
+      for (const report of reports) {
+        try {
+          await this.register(report.convId, { roomKey: ref.roomKey, memberId: report.memberId });
+        } catch {
+          // 订阅失败不影响投递（重启扫描兜底）
+        }
+      }
+    } catch (error) {
+      console.error(`[openstaffs] 群回复触发失败（${ref.roomKey}/${ref.memberId}）：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

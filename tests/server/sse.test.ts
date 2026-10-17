@@ -45,7 +45,7 @@ describe("SseHub", () => {
     for (let i = 0; i < 300; i++) {
       hub.broadcast({ type: "room.delta", roomKey: "dm:a", convId: "c", memberId: "a", channel: "text", delta: `d${i}` });
     }
-    hub.broadcast({ type: "room.message", roomKey: "dm:a", message: { convId: "c", entryId: "1", roomKey: "dm:a", speaker: { kind: "boss" }, text: "权威" } });
+    hub.broadcast({ type: "room.message", roomKey: "dm:a", message: { convId: "c", entryId: "1", roomKey: "dm:a", speaker: { kind: "boss" }, text: "权威", bossDirected: false } });
     expect(client.pending).toBeLessThanOrEqual(200);
     client.close();
     expect(hub.size).toBe(0);

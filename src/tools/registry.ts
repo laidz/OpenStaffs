@@ -103,7 +103,8 @@ const roomHistory: ToolDef = {
     const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : 50;
 
     const transcripts = await roomTranscripts(ctx.ws, ctx.harness, relation);
-    const merged = mergeRoomMessages(roomKeyOf(relation), transcripts);
+    const memberIds = relation.kind === "group" ? parseMembers(ctx.ws, relation.project) : [];
+    const merged = mergeRoomMessages(roomKeyOf(relation), transcripts, memberIds);
     const recent = merged.slice(-limit);
     if (recent.length === 0) return "（暂无消息）";
     return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");

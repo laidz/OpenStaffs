@@ -4,8 +4,8 @@ import type { RoomMessage } from "../../src/app/rooms.ts";
 
 function msg(entryId: string, convId: string, kind: "boss" | "employee", text: string, roomMessageId?: string): RoomMessage {
   return kind === "boss"
-    ? { convId, entryId, roomKey: "dm:alice", speaker: { kind: "boss" }, text, ...(roomMessageId === undefined ? {} : { roomMessageId }) }
-    : { convId, entryId, roomKey: "dm:alice", speaker: { kind: "employee", id: "alice" }, text };
+    ? { convId, entryId, roomKey: "dm:alice", speaker: { kind: "boss" }, text, bossDirected: false, ...(roomMessageId === undefined ? {} : { roomMessageId }) }
+    : { convId, entryId, roomKey: "dm:alice", speaker: { kind: "employee", id: "alice" }, text, bossDirected: true };
 }
 
 function inRoom(): State {
@@ -26,7 +26,7 @@ describe("前端状态归约", () => {
     state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("11", "c1", "employee", "回答") } });
     // 重复投递：应被忽略
     state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("10", "c1", "boss", "任务", "rm_1") } });
-    // 其他成员会话的同一次广播副本：也应被忽略（roomMessageId 已见）
+    // 其他成员会话的同一次多投递副本：也应被忽略（roomMessageId 已见）
     state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("12", "c2", "boss", "任务", "rm_1") } });
     expect(state.messages.map((m) => m.entryId)).toEqual(["10", "11"]);
   });

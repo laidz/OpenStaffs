@@ -93,6 +93,12 @@ export function chatHtml(state: State): string {
         .map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.alias ?? m.id)}</option>`)
         .join("")}</select>`
     : "";
+  // 群聊：输入框上方罗列成员复选框，勾选 = 往正文写 @（唯一真相源）；无勾选则发送禁用。
+  const targetsRow = isGroup ? composerTargetsHtml(project?.members ?? []) : "";
+  const placeholder = isGroup
+    ? "输入消息，Enter 发送（发送对象 = 上方勾选的成员）"
+    : "输入消息，Enter 发送";
+  const sendDisabled = isGroup ? " disabled" : "";
   return `<section class="chat">
     <header class="chat-head">
       <span class="title">${escapeHtml(title)}</span>
@@ -106,10 +112,29 @@ export function chatHtml(state: State): string {
       <div id="live-area">${liveHtml(state.live)}</div>
     </div>
     <div class="composer">
-      <textarea id="composer-input" placeholder="输入消息，Enter 发送（@成员 定向触发；不 @ 则广播）"></textarea>
-      <button id="composer-send">发送</button>
+      ${targetsRow}
+      <div class="composer-row">
+        <textarea id="composer-input" placeholder="${placeholder}"></textarea>
+        <button id="composer-send"${sendDisabled}>发送</button>
+      </div>
     </div>
   </section>`;
+}
+
+/** 群聊发送对象复选框（展示名 + id；转义均在 HTML 层完成）。 */
+function composerTargetsHtml(members: { id: string; alias?: string }[]): string {
+  if (members.length === 0) {
+    return `<div class="composer-targets" id="composer-targets"><span class="hint">本群还没有成员（members.md 为空）</span></div>`;
+  }
+  const items = members
+    .map((member) => {
+      const name = escapeHtml(member.alias ?? member.id);
+      const id = escapeHtml(member.id);
+      const code = member.alias !== undefined && member.alias !== member.id ? `<code>${id}</code>` : "";
+      return `<label class="target"><input type="checkbox" data-target="${id}" /><span>${name}</span>${code}</label>`;
+    })
+    .join("");
+  return `<div class="composer-targets" id="composer-targets"><span class="targets-label">发送给：</span>${items}</div>`;
 }
 
 export function layoutHtml(state: State): string {

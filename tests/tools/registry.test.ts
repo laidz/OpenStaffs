@@ -95,7 +95,8 @@ describe("room_history", () => {
       await waitFor(async () => (await harness.transcript(aliceConv)).some((m) => m.role === "assistant"));
       const out = await tool("room_history").run({ room: "group:demo" }, ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness));
       expect(out).toContain("老板：任务X");
-      expect(out).toContain("alice：答0");
+      // 没以 @ 开头的群回复：显示层补 @老板（第三人回看历史时不会误读为自己）
+      expect(out).toContain("alice：@老板 答0");
     } finally {
       await harness.close();
     }

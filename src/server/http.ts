@@ -11,7 +11,7 @@ import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
 import {
   activeMemberSessions, findSessionOwner, interruptRoom, newSession, roomTranscripts, sessionChains, type Relation,
 } from "../app/conversations.ts";
-import { EmptyGroupError, KeyedQueue, sendToRoom } from "../app/send.ts";
+import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { SseHub } from "./sse.ts";
 
@@ -120,10 +120,12 @@ async function handleRooms(
     return;
   }
   const defaults = { model: config.model };
+  // 群聊归一化需要成员表（判定 @ 对象是否有效、决定“视为发给老板”的兜底）。
+  const memberIds = relation.kind === "group" ? parseMembers(deps.ws, relation.project) : [];
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
     const members = await roomTranscripts(deps.ws, harness, relation);
-    json(res, 200, { roomKey, messages: mergeRoomMessages(roomKey, members) });
+    json(res, 200, { roomKey, messages: mergeRoomMessages(roomKey, members, memberIds) });
     return;
   }
 
@@ -151,7 +153,7 @@ async function handleRooms(
       }
       json(res, 202, result);
     } catch (error) {
-      if (error instanceof EmptyGroupError) {
+      if (error instanceof EmptyGroupError || error instanceof NoTargetsError) {
         json(res, 400, { error: error.message });
         return;
       }
@@ -193,7 +195,7 @@ async function handleRooms(
 
   if (rest.length === 1 && rest[0] === "read" && method === "POST") {
     const members = await roomTranscripts(deps.ws, harness, relation);
-    const merged = mergeRoomMessages(roomKey, members);
+    const merged = mergeRoomMessages(roomKey, members, memberIds);
     const max = merged.reduce((acc, m) => Math.max(acc, Number(m.entryId)), 0);
     if (max > 0) markSeen(deps.ws, roomKey, String(max));
     const count = countUnread(merged, readSeen(deps.ws).seen[roomKey]);
@@ -228,7 +230,7 @@ async function handleRooms(
     }
     const messages = mergeRoomMessages(roomKey, [
       { memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId) },
-    ]);
+    ], memberIds);
     json(res, 200, { convId, memberId: owner, messages });
     return;
   }

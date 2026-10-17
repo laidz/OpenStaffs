@@ -202,7 +202,7 @@ describe("房间 API", () => {
     }
   });
 
-  it("群聊：@alice 定向、@老板 空投递、空成员群 400", async () => {
+  it("群聊：@alice 定向（正文保留 @）、不 @ / 只 @老板 400、空成员群 400", async () => {
     const { base, close } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
     try {
       const mentioned = await fetch(`${base}/api/rooms/group:yt/messages`, {
@@ -210,16 +210,32 @@ describe("房间 API", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: "@alice 做视频" }),
       });
+      expect(mentioned.status).toBe(202);
       const accepted = (await mentioned.json()) as { deliveries: { memberId: string }[] };
       expect(accepted.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
+
+      // 合并视图里老板消息保留 @（成员读历史时能辨认消息原本发给谁）
+      const merged = await waitFor(async () => {
+        const res = await fetch(`${base}/api/rooms/group:yt/messages`);
+        const body = (await res.json()) as { messages: { speaker: unknown; text: string }[] };
+        return body.messages.some((m) => (m.speaker as { kind?: string }).kind === "employee") ? body : undefined;
+      });
+      expect(merged.messages[0]).toMatchObject({ speaker: { kind: "boss" }, text: "@alice 做视频" });
+
+      const noTargets = await fetch(`${base}/api/rooms/group:yt/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "全体汇报" }),
+      });
+      expect(noTargets.status).toBe(400);
+      expect(((await noTargets.json()) as { error: string }).error).toBe("消息需要 @ 至少一位群成员");
 
       const bossOnly = await fetch(`${base}/api/rooms/group:yt/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: "@老板 收到" }),
       });
-      expect(bossOnly.status).toBe(202);
-      expect(((await bossOnly.json()) as { deliveries: unknown[] }).deliveries).toEqual([]);
+      expect(bossOnly.status).toBe(400);
 
       fs.rmSync(path.join(root, "projects", "yt", "members.md"));
       const empty = await fetch(`${base}/api/rooms/group:yt/messages`, {

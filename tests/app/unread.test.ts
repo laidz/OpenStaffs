@@ -11,8 +11,8 @@ afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function msg(entryId: string, kind: "boss" | "employee", roomKey = "dm:alice"): RoomMessage {
   return kind === "boss"
-    ? { convId: "c1", entryId, roomKey, speaker: { kind: "boss" }, text: "t", roomMessageId: `rm_${entryId}` }
-    : { convId: "c1", entryId, roomKey, speaker: { kind: "employee", id: "alice" }, text: "t" };
+    ? { convId: "c1", entryId, roomKey, speaker: { kind: "boss" }, text: "t", bossDirected: false, roomMessageId: `rm_${entryId}` }
+    : { convId: "c1", entryId, roomKey, speaker: { kind: "employee", id: "alice" }, text: "t", bossDirected: true };
 }
 
 describe("未读水印", () => {

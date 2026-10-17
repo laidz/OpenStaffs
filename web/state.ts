@@ -51,7 +51,7 @@ function messageKey(message: RoomMessage): string {
   return `${message.convId}:${message.entryId}`;
 }
 
-/** 增量合并：复合键去重；同 roomMessageId 的广播副本已见则不重复（先到先显，历史不动）。 */
+/** 增量合并：复合键去重；同 roomMessageId 的多投递副本已见则不重复（先到先显，历史不动）。 */
 function appendMessage(messages: RoomMessage[], incoming: RoomMessage): RoomMessage[] {
   if (messages.some((m) => messageKey(m) === messageKey(incoming))) return messages;
   if (incoming.roomMessageId !== undefined && messages.some((m) => m.roomMessageId === incoming.roomMessageId)) {

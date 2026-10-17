@@ -28,6 +28,8 @@ async function main(): Promise<void> {
   const getConfig = () => readConfig(ws);
   const config = getConfig();
   const hub = new SseHub();
+  // 与 HTTP 发送共享：同成员的老板消息与群回复 @触发按同一队列串行进入。
+  const queue = new KeyedQueue();
   let pump: Pump | undefined;
 
   let harness: ReturnType<typeof createPiHarness> | undefined;
@@ -37,7 +39,16 @@ async function main(): Promise<void> {
       const tools = createOpenStaffsToolsExtension({ ws, getHarness: () => harness! });
       harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models, extensions: [tools] });
       await harness.open();
-      pump = new Pump({ ws, harness, hub });
+      pump = new Pump({
+        ws,
+        harness,
+        hub,
+        queue,
+        getDefaults: () => {
+          const current = getConfig();
+          return current === undefined ? undefined : { model: current.model };
+        },
+      });
       await pump.registerAll();
     } catch (error) {
       console.error(`[openstaffs] 启动失败：${error instanceof Error ? error.message : String(error)}`);
@@ -52,7 +63,7 @@ async function main(): Promise<void> {
     ws,
     getConfig,
     getHarness: () => harness,
-    queue: new KeyedQueue(),
+    queue,
     publicDir: path.join(here, "..", "..", "public"),
     pump,
     hub,
