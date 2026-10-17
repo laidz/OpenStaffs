@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { messageHtml, messagesHtml } from "../../web/render.ts";
+import { messageHtml, messagesHtml, setupPage } from "../../web/render.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
 describe("渲染", () => {
@@ -17,5 +17,13 @@ describe("渲染", () => {
     expect(messageHtml(employee)).toContain('class="msg employee"');
     expect(messageHtml(employee)).toContain("爱丽丝");
     expect(messagesHtml([])).toContain("还没有消息");
+  });
+
+  it("引导页示例为多供应商新格式", () => {
+    const html = setupPage("/office", 4319);
+    expect(html).toContain('"providers"');
+    expect(html).toContain('"opencode-go": { "apiKey": "你的密钥" }');
+    expect(html).toContain('"model": "opencode-go/deepseek-v4.1-flash"');
+    expect(html).toContain('"port": 4319');
   });
 });

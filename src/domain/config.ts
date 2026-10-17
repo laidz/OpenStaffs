@@ -3,10 +3,13 @@ import path from "node:path";
 import { stateDir, type Workspace } from "./paths.ts";
 import type { ModelChoice } from "./types.ts";
 
+export type ProviderEntry = { apiKey: string };
+
 export type WorkspaceConfig = {
-  provider: string;
-  apiKey: string;
-  modelId: string;
+  /** 多供应商：id → 凭据；key 即模型引用 "provider/modelId" 里的供应商。 */
+  providers: Record<string, ProviderEntry>;
+  /** 全局默认模型 "provider/modelId"（员工未配模型时的兜底）。 */
+  model: string;
   port: number;
 };
 
@@ -21,7 +24,33 @@ function requiredString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-/** 读取全局配置；缺失/坏 JSON/必需字段缺失 → undefined（未配置模式）。 */
+/** 解析模型引用 "provider/modelId"：第一个 / 前为供应商，其余为模型 id（可再含 /）；两侧非空才合法。 */
+export function parseModelRef(raw: string): { provider: string; modelId: string } | undefined {
+  const slash = raw.indexOf("/");
+  if (slash < 0) return undefined;
+  const provider = raw.slice(0, slash).trim();
+  const modelId = raw.slice(slash + 1).trim();
+  if (provider === "" || modelId === "") return undefined;
+  return { provider, modelId };
+}
+
+/** 解析 providers map：坏条目（非对象 / 缺 apiKey / 空 id）跳过；无有效条目 → undefined。 */
+function parseProviders(value: unknown): Record<string, ProviderEntry> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const out: Record<string, ProviderEntry> = {};
+  for (const [rawId, entry] of Object.entries(value)) {
+    const id = rawId.trim();
+    const apiKey =
+      typeof entry === "object" && entry !== null
+        ? requiredString((entry as Record<string, unknown>).apiKey)
+        : undefined;
+    if (id === "" || apiKey === undefined) continue;
+    out[id] = { apiKey };
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/** 读取全局配置；缺失/坏 JSON/无有效供应商/缺合法默认模型 → undefined（未配置模式）。 */
 export function readConfig(ws: Workspace): WorkspaceConfig | undefined {
   let raw = "";
   try {
@@ -31,15 +60,14 @@ export function readConfig(ws: Workspace): WorkspaceConfig | undefined {
   }
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const provider = requiredString(parsed.provider);
-    const apiKey = requiredString(parsed.apiKey);
-    const modelId = requiredString(parsed.modelId);
-    if (provider === undefined || apiKey === undefined || modelId === undefined) return undefined;
+    const providers = parseProviders(parsed.providers);
+    const model = requiredString(parsed.model);
+    if (providers === undefined || model === undefined || parseModelRef(model) === undefined) return undefined;
     const port =
       typeof parsed.port === "number" && Number.isInteger(parsed.port) && parsed.port > 0 && parsed.port < 65536
         ? parsed.port
         : DEFAULT_PORT;
-    return { provider, apiKey, modelId, port };
+    return { providers, model, port };
   } catch {
     return undefined;
   }
@@ -68,11 +96,16 @@ export function readBossName(ws: Workspace): string {
 
 export type ModelRefLike = { provider: string; modelId: string };
 
-/** 员工模型兜底：员工 provider+modelId 成对非空则用员工的，否则整体用全局；thinkingLevel 独立保留。 */
-export function resolveEmployeeModel(global: ModelRefLike, employee: ModelChoice): ModelChoice & ModelRefLike {
+/** 员工模型兜底：员工 model 合法则用员工的，否则整体用全局；thinkingLevel 独立保留。 */
+export function resolveEmployeeModel(globalModel: string, employee: ModelChoice): ModelRefLike & { thinkingLevel?: string } {
   const thinking = employee.thinkingLevel === undefined ? {} : { thinkingLevel: employee.thinkingLevel };
-  const provider = employee.provider.trim();
-  const modelId = employee.modelId.trim();
-  if (provider !== "" && modelId !== "") return { provider, modelId, ...thinking };
-  return { provider: global.provider, modelId: global.modelId, ...thinking };
+  const own = parseModelRef(employee.model);
+  if (own !== undefined) return { ...own, ...thinking };
+  const fallback = parseModelRef(globalModel) ?? { provider: "", modelId: "" };
+  return { ...fallback, ...thinking };
+}
+
+/** 解析结果 → "provider/modelId"（展示/API 输出用）。 */
+export function formatModelRef(ref: ModelRefLike): string {
+  return `${ref.provider}/${ref.modelId}`;
 }

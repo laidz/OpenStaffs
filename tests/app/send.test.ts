@@ -13,7 +13,7 @@ function seedEmployee(id: string) {
   const dir = path.join(root, "agents", id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
 }
 
 function seedGroup(project: string, members: string[]) {
@@ -56,7 +56,7 @@ class FakePort implements HarnessPort {
   }
 }
 
-const defaults = { model: { provider: "faux", modelId: "faux-model" } };
+const defaults = { model: "faux/faux-model" };
 
 describe("发送编排", () => {
   it("私聊直接投递（原文不剥 @），meta 带 author 与同一 roomMessageId", async () => {

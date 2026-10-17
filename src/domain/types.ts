@@ -7,7 +7,7 @@ export type Relation =
   | { kind: "group"; project: ProjectName };
 
 export type ModelChoice = {
-  provider: string;
-  modelId: string;
+  /** 模型引用 "provider/modelId"（第一个 / 前为供应商，其余为模型 id）；空串 = 用全局默认模型。 */
+  model: string;
   thinkingLevel?: string;
 };

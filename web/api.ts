@@ -1,7 +1,7 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 
-export type Status = { configured: boolean; root: string; port: number; provider?: string; modelId?: string };
-export type EmployeeSummary = { id: string; alias?: string; model: { provider: string; modelId: string } };
+export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[] };
+export type EmployeeSummary = { id: string; alias?: string; model: string };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
 export type RoomMessages = { roomKey: string; messages: RoomMessage[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };

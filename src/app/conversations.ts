@@ -4,7 +4,7 @@ import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir,
 import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
-import { resolveEmployeeModel, type ModelRefLike } from "../domain/config.ts";
+import { resolveEmployeeModel } from "../domain/config.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
@@ -91,15 +91,15 @@ export function accessFor(ws: Workspace, relation: Relation, speaker: Employee):
   };
 }
 
-/** 新会话默认模型（员工未配模型时兜底）。 */
-export type SessionDefaults = { model: ModelRefLike };
+/** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）。 */
+export type SessionDefaults = { model: string };
 
 function specFor(ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults): ConversationSpec {
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
   }
   const cwd = relationCwd(ws, relation);
-  const model = resolveEmployeeModel(defaults?.model ?? { provider: "", modelId: "" }, speaker.model);
+  const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
   return {
     cwd,
     instructions: instructionsFor(ws, relation, speaker),

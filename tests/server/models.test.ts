@@ -2,14 +2,20 @@ import { describe, expect, it } from "vitest";
 import { PROVIDERS, createConfiguredModels } from "../../src/server/models.ts";
 
 describe("Models 装配", () => {
-  it("apiKey 经 CredentialStore 注入（本地可解析），未知 provider 抛错", async () => {
-    const models = await createConfiguredModels({ provider: "opencode-go", apiKey: "sk-test-123", modelId: "m", port: 4319 });
-    const auth = await models.getAuth("opencode-go");
-    expect(auth).toBeDefined();
-    expect(JSON.stringify(auth?.auth)).toContain("sk-test-123");
+  it("多供应商 apiKey 各自经 CredentialStore 注入；未知供应商抛错", async () => {
+    const models = await createConfiguredModels({
+      "opencode-go": { apiKey: "sk-test-123" },
+      anthropic: { apiKey: "sk-ant-456" },
+    });
+    const first = await models.getAuth("opencode-go");
+    expect(first).toBeDefined();
+    expect(JSON.stringify(first?.auth)).toContain("sk-test-123");
+    const second = await models.getAuth("anthropic");
+    expect(second).toBeDefined();
+    expect(JSON.stringify(second?.auth)).toContain("sk-ant-456");
 
     await expect(
-      createConfiguredModels({ provider: "nope", apiKey: "k", modelId: "m", port: 4319 }),
+      createConfiguredModels({ "opencode-go": { apiKey: "k" }, nope: { apiKey: "k" } }),
     ).rejects.toThrow("未知供应商");
 
     expect(Object.keys(PROVIDERS)).toContain("opencode-go");

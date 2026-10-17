@@ -43,10 +43,10 @@ function displayName(ws: Workspace, id: string): string {
   }
 }
 
-/** 新会话/新条会话的模型兜底（全局配置）。 */
+/** 新会话/新条会话的模型兜底（全局默认模型）。 */
 function defaultsOf(ctx: ToolContext): SessionDefaults | undefined {
   const config = readConfig(ctx.ws);
-  return config === undefined ? undefined : { model: { provider: config.provider, modelId: config.modelId } };
+  return config === undefined ? undefined : { model: config.model };
 }
 
 /** 列出办公室：成员 + 项目。 */

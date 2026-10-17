@@ -22,7 +22,7 @@ function seedEmployee(id: string) {
   const dir = path.join(root, "agents", id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
 }
 
 function harnessWithFaux() {
@@ -269,7 +269,7 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const defaults: SessionDefaults = { model: { provider: "faux", modelId: "faux-model" } };
+      const defaults: SessionDefaults = { model: "faux/faux-model" };
       const convId = await openDm(ws, harness, "carol", defaults);
       const reply = await harness.send(convId, "在吗");
       expect(reply.text).toBe("ok");
@@ -366,7 +366,7 @@ describe("应用用例", () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave。");
     fs.writeFileSync(path.join(dir, "profile.md"), "档案版本一。");
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
 
     const systems: string[] = [];
     const recordSystem = (messages: readonly { role: string; content: unknown }[]): void => {
@@ -422,7 +422,7 @@ describe("应用用例", () => {
     const dir = path.join(root, "agents", "dave");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 dave。");
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
     const sqlitePath = path.join(root, ".openstaffs", "state-restart.sqlite");
     const ws = createWorkspace(root);
 

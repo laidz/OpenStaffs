@@ -19,7 +19,7 @@ function seedEmployee(id: string, alias?: string): void {
   const dir = path.join(root, "agents", id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model", ...(alias === undefined ? {} : { alias }) }));
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model", ...(alias === undefined ? {} : { alias }) }));
 }
 
 function seedProject(id: string, memberIds: string[], alias?: string): void {

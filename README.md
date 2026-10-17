@@ -26,22 +26,26 @@
 
 ```json
 {
-  "provider": "opencode-go",
-  "apiKey": "sk-…",
-  "modelId": "deepseek-v4.1-flash",
+  "providers": {
+    "opencode-go": { "apiKey": "sk-…" },
+    "anthropic": { "apiKey": "sk-ant-…" }
+  },
+  "model": "opencode-go/deepseek-v4.1-flash",
   "port": 4319,
   "bossName": "老板"
 }
 ```
 
-- `provider` / `apiKey` / `modelId` 三项必填；任一缺失、为空或 JSON 损坏 = **未配置模式**：服务照常启动，页面显示引导页，除 `/api/status` 外所有 API 返回 409。
-- `provider` 可选：`opencode-go`、`anthropic`、`openai`、`deepseek`、`google`、`openrouter`。写错会在启动时直接报错退出。
+- `providers`（至少一个有效条目）与 `model` 必填；任一缺失、为空或 JSON 损坏 = **未配置模式**：服务照常启动，页面显示引导页，除 `/api/status` 外所有 API 返回 409。`providers` 里的坏条目（非对象 / 缺 `apiKey`）会被跳过。
+- `model` 是全局默认模型，格式 `供应商/模型 id`（第一个 `/` 前为供应商，其余为模型 id，如 `openrouter/anthropic/claude-sonnet-4-5`）；员工未配模型时用它兜底。
+- 供应商可选：`opencode-go`、`anthropic`、`openai`、`deepseek`、`google`、`openrouter`。写错会在启动时直接报错退出。
+- **多供应商**：`providers` 里配几家都行；每个员工可用 `config.json` 的 `model` 指定自己的供应商与模型（见下节），引用到的供应商需在此配好密钥。
 - `port` 可选，默认 `4319`；**优先级：启动参数 / `OPENSTAFFS_PORT` > 本文件的 `port` > 4319**。
 - `bossName` 可选：老板的展示名（缺省「老板」），仅用于系统提示词里的 `{{boss_name}}` 变量。
-- 配置是进程级：改完要重启服务（Ctrl+C 后重新 `npm start`）。不重启会出现「部分生效」的假象——`/api/status` 与新会话的 `modelId` 是按请求重读文件的，但 provider 工厂与凭据仍是启动时那份；判断配置是否生效，请以重启后为准。员工 / 项目目录是运行时读取，改完刷新页面即生效。
+- 配置是进程级：改完要重启服务（Ctrl+C 后重新 `npm start`）。不重启会出现「部分生效」的假象——`/api/status` 与新会话的 `model` 是按请求重读文件的，但 provider 工厂与凭据仍是启动时那份；判断配置是否生效，请以重启后为准。员工 / 项目目录是运行时读取，改完刷新页面即生效。
 - 项目目录**必须显式指定**（`npm start -- <目录>` 或 `OPENSTAFFS_ROOT`），且不能是框架目录本身。
 - 建议 `chmod 600 .openstaffs/config.json`；项目目录里的 `.openstaffs/`、`agents/`、`projects/` 均已随框架仓库的 `.gitignore` 忽略；密钥只存在本机。若想版本化员工数据：在项目目录里单独 `git init`。
-- 密钥不会写日志、不会出现在任何 API 响应里（`/api/status` 只回 `provider` / `modelId`）。运行状态也放在 `.openstaffs/`：`state.json`（已读水印）、`state.sqlite`（对话库）。
+- 密钥不会写日志、不会出现在任何 API 响应里（`/api/status` 只回 `model` 与供应商**名单** `providers`，不含密钥）。运行状态也放在 `.openstaffs/`：`state.json`（已读水印）、`state.sqlite`（对话库）。
 
 ## 创建员工（`agents/<id>/`）
 
@@ -71,14 +75,13 @@ agents/alice/
 ```json
 {
   "alias": "爱丽丝",
-  "provider": "opencode-go",
-  "modelId": "deepseek-v4.1-flash",
+  "model": "anthropic/claude-sonnet-4-5",
   "thinkingLevel": "medium"
 }
 ```
 
 - `alias`：界面展示名（缺省 = 员工 id）。
-- `provider` + `modelId`：必须**成对**出现才覆盖全局模型；只写一个等于没写（仍用全局模型）。员工 `config.json` 损坏不影响列表，只是按缺省处理。
+- `model`：格式 `供应商/模型 id`（第一个 `/` 前为供应商）。合法则**覆盖全局默认模型**，缺失 / 非法就仍用全局；引用的供应商需在 `.openstaffs/config.json` 的 `providers` 里配好密钥。员工 `config.json` 损坏不影响列表，只是按缺省处理。
 - `thinkingLevel`：可选，单独生效。
 
 写权限（固定规则）：员工始终可写自己的目录，以及它所在的所有项目目录；`permission.json` 用于额外放行其它路径（例如 `["../bob/data/", "/tmp/shared"]`，相对路径相对该文件所在目录）。`permission.json` 本身不可被员工改写。
@@ -208,14 +211,15 @@ projects/demo/
 7. **未读红点**：员工在自己没看的房间回复 → 该房间出现红点；打开房间红点消失；切走、让员工再回一条 → 红点再现。
 8. **新开会话与历史**：点「新开会话」→ 当前视线清空；点「历史」能看到旧会话并只读回看。
 9. **快照语义**：改 `agents/alice/profile.md` → 当前会话的回复不受影响；新开会话后再发消息 → 新档案生效。
-10. **密钥不外泄**：任何 API 响应都不含 `apiKey`；`/api/status` 只含 `configured` / `root` / `port` / `provider` / `modelId`。
+10. **密钥不外泄**：任何 API 响应都不含 `apiKey`；`/api/status` 只含 `configured` / `root` / `port` / `model` / `providers`（供应商名单）。
+11. **多供应商**：`providers` 里配两家（如 opencode-go 与 anthropic）→ 给 alice 的 `config.json` 写 `"model": "anthropic/…"` → 刷新页面；alice 的会话用 anthropic，其他员工仍用全局默认模型。
 
 ## 常见问题
 
 - **启动报「必须指定项目目录」**：漏了目录参数——`npm start` 与目录之间要有 `--`（`npm start -- ~/MyOffice`）；也可以写 `OPENSTAFFS_ROOT=~/MyOffice npm start`。报「项目目录不能是框架目录本身」时换一个独立目录存放办公数据。
 - **指定端口**：`npm start -- ~/MyOffice 5000`，或 `OPENSTAFFS_PORT=5000`；优先级为 启动参数 > 环境变量 > `config.json` 的 `port` > 4319。
 - **端口被占用**：改 `config.json` 的 `port`（或启动参数传端口）后重启。
-- **员工回复失败（聊天里出现红色错误气泡）**：检查 `apiKey` 与 `modelId`；错误原文会显示在气泡里。失败要等 provider 重试 / 超时后才会浮出来，可能超过一分钟——这期间看起来只是「一直在生成」。
+- **员工回复失败（聊天里出现红色错误气泡）**：检查该员工模型引用的供应商是否在 `.openstaffs/config.json` 的 `providers` 里配了 `apiKey`，以及 `model` 写对没有；错误原文会显示在气泡里。失败要等 provider 重试 / 超时后才会浮出来，可能超过一分钟——这期间看起来只是「一直在生成」。
 - **改了 config 不生效**：配置是进程级的，必须重启服务；员工 / 项目文件才是刷新即生效。
 - **技能 / 档案 / 记忆改了没反应**：会话创建时已固化 → 新开会话才生效。
 - **群聊发送报「群还没有成员」**：`members.md` 不存在、为空或只有注释（解析不出任何成员行）——补上成员 id 即可。

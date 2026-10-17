@@ -37,7 +37,7 @@ function start(deps: ServerDeps): Promise<{ base: string; close: () => Promise<v
   });
 }
 
-const configured: WorkspaceConfig = { provider: "faux", apiKey: "k", modelId: "faux-model", port: 4319 };
+const configured: WorkspaceConfig = { providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 };
 
 describe("HTTP 骨架", () => {
   it("未配置：status 可用、其余 API 409、静态可用", async () => {
@@ -63,7 +63,7 @@ describe("HTTP 骨架", () => {
     const aliceDir = path.join(root, "agents", "alice");
     fs.mkdirSync(aliceDir, { recursive: true });
     fs.writeFileSync(path.join(aliceDir, "AGENTS.md"), "你是 alice。");
-    fs.writeFileSync(path.join(aliceDir, "config.json"), JSON.stringify({ alias: "爱丽丝", provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(aliceDir, "config.json"), JSON.stringify({ alias: "爱丽丝", model: "anthropic/claude-x" }));
     const carolDir = path.join(root, "agents", "carol");
     fs.mkdirSync(carolDir, { recursive: true });
     fs.writeFileSync(path.join(carolDir, "AGENTS.md"), "你是 carol。");
@@ -78,12 +78,13 @@ describe("HTTP 骨架", () => {
       const status = (await (await fetch(`${base}/api/status`)).json()) as Record<string, unknown>;
       expect(status.apiKey).toBeUndefined();
       expect(status.configured).toBe(true);
-      expect(status.provider).toBe("faux");
+      expect(status.model).toBe("faux/faux-model");
+      expect(status.providers).toEqual(["faux"]);
 
-      const employees = (await (await fetch(`${base}/api/employees`)).json()) as { id: string; alias?: string; model: { provider: string; modelId: string } }[];
+      const employees = (await (await fetch(`${base}/api/employees`)).json()) as { id: string; alias?: string; model: string }[];
       expect(employees.map((e) => e.id)).toEqual(["alice", "carol"]);
-      expect(employees[0]).toEqual({ id: "alice", alias: "爱丽丝", model: { provider: "faux", modelId: "faux-model" } });
-      expect(employees[1]!.model).toEqual({ provider: "faux", modelId: "faux-model" }); // 兜底全局
+      expect(employees[0]).toEqual({ id: "alice", alias: "爱丽丝", model: "anthropic/claude-x" }); // 员工可用别的供应商
+      expect(employees[1]!.model).toBe("faux/faux-model"); // 兜底全局
 
       const projects = (await (await fetch(`${base}/api/projects`)).json()) as { id: string; alias: string; members: { id: string; alias?: string }[] }[];
       expect(projects).toEqual([
@@ -140,7 +141,7 @@ async function startWithFaux(employeeIds: string[], groupMembers: string[]): Pro
     const dir = path.join(root, "agents", id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ alias: id === "alice" ? "爱丽丝" : id, provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ alias: id === "alice" ? "爱丽丝" : id, model: "faux/faux-model" }));
   }
   if (groupMembers.length > 0) {
     const dir = path.join(root, "projects", "yt");

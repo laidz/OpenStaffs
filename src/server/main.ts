@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   let harness: ReturnType<typeof createPiHarness> | undefined;
   if (config !== undefined) {
     try {
-      const models = await createConfiguredModels(config);
+      const models = await createConfiguredModels(config.providers);
       const tools = createOpenStaffsToolsExtension({ ws, getHarness: () => harness! });
       harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models, extensions: [tools] });
       await harness.open();

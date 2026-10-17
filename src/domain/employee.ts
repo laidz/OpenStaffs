@@ -24,16 +24,15 @@ function readText(file: string): string {
 
 function readModel(dir: string): ModelChoice {
   const raw = readText(path.join(dir, "config.json"));
-  if (raw.trim() === "") return { provider: "", modelId: "" };
+  if (raw.trim() === "") return { model: "" };
   try {
     const parsed = JSON.parse(raw) as Partial<ModelChoice>;
     return {
-      provider: parsed.provider ?? "",
-      modelId: parsed.modelId ?? "",
+      model: typeof parsed.model === "string" ? parsed.model.trim() : "",
       ...(parsed.thinkingLevel === undefined ? {} : { thinkingLevel: parsed.thinkingLevel }),
     };
   } catch {
-    return { provider: "", modelId: "" };
+    return { model: "" };
   }
 }
 

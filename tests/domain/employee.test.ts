@@ -20,12 +20,12 @@ describe("loadEmployee", () => {
     write("alice", "AGENTS.md", "你是 alice。");
     write("alice", "profile.md", "岗位：运营");
     write("alice", "MEMORY.md", "记得老板喜欢简短。");
-    write("alice", "config.json", JSON.stringify({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", thinkingLevel: "low" }));
+    write("alice", "config.json", JSON.stringify({ model: "opencode-go/deepseek-v4.1-flash", thinkingLevel: "low" }));
 
     const e = loadEmployee(ws, "alice");
     expect(e.id).toBe("alice");
     expect(e.entry).toBe("你是 alice。");
-    expect(e.model).toEqual({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", thinkingLevel: "low" });
+    expect(e.model).toEqual({ model: "opencode-go/deepseek-v4.1-flash", thinkingLevel: "low" });
     expect(renderInstructions(e)).toContain("你是 alice。");
     expect(renderInstructions(e)).toContain("岗位：运营");
     expect(renderInstructions(e)).toContain("记得老板喜欢简短。");
@@ -37,7 +37,7 @@ describe("loadEmployee", () => {
     const e = loadEmployee(ws, "bob");
     expect(e.profile).toBe("");
     expect(e.memory).toBe("");
-    expect(e.model).toEqual({ provider: "", modelId: "" });
+    expect(e.model).toEqual({ model: "" });
     expect(renderInstructions(e)).toBe("你是 bob。");
   });
 
@@ -46,17 +46,19 @@ describe("loadEmployee", () => {
     expect(() => loadEmployee(ws, "nobody")).toThrow("员工不存在");
   });
 
-  it("config.json 损坏时不崩溃", () => {
+  it("config.json 损坏/model 非字符串时不崩溃", () => {
     const ws = createWorkspace(tmp);
     write("carol", "AGENTS.md", "你是 carol。");
     write("carol", "config.json", "{ not json");
-    expect(loadEmployee(ws, "carol").model).toEqual({ provider: "", modelId: "" });
+    expect(loadEmployee(ws, "carol").model).toEqual({ model: "" });
+    write("carol", "config.json", JSON.stringify({ model: 42 }));
+    expect(loadEmployee(ws, "carol").model).toEqual({ model: "" });
   });
 
   it("config.json 的 alias 作为展示名读出（改名不动目录 id）", () => {
     const ws = createWorkspace(tmp);
     write("dave", "AGENTS.md", "你是 dave。");
-    write("dave", "config.json", JSON.stringify({ provider: "faux", modelId: "m", alias: "灯芯草" }));
+    write("dave", "config.json", JSON.stringify({ model: "faux/m", alias: "灯芯草" }));
     expect(loadEmployee(ws, "dave").alias).toBe("灯芯草");
   });
 
@@ -89,7 +91,7 @@ it("listEmployees：按 id 排序、跳过隐藏目录、坏 config.json 不崩"
     fs.writeFileSync(path.join(root2, "agents", "alice", "config.json"), "{坏");
     const ws = createWorkspace(root2);
     expect(listEmployees(ws).map((e) => e.id)).toEqual(["alice", "bob"]);
-    expect(listEmployees(ws)[0]!.model).toEqual({ provider: "", modelId: "" });
+    expect(listEmployees(ws)[0]!.model).toEqual({ model: "" });
   } finally {
     fs.rmSync(root2, { recursive: true, force: true });
   }

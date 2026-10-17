@@ -98,7 +98,7 @@ describe("SSE 全链路", () => {
     const dir = path.join(root, "agents", "alice");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
 
     // tokensPerSecond/tokenSize：放慢流式输出，使 delta 跨过 pi-durable 的 100ms partial 落盘窗口（否则 faux 瞬时出稿、无增量事件）。
     // 回答文本足够长（29 字 ≈ 400ms 流式）以保证 delta 断言稳定；仍以 "流式回答内容" 开头。
@@ -114,7 +114,7 @@ describe("SSE 全链路", () => {
     const pump = new Pump({ ws, harness, hub });
     const server = createHttpServer({
       ws,
-      getConfig: () => ({ provider: "faux", apiKey: "k", modelId: "faux-model", port: 4319 }),
+      getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),
@@ -169,7 +169,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const dir = path.join(root, "agents", id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ provider: "faux", modelId: "faux-model" }));
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
   }
 
   function fauxHarness(suffix: string): ReturnType<typeof createPiHarness> {
@@ -187,7 +187,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await harness.open();
     const server = createHttpServer({
       ws,
-      getConfig: () => ({ provider: "faux", apiKey: "k", modelId: "faux-model", port: 4319 }),
+      getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),
@@ -235,7 +235,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const pump = new Pump({ ws, harness, hub });
     let convId: string | undefined;
     try {
-      convId = await openDm(ws, harness, "alice", { model: { provider: "faux", modelId: "faux-model" } });
+      convId = await openDm(ws, harness, "alice", { model: "faux/faux-model" });
       await pump.register(convId, { roomKey: "dm:alice", memberId: "alice" });
       await harness.submit(convId, "你好");
       // 若抛错穿透到 Pi 的 listener，订阅会被静默终结 → 只会看到第一次广播就再无事件。
@@ -333,7 +333,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await harness.open();
     const server = createHttpServer({
       ws,
-      getConfig: () => ({ provider: "faux", apiKey: "k", modelId: "faux-model", port: 4319 }),
+      getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
       publicDir: path.join(root, "public"),

@@ -4,7 +4,7 @@ import path from "node:path";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
-import { resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import { formatModelRef, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { countUnread, mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
@@ -119,7 +119,7 @@ async function handleRooms(
     json(res, 404, { error: "房间不存在" });
     return;
   }
-  const defaults = { model: { provider: config.provider, modelId: config.modelId } };
+  const defaults = { model: config.model };
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
     const members = await roomTranscripts(deps.ws, harness, relation);
@@ -251,7 +251,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
               configured: config !== undefined,
               root: deps.ws.root,
               port: deps.port,
-              ...(config === undefined ? {} : { provider: config.provider, modelId: config.modelId }),
+              ...(config === undefined ? {} : { model: config.model, providers: Object.keys(config.providers) }),
             });
             return;
           }
@@ -269,14 +269,13 @@ export function createHttpServer(deps: ServerDeps): http.Server {
           }
           const harness = deps.getHarness();
           if (segments[1] === "employees" && method === "GET") {
-            const global = { provider: config.provider, modelId: config.modelId };
             json(
               res,
               200,
               listEmployees(deps.ws).map((employee) => ({
                 id: employee.id,
                 ...(employee.alias === undefined ? {} : { alias: employee.alias }),
-                model: resolveEmployeeModel(global, employee.model),
+                model: formatModelRef(resolveEmployeeModel(config.model, employee.model)),
               })),
             );
             return;
