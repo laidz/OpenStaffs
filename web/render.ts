@@ -1,4 +1,5 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
+import { markdownHtml } from "./markdown.ts";
 import type { Live, State } from "./state.ts";
 
 export function escapeHtml(text: string): string {
@@ -53,7 +54,10 @@ export function messageHtml(message: RoomMessage): string {
   const speaker = message.speaker;
   const boss = speaker.kind === "boss";
   const name = speaker.kind === "boss" ? "老板" : (speaker.alias ?? speaker.id);
-  return `<div class="msg ${boss ? "boss" : "employee"}"><div class="msg-name">${escapeHtml(name)}</div><div class="msg-text">${escapeHtml(message.text)}</div></div>`;
+  // 老板消息原样展示（转义 + 样式换行）；员工消息按 Markdown 渲染（UI 层，见 markdown.ts）
+  const body = boss ? escapeHtml(message.text) : markdownHtml(message.text);
+  const bodyClass = boss ? "msg-text" : "msg-text md";
+  return `<div class="msg ${boss ? "boss" : "employee"}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div></div>`;
 }
 
 export function messagesHtml(messages: RoomMessage[]): string {
@@ -66,7 +70,7 @@ export function liveHtml(live: Record<string, Live>): string {
       const body =
         entry.error !== undefined
           ? `<div class="msg-text">⚠️ ${escapeHtml(entry.error)}</div>`
-          : `<div class="msg-text">${escapeHtml(entry.text) || "…"}</div>`;
+          : `<div class="msg-text md">${markdownHtml(entry.text) || "…"}</div>`;
       const tool =
         entry.tools.length > 0
           ? `<div class="tool-line">正在执行 ${escapeHtml(entry.tools[entry.tools.length - 1]!)}…</div>`

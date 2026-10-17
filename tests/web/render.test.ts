@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { messageHtml, messagesHtml, setupPage } from "../../web/render.ts";
+import { liveHtml, messageHtml, messagesHtml, setupPage } from "../../web/render.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
 describe("渲染", () => {
@@ -25,5 +25,43 @@ describe("渲染", () => {
     expect(html).toContain('"opencode-go": { "apiKey": "你的密钥" }');
     expect(html).toContain('"model": "opencode-go/deepseek-v4.1-flash"');
     expect(html).toContain('"port": 4319');
+  });
+});
+
+describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {
+  it("员工消息按 Markdown 渲染，容器带 md 类", () => {
+    const employee: RoomMessage = { convId: "c1", entryId: "3", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "**加粗**\n\n- 项" };
+    const html = messageHtml(employee);
+    expect(html).toContain('class="msg-text md"');
+    expect(html).toContain("<strong>加粗</strong>");
+    expect(html).toContain("<li>项</li>");
+  });
+
+  it("老板消息原样：Markdown 语法字面展示、HTML 转义、不带 md 类", () => {
+    const boss: RoomMessage = { convId: "c1", entryId: "4", roomKey: "dm:a", speaker: { kind: "boss" }, text: "**不是加粗** <b>标签</b>" };
+    const html = messageHtml(boss);
+    expect(html).not.toContain("<strong>");
+    expect(html).toContain("**不是加粗**");
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("&lt;b&gt;");
+    expect(html).not.toContain("msg-text md");
+  });
+
+  it("流式气泡按 Markdown 渲染（含工具行）；失败气泡保持原样转义", () => {
+    const live = { "dm:a": { convId: "dm:a", memberId: "alice", text: "**粗**", thinking: "", tools: ["shell"] } };
+    const html = liveHtml(live);
+    expect(html).toContain('class="msg-text md"');
+    expect(html).toContain("<strong>粗</strong>");
+    expect(html).toContain("正在执行 shell…");
+
+    const failed = { "dm:a": { convId: "dm:a", memberId: "alice", text: "半句", thinking: "", tools: [], error: "<崩>" } };
+    const html2 = liveHtml(failed);
+    expect(html2).toContain("⚠️ &lt;崩&gt;");
+    expect(html2).not.toContain("msg-text md");
+  });
+
+  it("流式正文尚未输出时显示省略号占位", () => {
+    const live = { "dm:a": { convId: "dm:a", memberId: "alice", text: "", thinking: "", tools: [] } };
+    expect(liveHtml(live)).toContain("…");
   });
 });
