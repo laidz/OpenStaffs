@@ -5,6 +5,7 @@ import { loadEmployee, renderInstructions, type Employee } from "../domain/emplo
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { readSkillPaths, resolveEmployeeModel } from "../domain/config.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
@@ -103,24 +104,29 @@ export function accessFor(ws: Workspace, relation: Relation, speaker: Employee):
 /** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）。 */
 export type SessionDefaults = { model: string };
 
-function specFor(ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults): ConversationSpec {
+function specFor(
+  ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
+): ConversationSpec {
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
   }
   const cwd = relationCwd(ws, relation);
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
+  const mcpExtensions = mcp?.extensionsFor(relation, speaker.id) ?? [];
   return {
     cwd,
-    // 技能清单随会话快照固化：这里读一次（新开会话才重读）
+    // 技能清单与 MCP 选择随会话快照固化：这里读一次（新开会话才重读）
     instructions: instructionsFor(ws, relation, speaker, readSkillPaths(ws)),
     model: { provider: model.provider, modelId: model.modelId },
     ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
     access: accessFor(ws, relation, speaker),
+    ...(mcpExtensions.length === 0 ? {} : { mcpExtensions }),
   };
 }
 
 async function ensure(
-  ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string, defaults?: SessionDefaults,
+  ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
+  defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
   const speaker = loadEmployee(ws, speakerId);
   const file = chainFileFor(ws, relation, speakerId);
@@ -128,26 +134,30 @@ async function ensure(
   if (active !== undefined && (await harness.attach(active.id, accessFor(ws, relation, speaker)))) {
     return active.id;
   }
-  const convId = await harness.startSession(specFor(ws, relation, speaker, defaults));
+  const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(file, convId, new Date().toISOString());
   return convId;
 }
 
-export function openDm(ws: Workspace, harness: HarnessPort, employeeId: string, defaults?: SessionDefaults): Promise<string> {
-  return ensure(ws, harness, { kind: "dm", employeeId }, employeeId, defaults);
+export function openDm(
+  ws: Workspace, harness: HarnessPort, employeeId: string, defaults?: SessionDefaults, mcp?: McpSessionResolver,
+): Promise<string> {
+  return ensure(ws, harness, { kind: "dm", employeeId }, employeeId, defaults, mcp);
 }
 
 export function openGroup(
-  ws: Workspace, harness: HarnessPort, project: string, speakerId: string, defaults?: SessionDefaults,
+  ws: Workspace, harness: HarnessPort, project: string, speakerId: string,
+  defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
-  return ensure(ws, harness, { kind: "group", project }, speakerId, defaults);
+  return ensure(ws, harness, { kind: "group", project }, speakerId, defaults, mcp);
 }
 
 export async function newSession(
-  ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string, defaults?: SessionDefaults,
+  ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
+  defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
   const speaker = loadEmployee(ws, speakerId);
-  const convId = await harness.startSession(specFor(ws, relation, speaker, defaults));
+  const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
   return convId;
 }

@@ -2,6 +2,7 @@ import { loadEmployee, listEmployees } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor } from "../domain/config.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
@@ -22,6 +23,8 @@ type Deps = {
   outbox?: Outbox;
   /** 触发投递时的会话默认模型（缺省 = 员工自配/无兜底）。 */
   getDefaults?: () => SessionDefaults | undefined;
+  /** 群回复触发新会话时的 MCP 扩展选择。 */
+  mcp?: McpSessionResolver;
 };
 
 /** in-flight 注册的占位：promise 供并发复用；state.cancelled 标记 in-flight 期间的 unregister。 */
@@ -176,6 +179,7 @@ export class Pump {
       const reports = await triggerFromGroupReply(this.#deps.ws, this.#deps.harness, {
         queue: this.#queue,
         ...(defaults === undefined ? {} : { defaults }),
+        ...(this.#deps.mcp === undefined ? {} : { mcp: this.#deps.mcp }),
         project: relation.project,
         senderId: ref.memberId,
         convId,

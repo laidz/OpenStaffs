@@ -20,9 +20,9 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 ├─ projects/<项目 id>/           # 项目 = 群聊（目录名 = 项目 id）
 ├─ openstaffs/                   # 老板的能力与附属（可见、可版本化、随空间整包迁移）
 │  ├─ skills/<技能名>/SKILL.md   # 空间级技能：全部会话可见（同名时员工 / 项目技能更优先）
-│  └─ mcp.json                   # 空间级 MCP server（未来能力，见「MCP 约定」）
+│  └─ mcp.json                   # 空间级 MCP server（见「MCP（外部工具）」）
 └─ .openstaffs/                  # 机器私有（含密钥与运行状态；老板维护，你只读）
-   ├─ config.json                # 全局配置：providers / model / port / bossName / skillPaths
+   ├─ config.json                # 全局配置：providers / model / port / bossName / skillPaths / mcp
    ├─ state.json                 # 老板的 pin 标记（机器维护，不要手改）
    ├─ permission-requests.json   # 待处理授权请求（机器维护，处理完即删）
    └─ state.sqlite               # 对话库（机器维护，不要手改）
@@ -148,13 +148,40 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 - **「快照」是刻意的**：保护供应商的 prompt cache，并让会话可复现——不是 bug。会话进行中改档案 / 技能清单，老会话不会变。
 - **别被假象骗到**：`config.json` 改全局 `model` 后，新开会话就会显示新模型名，但供应商凭据还是启动时那份 → **一律以重启后为准**。
 
-## MCP 约定（骨架；实现见后续批次）
+## MCP（外部工具）
 
-- 每层一个 `mcp.json`：系统 = `src/mcp.json`；空间 = `openstaffs/mcp.json`；项目 = `projects/{项目}/mcp.json`；员工 = `agents/{员工}/mcp.json`。
-- 合并：同名 server **窄者胜**（项目 → 员工 → 空间 → 系统），不同名的都挂上。
-- 凭据：**不写明文**。密钥统一放 `.openstaffs/config.json`（机器私有、不进版本库、权限 600），`mcp.json` 只引用凭据名（语法待定，如 `${config.mcp.<server>.<key>}`）。
-- 权限：员工级 `mcp.json` 在你的写权限内，可以自己挂 server；但凭据在老板独占的 `config.json` → 挂需要密钥的 server 得请老板把凭据加进去。
-- 生效：新增 / 改动 server 要**重启**才注册；某层是否生效随会话装配（新开会话）。
+MCP server 是外部进程，通过 stdio 提供工具。四层各一个 `mcp.json`：
+
+| 级别 | 文件 |
+| --- | --- |
+| 系统 | `src/mcp.json`（框架自带空模板） |
+| 空间 | `openstaffs/mcp.json` |
+| 项目 | `projects/{项目}/mcp.json` |
+| 员工 | `agents/{员工}/mcp.json` |
+
+格式（顶层只能是 `mcpServers`）：
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${config.mcp.github.token}" },
+      "cwd": ".",
+      "timeoutMs": 60000
+    }
+  }
+}
+```
+
+- 合并：系统 → 空间 → 员工 → 项目，同名**窄者胜**；不同名都挂。私聊没有项目层。
+- 凭据：**不写明文**。密钥放 `.openstaffs/config.json` 的 `mcp.<server>.<key>`，`mcp.json` 只写 `${config.mcp.<server>.<key>}`。缺凭据时该 server 报错并跳过，不回落到宽层。**密钥优先放 `env`**：写进 `args` 会出现在进程参数里（`ps` 可见）。
+- 生效：启动时连接并注册工具；新增 / 改 server 或工具要**重启**。某层是否生效随会话装配——要**新开会话**。
+- 工具名：`mcp__<server>__<tool>`。工具总数超过 20 时全部延迟加载，先用 `tool_search` 搜索再调用。
+- 生命周期：启动并行连接（`initialize` + `tools/list` 各受 10s 连接超时约束）；30s 心跳，工具调用在途时跳过心跳；连续 2 次心跳失败才重连；崩溃按 1s、2s、4s… 退避重连，最多 5 次；服务退出时清理子进程。
+- 员工可以自己写 `agents/{员工}/mcp.json` 挂 server；这等于允许启动本地任意进程。只挂你信任的 server；带密钥的 server 仍需老板把凭据加进 `config.json`。
+- 排查：看服务端日志里的 `[mcp]` 行；坏 JSON、缺字段、缺凭据、连接失败都会点名具体文件 / server / 凭据键。
 
 ## 运维操作与授权
 

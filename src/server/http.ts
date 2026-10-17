@@ -5,6 +5,7 @@ import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { pinCounts, readPins, setPin } from "../app/pins.ts";
@@ -37,6 +38,8 @@ export type ServerDeps = {
   outbox?: Outbox;
   /** 授权请求存储（装配层注入；缺省时相关端点降级）。 */
   permissionRequests?: PermissionRequestStore;
+  /** MCP 扩展选择（发送 / 授权结果投递时装配新会话）。 */
+  mcp?: McpSessionResolver;
 };
 
 const MIME: Record<string, string> = {
@@ -157,6 +160,7 @@ async function handleRooms(
         queue: deps.queue,
         defaults,
         newSession,
+        ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
         ...(requestId === undefined ? {} : { requestId }),
       });
       for (const delivery of result.deliveries) {
@@ -375,6 +379,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                     store,
                     queue: deps.queue,
                     defaults: { model: config.model },
+                    ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
                     ...(deps.pump === undefined ? {} : { register: (convId, ref) => deps.pump!.register(convId, ref) }),
                     ...(deps.hub === undefined ? {} : { broadcast: (rid) => deps.hub!.broadcast({ type: "permission.resolved", id: rid }) }),
                   },

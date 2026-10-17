@@ -42,7 +42,8 @@
   "providers": { "opencode-go": { "apiKey": "sk-…" } },
   "model": "opencode-go/deepseek-v4.1-flash",
   "bossName": "老板",
-  "skillPaths": ["~/global-skills"]
+  "skillPaths": ["~/global-skills"],
+  "mcp": { "github": { "token": "ghp_…" } }
 }
 ```
 
@@ -50,8 +51,31 @@
 - `model`：全局默认模型，格式 `供应商/模型 id`；员工没有单独指定模型时用它兜底。
 - `bossName`：可选，负责人称谓（缺省「老板」；空值自动回落，不可为空）。界面、消息与员工文案都用它。
 - `skillPaths`：可选，外部技能目录数组（你的全局技能库）。三种写法：`~/` 开头（或裸 `~`）= 家目录、绝对路径 = 原样、其余 = 相对办公空间目录。算**空间级**技能（所有会话可用），改动**新开会话**生效。**只指向你自己信任的目录**——这里的技能会进入**所有**员工会话的制度提示词（`name` / `description` 注入，正文由员工按需 `read`）。
+- `mcp`：可选，MCP server 的凭据（`mcp.<server>.<key>`）。各层 `mcp.json` 里只写 `${config.mcp.<server>.<key>}` 引用，不写明文。
 - 可只配一家，也可多配几家、按员工分配不同模型。
 - 配置是进程级的：**改完重启服务才生效**（例外：`bossName` 直读，刷新页面 / 新开会话即生效；`skillPaths` 新开会话生效）。建议 `chmod 600 .openstaffs/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
+
+### 3. MCP server（可选）
+
+四层各一个 `mcp.json`：系统 `src/mcp.json`、空间 `openstaffs/mcp.json`、项目 `projects/<项目>/mcp.json`、员工 `agents/<员工>/mcp.json`。
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${config.mcp.github.token}" }
+    }
+  }
+}
+```
+
+- 同名 server 窄者胜：项目 → 员工 → 空间 → 系统；不同名都挂。
+- 凭据优先放 `env`；写进 `args` 会出现在进程参数里（`ps` 可见）。
+- **新增 / 修改 server 需要重启服务**；server 只进入之后**新建**的会话。
+- 员工也可以在自己的目录挂 server；这等于允许启动本地进程，只挂可信来源。需要密钥时由你把凭据加进 `.openstaffs/config.json` 的 `mcp`。
+- 工具名形如 `mcp__<server>__<tool>`；工具太多时员工先用 `tool_search` 搜索。
 
 ### 2. Agent（员工）
 

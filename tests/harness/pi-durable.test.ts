@@ -5,6 +5,8 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPiHarness, mapPiEvent } from "../../src/harness/pi-durable.ts";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import type { ConversationSpec, HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import type { AccessContext } from "../../src/domain/access-control.ts";
 
@@ -417,6 +419,70 @@ describe("提交与推流", () => {
       await waitFor(async () => (await harness.transcript(convId)).some((m) => m.role === "assistant"));
       const users = (await harness.transcript(convId)).filter((m) => m.role === "user");
       expect(users).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("MCP 扩展不默认选中；mcpExtensions 指定的会话才拿到工具", async () => {
+    const probeFile = path.join(root, "probe-tools.json");
+    const probe = defineExtension({
+      name: "probe",
+      tools: [
+        defineTool({
+          name: "probe_tools",
+          description: "记录当前会话可见的工具名",
+          parameters: Type.Object({}),
+          async execute(_args, api, context) {
+            const agent = await api.agent(context);
+            fs.writeFileSync(probeFile, JSON.stringify(agent.tools.map((tool) => tool.name)));
+            return { output: [{ type: "text", text: "ok" }] };
+          },
+        }),
+      ],
+    });
+    const hidden = defineExtension({
+      name: "mcp:system:hidden",
+      tools: [
+        defineTool({
+          name: "mcp__hidden__echo",
+          description: "隐藏工具",
+          parameters: Type.Object({ text: Type.String() }),
+          async execute(args) {
+            return { output: [{ type: "text", text: `hidden:${args.text}` }] };
+          },
+        }),
+      ],
+    });
+
+    const { models } = fauxModels([
+      fauxAssistantMessage(fauxToolCall("probe_tools", {}), { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+      fauxAssistantMessage(fauxToolCall("probe_tools", {}), { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+    ]);
+    const harness = createPiHarness({
+      root,
+      sqlitePath: path.join(root, ".openstaffs", "state.sqlite"),
+      models,
+      extensions: [probe],
+      mcpExtensions: [hidden],
+    });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+
+      const plain = await harness.startSession(spec(cwd));
+      await harness.send(plain, "probe");
+      const without = JSON.parse(fs.readFileSync(probeFile, "utf8")) as string[];
+      expect(without).not.toContain("mcp__hidden__echo");
+      expect(without).toContain("probe_tools");
+
+      const withMcp = await harness.startSession({ ...spec(cwd), mcpExtensions: ["mcp:system:hidden"] });
+      await harness.send(withMcp, "probe");
+      const withTools = JSON.parse(fs.readFileSync(probeFile, "utf8")) as string[];
+      expect(withTools).toContain("mcp__hidden__echo");
     } finally {
       await harness.close();
     }

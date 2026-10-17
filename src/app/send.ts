@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseMembers } from "../domain/access-control.ts";
 import { loadEmployee } from "../domain/employee.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
 import { openDm, openGroup, newSession, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
@@ -44,7 +45,13 @@ export async function sendToRoom(
   harness: HarnessPort,
   relation: Relation,
   text: string,
-  options: { queue: KeyedQueue; defaults?: SessionDefaults; requestId?: string; newSession?: boolean },
+  options: {
+    queue: KeyedQueue;
+    defaults?: SessionDefaults;
+    requestId?: string;
+    newSession?: boolean;
+    mcp?: McpSessionResolver;
+  },
 ): Promise<{ roomMessageId: string; deliveries: DeliveryReport[] }> {
   const body = text.trim();
   if (body === "") throw new Error("消息不能为空");
@@ -69,10 +76,10 @@ export async function sendToRoom(
         const group = relation.kind === "group" ? relation.project : undefined;
         const convId =
           options.newSession === true
-            ? await newSession(ws, harness, relation, target.memberId, options.defaults)
+            ? await newSession(ws, harness, relation, target.memberId, options.defaults, options.mcp)
             : group === undefined
-              ? await openDm(ws, harness, target.memberId, options.defaults)
-              : await openGroup(ws, harness, group, target.memberId, options.defaults);
+              ? await openDm(ws, harness, target.memberId, options.defaults, options.mcp)
+              : await openGroup(ws, harness, group, target.memberId, options.defaults, options.mcp);
         const meta: InputMeta = {
           kind: "chat.message",
           data: { author: "boss", roomMessageId },
@@ -108,6 +115,7 @@ export async function triggerFromGroupReply(
   options: {
     queue: KeyedQueue;
     defaults?: SessionDefaults;
+    mcp?: McpSessionResolver;
     project: string;
     senderId: string;
     convId: string;
@@ -131,7 +139,7 @@ export async function triggerFromGroupReply(
   return await Promise.all(
     deliveries.map((delivery) =>
       options.queue.run(relationKey({ kind: "group", project: options.project }, delivery.to), async (): Promise<DeliveryReport> => {
-        const convId = await openGroup(ws, harness, options.project, delivery.to, options.defaults);
+        const convId = await openGroup(ws, harness, options.project, delivery.to, options.defaults, options.mcp);
         const receipt = await harness.submit(convId, `${label}：${delivery.body}`, meta);
         return { memberId: delivery.to, convId, submissionId: receipt.id, status: receipt.status };
       }),

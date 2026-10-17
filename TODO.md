@@ -170,7 +170,7 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
 
 ## 批次 4 · MCP 实现
 
-- [ ] **MCP 四层一致（实现）**
+- [x] **MCP 四层一致（实现）**
 
   说明：按批次 3 定下的骨架，把 4 层 mcp.json 真正接起来。风险性质与批次 3 不同——这是接外部进程、扩大工具面（员工可自挂 server = 本地任意进程执行面），需要独立的验收标准与一次安全审阅。
   - 解析与合并：读 4 层 mcp.json（src/mcp.json、openstaffs/mcp.json、projects/{项目}/mcp.json、agents/{员工}/mcp.json），按同名窄者胜合并成会话级 server 集。
@@ -180,6 +180,19 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
   - 生效：新增／改动 server 要重启进程。
   - 验收要有：连不上、卡死、工具名冲突、凭据缺失、员工自挂 server 的边界，各一条。
   - 落点：src/harness/pi-durable.ts（注册）、src/domain/config.ts（凭据）、新的 mcp 模块、测试与手册。
+
+  **落地（2026-10-17）**：
+  - 新增 `src/domain/mcp.ts`（四层解析、合并、凭据插值、会话级选择）、`src/harness/mcp-client.ts`（最小 stdio JSON-RPC）、`src/harness/mcp-manager.ts`（连接 / 心跳 / 重连 / 扩展生成）、`src/harness/mcp-extension.ts`（工具映射）；`src/mcp.json` 提供系统级空模板。
+  - 凭据语法定稿：`.openstaffs/config.json` 的 `mcp.<server>.<key>`，`mcp.json` 写 `${config.mcp.<server>.<key>}`；缺失时点名 server / 凭据键并跳过，不回落到宽层。
+  - 合并顺序：系统 → 空间 → 员工 → 项目（窄者胜）；会话创建时按关系 / 发言人固化扩展选择。工具名 `mcp__<server>__<tool>`；总数 > 20 时全部 deferred 并启用 `tool_search`。
+  - 生命周期：启动并行连接（单个连接超时 10s）、30s 心跳、1s/2s/4s… 退避重连最多 5 次、SIGTERM→SIGKILL 进程组清理；子进程只继承白名单环境变量 + 显式 `env`。
+  - 测试：配置解析 / 凭据、stdio 客户端（含分页、超时、卡死）、工具映射、管理器（崩溃重连、阈值、重名、员工隔离）、端到端真实 server 调用。
+  - **安全审阅结论（2026-10-17）**：
+    - 已修（Critical）：心跳曾会在工具调用阻塞 server 时按 5s ping 超时杀掉健康进程（实测 5.2s 中断一次允许 60s 的调用）。现改为「有工具调用在途时跳过心跳 + 连续 2 次失败才重连 + 心跳重入保护」，并加长调用跨心跳回归测试。
+    - 已修（Important）：`close()` 未覆盖连接中的 client（shutdown 后仍可能变 ready / 留孤儿进程）→ 运行记录在途 client、`close()` 等待连接收尾并关闭；`tools/list` 曾可用默认 60s 拖住启动 → `initialize` 与 `tools/list` 统一受 10s 启动超时约束，分页上限 50 页；凭据插值进 `command` 时 spawn 错误曾回显明文命令 → 现只报错误码。
+    - 已修（文档）：补充「密钥优先放 `env`，写进 `args` 会在 `ps` 可见」；心跳 / 启动超时口径与实现对齐。
+    - 接受的风险（Minor，未在本批修）：server 名含 `.` 时凭据占位符解析有歧义；`mcp.json` 非 ENOENT 读取错误被当作空；不同 server sanitize 后工具名可能撞名；工具名无 64 字符上限；工具输出无大小上限；stdout 行缓冲无上限；`errors()` 无界增长；首次连接失败不自动重试；README 小节编号待整理。以上均不影响本批验收，后续按需处理。
+    - 通过项：不整包继承主进程环境；`shell: false`；员工级 `mcp.json` 只进入该员工新会话；工具调用不自动重试；会话创建不等待 MCP。
 
 ## 批次 5 · 会话信息与模型配置
 
@@ -202,5 +215,5 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
 
 ## 备注
 
-- 状态：批次 1–3 已落地（见各自「落地」）；批次 4、5 待开工，开工时从 master 切分支。
-- MCP 四层一致（每层一个 mcp.json）已定形：骨架随批次 3 写进文档，实现见批次 4。
+- 状态：批次 1–4 已落地（见各自「落地」）；批次 5 待开工，开工时从 master 切分支。
+- MCP 四层一致已实现：四层 `mcp.json`、凭据引用、stdio 客户端、会话级注册、心跳与崩溃重连。

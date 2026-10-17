@@ -14,7 +14,8 @@ import {
 import { loadEmployee } from "../../src/domain/employee.ts";
 import { readSkillPaths } from "../../src/domain/config.ts";
 import { FRAMEWORK_SKILLS_DIR } from "../../src/domain/skills.ts";
-import type { HarnessPort } from "../../src/harness/port.ts";
+import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
+import type { Relation } from "../../src/domain/types.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -514,5 +515,33 @@ describe("应用用例", () => {
     } finally {
       await reopened.close();
     }
+  });
+
+  it("会话装配把 MCP 扩展写入 spec，且透传关系与发言人", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    const specs: ConversationSpec[] = [];
+    const stub = {
+      startSession: async (spec: ConversationSpec) => {
+        specs.push(spec);
+        return `conv_${specs.length}`;
+      },
+      attach: async () => false,
+    } as unknown as HarnessPort;
+    const calls: string[] = [];
+    const resolver = {
+      extensionsFor(relation: Relation, speakerId: string) {
+        calls.push(`${relation.kind}:${speakerId}`);
+        return ["mcp:system:fixture"];
+      },
+    };
+
+    await openDm(ws, stub, "alice", undefined, resolver);
+    await newSession(ws, stub, { kind: "group", project: "yt" }, "bob", undefined, resolver);
+
+    expect(calls).toEqual(["dm:alice", "group:bob"]);
+    expect(specs[0]!.mcpExtensions).toEqual(["mcp:system:fixture"]);
+    expect(specs[1]!.mcpExtensions).toEqual(["mcp:system:fixture"]);
   });
 });

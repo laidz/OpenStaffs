@@ -4,6 +4,7 @@ import { Type, type TSchema } from "typebox";
 import { parseMembers, projectsOf } from "../domain/access-control.ts";
 import { bossNamesFor, readBossName, readConfig } from "../domain/config.ts";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
@@ -24,6 +25,8 @@ export type ToolContext = {
   harness: HarnessPort;
   selfId: string;
   relation: Relation;
+  /** MCP 扩展选择（新建会话时按关系 / 发言人解析）。 */
+  mcp?: McpSessionResolver;
   permissions?: ToolPermissions;
 };
 
@@ -132,7 +135,7 @@ const sendMessage: ToolDef = {
     const target = String(args["target"]);
     const text = String(args["text"]);
     if (target === "boss") {
-      const convId = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx));
+      const convId = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       return `已发给「${readBossName(ctx.ws)}」（会显示在其待办里）。`;
     }
@@ -141,14 +144,14 @@ const sendMessage: ToolDef = {
       const memberId = memberMatch[1]!;
       if (ctx.relation.kind !== "group") throw new Error("member: 目标只能在群聊里用（当前是私聊）");
       if (!parseMembers(ctx.ws, ctx.relation.project).includes(memberId)) throw new Error(`不是本群成员：${memberId}`);
-      const convId = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx));
+      const convId = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.submit(convId, text, { kind: "chat.message", data: { author: ctx.selfId } });
       return `已触发 ${memberId}。`;
     }
     const projectMatch = /^project:(.+)$/u.exec(target);
     if (projectMatch !== null) {
       const projectId = projectMatch[1]!;
-      const convId = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx));
+      const convId = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       return `已投递到项目 ${projectId}。`;
     }
@@ -162,7 +165,7 @@ const newSessionTool: ToolDef = {
   description: "重开一段新会话（结束当前、开新条，旧会话保留可回看）。适合上下文太长或想彻底换个话题时。下一轮起生效。",
   parameters: Type.Object({}),
   async run(_args, ctx) {
-    await newSession(ctx.ws, ctx.harness, ctx.relation, ctx.selfId, defaultsOf(ctx));
+    await newSession(ctx.ws, ctx.harness, ctx.relation, ctx.selfId, defaultsOf(ctx), ctx.mcp);
     return "已重开会话（下一轮起使用新会话）。";
   },
 };

@@ -10,6 +10,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { Message } from "@earendil-works/pi-ai";
 import { createAccessExtension } from "./access-extension.ts";
 import type { AccessContext } from "../domain/access-control.ts";
@@ -22,6 +23,10 @@ export type PiHarnessOptions = {
   models?: Models;
   /** 额外安装的扩展（如 OpenStaffs 自有工具）。 */
   extensions?: readonly Extension[];
+  /** MCP 扩展：安装但不默认选中，由会话的 mcpExtensions 选择。 */
+  mcpExtensions?: readonly Extension[];
+  /** 工具较多时安装并默认选中 tool_search。 */
+  toolSearch?: boolean;
 };
 
 /** 由会话 cwd 推断关系（根目录下：agents/<id> = 私聊；projects/<id> = 群聊）。 */
@@ -110,8 +115,21 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
   let harness: Harness | undefined;
   const accessByConv = new Map<string, AccessContext>();
   const sessionInfoByConv = new Map<string, { selfId: string; relation: Relation }>();
-  registry.install(createAccessExtension((id) => accessByConv.get(id)));
-  for (const extension of options.extensions ?? []) registry.install(extension);
+  const accessExtension = createAccessExtension((id) => accessByConv.get(id));
+  registry.install(accessExtension);
+
+  // 默认扩展集固定：MCP 扩展只安装、不默认选中（由会话的 mcpExtensions 选择）。
+  const baseExtensions: Extension[] = [CodingTools, accessExtension];
+  for (const extension of options.extensions ?? []) {
+    registry.install(extension);
+    baseExtensions.push(extension);
+  }
+  if (options.toolSearch === true) {
+    const toolSearch = createToolSearchExtension();
+    registry.install(toolSearch);
+    baseExtensions.push(toolSearch);
+  }
+  for (const extension of options.mcpExtensions ?? []) registry.install(extension);
 
   async function conversation(id: ConversationId): Promise<Conversation> {
     const found = await harness!.conversation(id, ctx);
@@ -123,7 +141,12 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
     async open() {
       harness = await Harness.open(
         await openNodeSqliteStorage(options.sqlitePath),
-        { models, registry, env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? options.root }) },
+        {
+          models,
+          registry,
+          settings: { extensions: baseExtensions },
+          env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? options.root }),
+        },
         ctx,
       );
       harness.resume();
@@ -133,6 +156,12 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
       harness = undefined;
     },
     async startSession(spec) {
+      // AgentChange.extensions 接受扩展对象而非名字；未知名字（启动失败 / 未安装）直接忽略。
+      const mcpByName = new Map((options.mcpExtensions ?? []).map((extension) => [extension.name, extension]));
+      const selectedMcp = (spec.mcpExtensions ?? []).flatMap((name) => {
+        const extension = mcpByName.get(name);
+        return extension === undefined ? [] : [extension];
+      });
       const conv = await harness!.createConversation(
         {
           ownership: { kind: "ownerless" },
@@ -141,6 +170,7 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
             ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel as never }),
             instructions: spec.instructions,
             cwd: spec.cwd,
+            ...(selectedMcp.length === 0 ? {} : { extensions: { add: [...selectedMcp] } }),
           },
         },
         ctx,

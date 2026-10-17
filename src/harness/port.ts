@@ -9,6 +9,8 @@ export type ConversationSpec = {
   model: ModelRef;
   thinkingLevel?: string;
   access: AccessContext;
+  /** 该会话额外选择的 MCP 扩展名（随会话快照固化；缺省 = 不挂 MCP）。 */
+  mcpExtensions?: readonly string[];
 };
 
 export type ChatMessage = {

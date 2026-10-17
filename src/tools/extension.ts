@@ -1,4 +1,5 @@
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
@@ -11,6 +12,8 @@ import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
 export function createOpenStaffsToolsExtension(options: {
   ws: Workspace;
   getHarness: () => HarnessPort;
+  /** MCP 扩展选择（员工工具新建会话时透传）。 */
+  mcp?: McpSessionResolver;
   /** 授权请求依赖（装配层注入；缺省时 request_permission 不可用）。 */
   permissions?: { store: PermissionRequestStore; notify: (request: PermissionRequest) => void };
 }): Extension {
@@ -32,6 +35,7 @@ export function createOpenStaffsToolsExtension(options: {
             harness,
             selfId: info.selfId,
             relation: info.relation,
+            ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
             ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
           };
           try {

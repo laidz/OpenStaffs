@@ -74,6 +74,14 @@ description: OpenStaffs 能力与协作手册——员工的工作区与写权�
 
 - **可用技能**：系统提示词里会列出你当前可用的技能（含各自的 `SKILL.md` 位置）；任务匹配某技能描述时，用 `read` 读取该文件全文再按其指引执行。技能来源（同名时越窄越优先）：项目 → 员工 → 空间（`openstaffs/skills/` 与老板配的外部技能库）→ **系统内置**。
 
+## MCP 外部工具
+
+- 你的会话可能带有 `mcp__<server>__<tool>` 形式的工具；它们由外部 MCP server 提供，能力与参数以工具说明为准。
+- 工具太多时不会全部直接出现：先用 `tool_search` 搜索，再调用搜到的工具。
+- 你可以在自己的目录写 `agents/<你>/mcp.json` 挂新的 stdio server（`command` / `args` / `env` / `cwd`）。这属于能力自扩，但等于启动本地进程——只挂你信任的 server。
+- **不要把密钥写进 `mcp.json`**：凭据统一由老板放进 `.openstaffs/config.json`，你写 `${config.mcp.<server>.<key>}` 引用；缺凭据时找老板补。密钥尽量放 `env`，写进 `args` 会出现在 `ps` 里。
+- 新增 / 修改 server 需要**重启服务**；该 server 只进入你之后**新开**的会话（老会话不变）。
+
 ## 产出约定
 
 - 协作产物写进当前工作目录下的 `data/`（群聊里即 `projects/<项目>/data/`）。

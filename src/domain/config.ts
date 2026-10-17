@@ -128,6 +128,37 @@ export function readSkillPaths(ws: Workspace): string[] {
   }
 }
 
+/** MCP 凭据：config.json 的 mcp.<server>.<key>（机器私有；独立读取，未配置模式也可用）。 */
+export type McpCredentials = Record<string, Record<string, string>>;
+
+export function readMcpCredentials(ws: Workspace): McpCredentials {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(configFile(ws), "utf8");
+  } catch {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as { mcp?: unknown };
+    if (typeof parsed.mcp !== "object" || parsed.mcp === null || Array.isArray(parsed.mcp)) return {};
+    const out: McpCredentials = {};
+    for (const [rawServer, entry] of Object.entries(parsed.mcp)) {
+      const server = rawServer.trim();
+      if (server === "" || typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+      const values: Record<string, string> = {};
+      for (const [rawKey, value] of Object.entries(entry)) {
+        const key = rawKey.trim();
+        const text = requiredString(value);
+        if (key !== "" && text !== undefined) values[key] = text;
+      }
+      if (Object.keys(values).length > 0) out[server] = values;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export type ModelRefLike = { provider: string; modelId: string };
 
 /** 员工模型兜底：员工 model 合法则用员工的，否则整体用全局；thinkingLevel 独立保留。 */

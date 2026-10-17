@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadEmployee } from "../domain/employee.ts";
+import type { McpSessionResolver } from "../domain/mcp.ts";
 import { employeeDir, type Workspace } from "../domain/paths.ts";
 import { appendPermissionPaths } from "../domain/permissions.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
@@ -35,6 +36,8 @@ export type PermissionFlowDeps = {
   store: PermissionRequestStore;
   queue: KeyedQueue;
   defaults?: SessionDefaults;
+  /** MCP 扩展选择（随发送时的新会话装配）。 */
+  mcp?: McpSessionResolver;
   /** best-effort 订阅新触发的会话（与 HTTP 发送同口径）。 */
   register?: (convId: string, ref: { roomKey: string; memberId: string }) => Promise<void>;
   /** 处理完成广播（SSE permission.resolved）。 */
@@ -77,6 +80,7 @@ export async function resolvePermissionRequest(
       const result = await sendToRoom(deps.ws, deps.harness, relation, text, {
         queue: deps.queue,
         ...(deps.defaults === undefined ? {} : { defaults: deps.defaults }),
+        ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
         requestId: `permission:${id}`,
       });
       for (const delivery of result.deliveries) {

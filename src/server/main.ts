@@ -7,6 +7,7 @@ import { permissionRequestView } from "../app/permission-flow.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
+import { McpManager } from "../harness/mcp-manager.ts";
 import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
 import { createConfiguredModels } from "./models.ts";
 import { createHttpServer } from "./http.ts";
@@ -37,20 +38,34 @@ async function main(): Promise<void> {
   const outbox = new Outbox();
   const permissionRequests = new PermissionRequestStore(ws);
   let pump: Pump | undefined;
+  let mcp: McpManager | undefined;
 
   let harness: ReturnType<typeof createPiHarness> | undefined;
   if (config !== undefined) {
     try {
       const models = await createConfiguredModels(config.providers);
+      mcp = new McpManager({ ws });
+      await mcp.start();
+      if (mcp.errors().length > 0) {
+        console.error(`[openstaffs] MCP 启动有 ${mcp.errors().length} 个问题（详见上方日志）`);
+      }
       const tools = createOpenStaffsToolsExtension({
         ws,
         getHarness: () => harness!,
+        mcp,
         permissions: {
           store: permissionRequests,
           notify: (request) => hub.broadcast({ type: "permission.request", request: permissionRequestView(ws, request) }),
         },
       });
-      harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models, extensions: [tools] });
+      harness = createPiHarness({
+        root,
+        sqlitePath: path.join(root, ".openstaffs", "state.sqlite"),
+        models,
+        extensions: [tools],
+        mcpExtensions: mcp.extensions(),
+        toolSearch: mcp.needsToolSearch(),
+      });
       await harness.open();
       pump = new Pump({
         ws,
@@ -58,6 +73,7 @@ async function main(): Promise<void> {
         hub,
         queue,
         outbox,
+        mcp,
         getDefaults: () => {
           const current = getConfig();
           return current === undefined ? undefined : { model: current.model };
@@ -84,6 +100,7 @@ async function main(): Promise<void> {
     hub,
     port,
     permissionRequests,
+    ...(mcp === undefined ? {} : { mcp }),
   });
   // 端口占用等监听失败：打印中文原因后退出（spec §3.1），不抛未捕获异常。
   server.on("error", (error: Error) => {
@@ -93,6 +110,19 @@ async function main(): Promise<void> {
   server.listen(port, () => {
     console.log(`[openstaffs] 服务已启动：http://localhost:${port}（根目录 ${root}）`);
   });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[openstaffs] 收到 ${signal}，正在退出…`);
+    await mcp?.close().catch(() => undefined);
+    await harness?.close().catch(() => undefined);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 void main();
