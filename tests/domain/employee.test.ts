@@ -55,6 +55,19 @@ describe("loadEmployee", () => {
     expect(loadEmployee(ws, "carol").model).toEqual({ model: "" });
   });
 
+  it("thinkingLevel 只接受非空字符串（trim）；数字 / null / 空串忽略", () => {
+    const ws = createWorkspace(tmp);
+    write("henry", "AGENTS.md", "你是 henry。");
+    write("henry", "config.json", JSON.stringify({ model: "faux/m", thinkingLevel: 42 }));
+    expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
+    write("henry", "config.json", JSON.stringify({ model: "faux/m", thinkingLevel: "  high  " }));
+    expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m", thinkingLevel: "high" });
+    write("henry", "config.json", JSON.stringify({ model: "faux/m", thinkingLevel: "   " }));
+    expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
+    write("henry", "config.json", JSON.stringify({ model: "faux/m", thinkingLevel: null }));
+    expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
+  });
+
   it("config.json 的 alias 作为展示名读出（改名不动目录 id）", () => {
     const ws = createWorkspace(tmp);
     write("dave", "AGENTS.md", "你是 dave。");

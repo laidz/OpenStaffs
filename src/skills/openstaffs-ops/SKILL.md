@@ -22,7 +22,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 │  ├─ skills/<技能名>/SKILL.md   # 空间级技能：全部会话可见（同名时员工 / 项目技能更优先）
 │  └─ mcp.json                   # 空间级 MCP server（见「MCP（外部工具）」）
 └─ .openstaffs/                  # 机器私有（含密钥与运行状态；老板维护，你只读）
-   ├─ config.json                # 全局配置：providers / model / port / bossName / skillPaths / mcp
+   ├─ config.json                # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
    ├─ state.json                 # 老板的 pin 标记（机器维护，不要手改）
    ├─ permission-requests.json   # 待处理授权请求（机器维护，处理完即删）
    └─ state.sqlite               # 对话库（机器维护，不要手改）
@@ -47,6 +47,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 {
   "providers": { "opencode-go": { "apiKey": "sk-…" } },
   "model": "opencode-go/deepseek-v4.1-flash",
+  "thinkingLevel": "high",
   "port": 4319,
   "bossName": "老板",
   "skillPaths": ["~/global-skills"]
@@ -57,6 +58,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 | --- | --- |
 | `providers` | 供应商 → `{ apiKey }`。可用：`opencode-go` / `anthropic` / `openai` / `deepseek` / `google` / `openrouter`；写了名单外的供应商，启动会直接报错 |
 | `model` | 全局默认模型 `供应商/模型 id`（第一个 `/` 前是供应商，模型 id 可再含 `/`）；员工没配模型时兜底 |
+| `thinkingLevel` | 可选：全局默认思考强度。**档位由模型决定**（候选 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）；配置端**不校验**。非思考模型（只支持 `off`）、未显式映射的 `xhigh` / `max`、非法档，界面都展示 `null`。优先级：员工 `config.json` > 本字段；改动**新开会话**生效（与 `model` 一样，建议重启后整体确认） |
 | `port` | 可选，默认 4319；优先级：启动参数 / `OPENSTAFFS_PORT` > 本字段 > 4319 |
 | `bossName` | 可选：负责人称谓（缺省「老板」）。空值/缺失自动回落，**不可为空、不可移除**；界面、消息与工具文案统一消费此称谓。直读配置文件——刷新页面 / 新开会话即生效，无需重启 |
 | `skillPaths` | 可选：外部技能目录数组（老板的全局技能库）。写法：`~/` 开头（或裸 `~`）= 家目录，绝对路径 = 原样，其余 = 相对办公空间根目录。算**空间级**技能，所有会话可用；改动**新开会话**生效。**只指向你自己信任的目录**——这里的技能会进入**所有**员工会话的制度提示词（`name` / `description` 注入，正文由员工按需 `read`）。 |
@@ -82,7 +84,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 | --- | --- |
 | `alias` | 展示名（缺省 = 目录名）。改完**刷新页面即生效** |
 | `model` | 覆盖全局默认模型 `供应商/模型 id`；引用的供应商要在全局配置里配好密钥。改完**该员工新开会话生效** |
-| `thinkingLevel` | 思考级别（可选） |
+| `thinkingLevel` | 思考强度（可选，覆盖全局默认）。档位由模型决定，配置端不校验；非思考模型、未映射的 `xhigh` / `max` 与非法档在界面展示 `null`。改完**该员工新开会话生效** |
 
 > 目录名（id）不可变；展示名才是 alias。`@` 提及永远用 id；id 里不要含空白或 `@`（与提及语法冲突，无法被定向）。
 
@@ -108,6 +110,10 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
   - 好处：空点不产生空会话；排队中被撤回 / 中断，也不产生会话。
   - 就绪态只对下一条消息有效（发完即清）；换房间 / 离开房间也会清。
   - 员工侧 `new_session` 工具不受影响（仍是立即重开，下一轮起生效）。
+- **会话信息条**：聊天标题下方显示当前房间各活跃会话**实际在用**的模型全值（`供应商/模型 id`）、思考强度、已用上下文 / 模型窗口与占比（如「12.8K / 128K，10%」）。
+  - 口径 = 会话创建时的**快照**，不是 `config.json` 现值；改配置后要**新开会话**才变。
+  - 思考强度按模型能力判定（pi-ai `getSupportedThinkingLevels`，由 `reasoning` + `thinkingLevelMap` 推出）：模型不支持的档（非思考模型只支持 `off`；`xhigh` / `max` 需显式映射）、以及不属于七档的非法值，一律展示 `null`——不回落成别的档，也不把无效值原样显示。模型目录查不到时无法判定，按原值展示。
+  - 上下文用量是**已提交上下文**的估算：新会话在首轮回复前可能显示 0，首轮后按模型回报更新；窗口占比按模型 `contextWindow` 计（实际压缩还会预留输出空间）。
 - **排队中的消息可见、可单条撤回**：员工正在跑时，老板发的消息先落在**待发队列**（消息区里显示为灰／半透明的「排队中」气泡，标注等待的成员 + 「撤回」按钮），投递开始后原地变成正常气泡。
   - **撤回**（点「撤回」）= 撤掉这条消息里**还没开始**的投递，不投递给员工；已经开始投递的撤不回（撤不回时会提示「撤不回」），要停住正在跑的那是**「中断」**（房间级，同时停掉房间里所有在跑的成员）。
   - 同一次发送发给多个成员时按「消息」粒度合并成一条气泡：已经有成员收到（真气泡已出）就只在这条气泡上挂「排队中：<还没拿到的成员>」。
@@ -141,7 +147,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、全部�
 | 机制 | 何时生效 | 属于这档的东西 |
 | --- | --- | --- |
 | 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册 |
-| 会话装配（进 instructions，快照） | **新开会话** | 环境段模板、空间 / 项目 / 员工 `AGENTS.md`、`profile.md`、`MEMORY.md`、技能清单、员工 `model` / `thinkingLevel` |
+| 会话装配（进 instructions，快照） | **新开会话** | 环境段模板、空间 / 项目 / 员工 `AGENTS.md`、`profile.md`、`MEMORY.md`、技能清单、全局 / 员工 `model` 与 `thinkingLevel` |
 | 运行中按需读取 | **即时** | `SKILL.md` 正文（`read` 时读）、`permission.json`（每次写校验）、`members.md`（@ 路由与成员校验） |
 | 直读展示 | **刷新页面** | `bossName`、员工 `alias` |
 

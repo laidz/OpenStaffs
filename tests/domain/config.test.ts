@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import {
-  bossNamesFor, DEFAULT_PORT, configFile, parseModelRef, readBossName, readConfig, readSkillPaths,
+  bossNamesFor, DEFAULT_PORT, configFile, displayThinkingLevel, parseModelRef, readBossName, readConfig, readSkillPaths,
   resolveEmployeeModel,
 } from "../../src/domain/config.ts";
 
@@ -75,6 +75,34 @@ describe("全局配置", () => {
     expect(parseModelRef("provider/")).toBeUndefined();
     expect(parseModelRef(" / ")).toBeUndefined();
     expect(parseModelRef("")).toBeUndefined();
+  });
+
+  it("读取全局 thinkingLevel：非空字符串保留（不校验档位）；空串/非字符串忽略", () => {
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    const base = { providers, model: "opencode-go/m" };
+    fs.writeFileSync(configFile(ws), JSON.stringify({ ...base, thinkingLevel: "banana" }));
+    expect(readConfig(ws)?.thinkingLevel).toBe("banana"); // 配置端不拦非法档
+    fs.writeFileSync(configFile(ws), JSON.stringify({ ...base, thinkingLevel: "  high  " }));
+    expect(readConfig(ws)?.thinkingLevel).toBe("high");
+    fs.writeFileSync(configFile(ws), JSON.stringify({ ...base, thinkingLevel: "  " }));
+    expect(readConfig(ws)?.thinkingLevel).toBeUndefined();
+    fs.writeFileSync(configFile(ws), JSON.stringify({ ...base, thinkingLevel: 42 }));
+    expect(readConfig(ws)?.thinkingLevel).toBeUndefined();
+    fs.writeFileSync(configFile(ws), JSON.stringify(base));
+    expect(readConfig(ws)?.thinkingLevel).toBeUndefined();
+  });
+
+  it("displayThinkingLevel：非法档 / 能力表不支持 → null；支持或无法判定 → 原值", () => {
+    const supported = ["off", "minimal", "low", "medium", "high"];
+    expect(displayThinkingLevel("high", supported)).toBe("high");
+    expect(displayThinkingLevel("high", ["off"])).toBeNull(); // 非思考模型（reasoning: false）只支持 off
+    expect(displayThinkingLevel("max", supported)).toBeNull(); // xhigh / max 需显式映射
+    expect(displayThinkingLevel("xhigh", undefined)).toBe("xhigh"); // 模型目录缺失：无法判定，不擅自置 null
+    expect(displayThinkingLevel("high", undefined)).toBe("high");
+    expect(displayThinkingLevel("banana", supported)).toBeNull(); // 非法档
+    expect(displayThinkingLevel("banana", undefined)).toBeNull();
+    expect(displayThinkingLevel(" high ", supported)).toBeNull(); // 配置读取时已 trim
   });
 
   it("员工模型兜底：员工 model 合法则用员工的，否则整体用全局；thinkingLevel 独立保留", () => {

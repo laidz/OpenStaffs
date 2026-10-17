@@ -74,6 +74,38 @@ describe("Pi Durable HarnessPort", () => {
     }
   });
 
+  it("sessionUsage：读会话实际模型 / 思考强度 / 上下文用量 / 模型窗口与能力表", async () => {
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", reasoning: true }] });
+    faux.setResponses([fauxAssistantMessage("ok")]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-usage.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession({ ...spec(cwd), thinkingLevel: "high" });
+      const usage = await harness.sessionUsage(convId);
+      expect(usage).toMatchObject({
+        model: { provider: "faux", modelId: "faux-model" },
+        thinkingLevel: "high",
+        contextWindow: 128000,
+        supportedThinkingLevels: ["off", "minimal", "low", "medium", "high"], // 无 map：xhigh / max 不支持
+      });
+      expect(usage!.contextUsed).toBeGreaterThanOrEqual(0);
+
+      // 发送后上下文增长；窗口不变
+      await harness.send(convId, "你好");
+      const after = await harness.sessionUsage(convId);
+      expect(after!.contextUsed).toBeGreaterThan(0);
+      expect(after!.contextUsed).toBeGreaterThanOrEqual(usage!.contextUsed);
+
+      await expect(harness.sessionUsage("conv:不存在")).rejects.toThrow();
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("startSession 把 instructions/model 固化进会话（请求上下文可见），attach 只读回不改配置", async () => {
     let seenSystem = "";
     const { models } = fauxModels([

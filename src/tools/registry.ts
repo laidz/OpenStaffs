@@ -10,7 +10,7 @@ import type { PermissionRequest, PermissionRequestStore } from "../domain/permis
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
 import type { HarnessPort } from "../harness/port.ts";
-import { newSession, openDm, openGroup, relationCwd, roomTranscripts, type SessionDefaults } from "../app/conversations.ts";
+import { newSession, openDm, openGroup, relationCwd, roomTranscripts, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
 import { mergeRoomMessages, parseRoomKey, roomKeyOf, type RoomSpeaker } from "../app/rooms.ts";
 
 /** 授权请求依赖（由装配层注入；未注入时 request_permission 报"不可用"）。 */
@@ -54,10 +54,9 @@ function displayName(ws: Workspace, id: string): string {
   }
 }
 
-/** 新会话/新条会话的模型兜底（全局默认模型）。 */
+/** 新会话/新条会话的模型与思考强度兜底（全局配置）。 */
 function defaultsOf(ctx: ToolContext): SessionDefaults | undefined {
-  const config = readConfig(ctx.ws);
-  return config === undefined ? undefined : { model: config.model };
+  return sessionDefaults(readConfig(ctx.ws));
 }
 
 /** 列出办公室：成员 + 项目。 */

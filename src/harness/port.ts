@@ -51,6 +51,19 @@ export type SubmissionStatus = "queued" | "placed" | "done" | "unanswered";
 /** submit 的受理回执：submission id + 受理时的状态。 */
 export type SubmissionReceipt = { id: string; status: SubmissionStatus };
 
+/** 一条会话的实际运行信息（展示层用；模型 / 思考强度均为会话快照值）。 */
+export type SessionUsage = {
+  model: ModelRef;
+  /** 会话快照中请求的思考档位（未配置时为 Pi 默认档；provider 发送前可能按能力表 clamp）。 */
+  thinkingLevel: string;
+  /** 该模型支持的思考档位（pi-ai 模型目录）；模型目录缺失 → undefined（无法判定）。 */
+  supportedThinkingLevels?: string[];
+  /** 已用上下文 tokens（估算值）。 */
+  contextUsed: number;
+  /** 模型上下文窗口；模型目录缺失 → undefined。 */
+  contextWindow?: number;
+};
+
 export type HarnessEvent =
   | { type: "delta"; convId: string; channel: "text" | "thinking"; delta: string }
   | { type: "message"; convId: string; message: ChatMessage }
@@ -69,6 +82,8 @@ export interface HarnessPort {
   attach(convId: string, access: AccessContext): Promise<boolean>;
   /** 会话所属（员工 + 关系）；未注册返回 undefined。工具据此判断"我在哪、我是谁"。 */
   sessionInfo(convId: string): { selfId: string; relation: Relation } | undefined;
+  /** 会话实际在用的模型 / 思考强度 / 上下文用量 / 模型窗口（展示层数据）。 */
+  sessionUsage(convId: string): Promise<SessionUsage>;
   /** 阻塞发送（测试与非流式场景）；编排走 submit + watch（Task 5）。 */
   send(convId: string, text: string): Promise<ChatMessage>;
   /** 提交输入，不等待回答（admission 完成即返回，带上受理回执：id + 状态）。 */

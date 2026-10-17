@@ -4,6 +4,7 @@ import { createWorkspace } from "../domain/paths.ts";
 import { DEFAULT_PORT, readConfig } from "../domain/config.ts";
 import { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView } from "../app/permission-flow.ts";
+import { sessionDefaults } from "../app/conversations.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
@@ -74,10 +75,7 @@ async function main(): Promise<void> {
         queue,
         outbox,
         mcp,
-        getDefaults: () => {
-          const current = getConfig();
-          return current === undefined ? undefined : { model: current.model };
-        },
+        getDefaults: () => sessionDefaults(getConfig()),
       });
       await pump.registerAll();
     } catch (error) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
@@ -33,6 +33,42 @@ describe("渲染", () => {
     expect(html).toContain('"opencode-go": { "apiKey": "你的密钥" }');
     expect(html).toContain('"model": "opencode-go/deepseek-v4.1-flash"');
     expect(html).toContain('"port": 4319');
+  });
+});
+
+describe("会话信息条", () => {
+  it("模型全值、思考强度（含 null）、上下文用量/窗口与占比", () => {
+    const state = {
+      ...initialState,
+      roomKey: "dm:alice",
+      sessions: [
+        { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: null, contextUsed: 12800, contextWindow: 128000 },
+      ],
+    };
+    const html = sessionInfoHtml(state);
+    expect(html).toContain("faux/faux-model");
+    expect(html).toContain("思考 null");
+    expect(html).toContain("12.8K / 128K，10%");
+    expect(html).not.toContain("alice ·"); // 私聊不重复成员名
+  });
+
+  it("群聊按成员展示；窗口未知只给已用量；无会话渲染空容器", () => {
+    const group = {
+      ...initialState,
+      roomKey: "group:yt",
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
+      sessions: [
+        { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: "high", contextUsed: 999, contextWindow: undefined },
+        { memberId: "bob", convId: "c2", model: "other/m2", thinkingLevel: "off", contextUsed: 2000 },
+      ],
+    };
+    const html = sessionInfoHtml(group);
+    expect(html).toContain("爱丽丝");
+    expect(html).toContain("bob");
+    expect(html).toContain("999");
+    expect(html).toContain("2K");
+    expect(html).not.toContain("999 /");
+    expect(sessionInfoHtml({ ...initialState, roomKey: "dm:alice" })).toBe(`<div class="session-info" id="session-info"></div>`);
   });
 });
 

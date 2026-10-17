@@ -27,9 +27,13 @@ function readModel(dir: string): ModelChoice {
   if (raw.trim() === "") return { model: "" };
   try {
     const parsed = JSON.parse(raw) as Partial<ModelChoice>;
+    const thinking =
+      typeof parsed.thinkingLevel === "string" && parsed.thinkingLevel.trim() !== ""
+        ? { thinkingLevel: parsed.thinkingLevel.trim() }
+        : {};
     return {
       model: typeof parsed.model === "string" ? parsed.model.trim() : "",
-      ...(parsed.thinkingLevel === undefined ? {} : { thinkingLevel: parsed.thinkingLevel }),
+      ...thinking,
     };
   } catch {
     return { model: "" };

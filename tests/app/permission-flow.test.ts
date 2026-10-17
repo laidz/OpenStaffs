@@ -37,6 +37,7 @@ class FakePort implements HarnessPort {
   async append(): Promise<void> {}
   async abort(): Promise<void> {}
   sessionInfo(): undefined { return undefined; }
+  async sessionUsage(): Promise<never> { throw new Error("FakePort 不提供会话信息"); }
   async submit(convId: string, text: string, meta?: InputMeta) {
     this.submits.push({ convId, text, meta });
     return { id: `sub-${this.submits.length}`, status: "placed" as const };

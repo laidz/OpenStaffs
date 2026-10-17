@@ -151,7 +151,7 @@ describe("HTTP 骨架", () => {
 async function startWithFaux(
   employeeIds: string[],
   groupMembers: string[],
-  options: { bossName?: string } = {},
+  options: { bossName?: string; thinkingLevel?: string; reasoning?: boolean } = {},
 ): Promise<{ base: string; close: () => Promise<void>; store: PermissionRequestStore }> {
   for (const id of employeeIds) {
     const dir = path.join(root, "agents", id);
@@ -164,14 +164,21 @@ async function startWithFaux(
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...groupMembers.map((m) => `- ${m}`), ""].join("\n"));
   }
-  const config = { ...configured, ...(options.bossName === undefined ? {} : { bossName: options.bossName }) };
+  const config = {
+    ...configured,
+    ...(options.bossName === undefined ? {} : { bossName: options.bossName }),
+    ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
+  };
   // 称谓解析（bossNamesFor/readBossName）读的是 .openstaffs/config.json 文件，内存 getConfig 只服务 defaults；
   // 故自定义称谓必须落盘才生效（与 pump-trigger 用例同一真相源约定）。
   if (options.bossName !== undefined) {
     fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
     fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify(config));
   }
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+  const faux = fauxProvider({
+    provider: "faux",
+    models: [{ id: "faux-model", ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }) }],
+  });
   faux.setResponses(Array.from({ length: 20 }, (_, i) => fauxAssistantMessage(`收到${i}`)));
   const models = createModels();
   models.setProvider(faux.provider);
@@ -322,6 +329,53 @@ describe("房间 API", () => {
       // pins：新会话为空 → 红点为 0；此处只验证 /api/pins 接口形状
       const pins = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
       expect(typeof pins.total).toBe("number");
+    } finally {
+      await close();
+    }
+  });
+
+  it("会话信息：模型全值 / 思考强度 / 上下文用量与窗口；未建会话为空", async () => {
+    const { base, close } = await startWithFaux(["alice"], []);
+    try {
+      const empty = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/info`)).json()) as { sessions: unknown[] };
+      expect(empty.sessions).toEqual([]);
+
+      await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "你好", requestId: "info-1" }),
+      });
+      const info = await waitFor(async () => {
+        const res = await fetch(`${base}/api/rooms/dm:alice/sessions/info`);
+        const body = (await res.json()) as { sessions: { memberId: string; model: string; thinkingLevel: string | null; contextUsed: number; contextWindow?: number }[] };
+        return body.sessions.length > 0 && body.sessions[0]!.contextUsed > 0 ? body : undefined;
+      });
+      expect(info.sessions[0]).toMatchObject({
+        memberId: "alice",
+        model: "faux/faux-model",
+        thinkingLevel: "off", // Pi 默认档（会话实际在用）
+        contextWindow: 128000,
+      });
+      expect((await fetch(`${base}/api/rooms/dm:nobody/sessions/info`)).status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+
+  it("全局 thinkingLevel 进入新会话；模型不支持该档 → 信息条返回 null", async () => {
+    const { base, close } = await startWithFaux(["alice"], [], { thinkingLevel: "high", reasoning: false });
+    try {
+      await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "你好", requestId: "info-2" }),
+      });
+      const info = await waitFor(async () => {
+        const res = await fetch(`${base}/api/rooms/dm:alice/sessions/info`);
+        const body = (await res.json()) as { sessions: { thinkingLevel: string | null; contextUsed: number }[] };
+        return body.sessions.length > 0 && body.sessions[0]!.contextUsed > 0 ? body : undefined;
+      });
+      expect(info.sessions[0]!.thinkingLevel).toBeNull(); // 非推理模型只支持 off；不回落、不显示 high
     } finally {
       await close();
     }

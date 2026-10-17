@@ -45,6 +45,19 @@ describe("前端状态归约", () => {
     expect(state.live["c1"]).toBeUndefined();
   });
 
+  it("sessions 事件只更新当前房间；切换房间清空（不展示上一个会话的信息）", () => {
+    let state = inRoom();
+    const info = { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: "high", contextUsed: 12800, contextWindow: 128000 };
+    state = reduce(state, { type: "sessions", roomKey: "dm:alice", sessions: [info] });
+    expect(state.sessions).toEqual([info]);
+    // 别的房间的结果不串台
+    state = reduce(state, { type: "sessions", roomKey: "dm:bob", sessions: [{ ...info, memberId: "bob" }] });
+    expect(state.sessions).toEqual([info]);
+    // 切房间先清空，等新房间的数据到达
+    state = reduce(state, { type: "room", roomKey: "dm:bob", messages: [], pinned: [] });
+    expect(state.sessions).toEqual([]);
+  });
+
   it("R9 重喂已存在的员工消息不误删进行中的 live 气泡（仅真正追加时清 live）", () => {
     let state = inRoom();
     // 第一轮流式回复

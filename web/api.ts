@@ -1,9 +1,11 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
+import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import type { PermissionRequestView } from "../src/app/permission-flow.ts";
 
 export type { PermissionRequestView } from "../src/app/permission-flow.ts";
 export type { QueuedItemView } from "../src/app/outbox.ts";
+export type { RoomSessionInfo } from "../src/app/conversations.ts";
 
 export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[]; bossName: string };
 export type EmployeeSummary = { id: string; alias?: string; model: string };
@@ -48,6 +50,9 @@ export const api = {
     }),
   sessions: (roomKey: string) =>
     request<{ chains: { memberId: string; rows: ChainRow[] }[] }>(`${roomPath(roomKey)}/sessions`),
+  /** 当前房间各成员活跃会话的实际信息（模型 / 思考强度 / 上下文用量）。 */
+  sessionInfo: (roomKey: string) =>
+    request<{ sessions: RoomSessionInfo[] }>(`${roomPath(roomKey)}/sessions/info`),
   history: (roomKey: string, convId: string) =>
     request<{ convId: string; memberId: string; messages: RoomMessage[] }>(
       `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/messages`,

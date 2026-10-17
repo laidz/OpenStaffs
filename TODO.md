@@ -197,7 +197,7 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
 
 ## 批次 5 · 会话信息与模型配置
 
-- [ ] **会话信息展示：模型／供应商／思考强度／上下文用量**
+- [x] **会话信息展示：模型／供应商／思考强度／上下文用量**
 
   说明：UI 上显示当前会话的模型与供应商（model 字段全值，如 provider/modelId）、**思考强度**、以及上下文大小与使用比（如「200K，20%」）。
   - 口径：显示该会话**实际在用**的值——model 与思考强度都是会话创建时固化的快照，不是配置文件的现值（与「生效时机」口径一致）。
@@ -205,7 +205,9 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
   - 数据来源（已核实）：pi-durable 有 per-conversation 用量记账（pi.usage）与 compaction 的 contextWindow／reserveTokens；pi-ai 的模型目录带 contextWindow 与 thinkingLevelMap。需要后端新增接口／SSE，把「会话 → model 全值 + thinkingLevel + 已用上下文 + 模型窗口」给前端。
   - 落点：src/harness（读会话 agent.model／thinkingLevel 与 usage）、src/server（新接口或事件）、web/（信息条）。
 
-- [ ] **思考强度可配置：补齐到所有能配模型的地方（不涉及 UI）**
+  **落地（2026-10-17）**：`HarnessPort.sessionUsage()`（Pi `conv.agent` + `conv.context` + pi-ai `estimateContextTokens`）返回会话快照的 model／thinkingLevel／已用上下文／模型窗口与 `supportedThinkingLevels`（pi-ai `getSupportedThinkingLevels`：由 `reasoning` + `thinkingLevelMap` 推出）。`roomSessionInfo()` 组装并用 `displayThinkingLevel` 做展示层判定：非思考模型、未映射的 `xhigh`／`max`、非法档 → `null`；模型目录缺失（无法判定）→ 原值。新增 `GET /api/rooms/{room}/sessions/info`；前端聊天标题下方信息条（私聊一条、群聊逐成员），SSE `room.message` / `run end` / 发送后自动刷新；上下文按 `formatTokenCount` 显示为「12.8K / 128K，10%」（已提交上下文估算，首轮回复前可能为 0）。坏会话跳过，不连坐整房间。
+
+- [x] **思考强度可配置：补齐到所有能配模型的地方（不涉及 UI）**
 
   说明：现状是**只有员工级能配**——agents/{员工}/config.json 的 thinkingLevel（employee.ts 解析 → conversations.ts 装配 → 传给 pi 会话）；运维手册只露出一行「thinkingLevel｜思考级别（可选）」，没写取值范围。本次只做**配置层**补齐：强度**仅在 config 中可配置**，**不加 UI 入口、不改前端**。
   - 缺的：全局 config.json 没有（WorkspaceConfig 只有 providers／model／port）；新开会话默认值没有（SessionDefaults 只有 model）。
@@ -214,7 +216,9 @@ MCP 细则（骨架随批次 3 写进文档；实现见批次 4）：
   - 优先级与兜底：思考强度**独立于 model** 单独解析（与现有行为一致：model 非法时 thinkingLevel 仍保留）；层级为**员工 > 全局**，另有会话级默认值兜底。
   - 落点：src/domain/config.ts、src/domain/types.ts、src/app/conversations.ts、src/skills/openstaffs-ops/SKILL.md。**不涉及 web/ 与 UI。**
 
+  **落地（2026-10-17）**：`WorkspaceConfig` 新增 `thinkingLevel?`（`readConfig` 只接受非空字符串，不校验档位）；`SessionDefaults` 与新增 `sessionDefaults(config)` 统一承载全局默认值；HTTP 发送、授权投递、工具侧开会话、Pump 兜底全部改用它。`specFor` 独立于 model 解析：员工 `thinkingLevel` > 会话默认（全局）；都未配则不写进 spec（交给 Pi 默认 off）。员工 `config.json` 的 `thinkingLevel` 也收敛为「非空字符串才收（trim），数字 / null / 空串忽略」。运维手册补全局字段、优先级与「模型不支持的档 / 非法档展示 null」口径。
+
 ## 备注
 
-- 状态：批次 1–4 已落地（见各自「落地」）；批次 5 待开工，开工时从 master 切分支。
+- 状态：批次 1–5 已落地（见各自「落地」）。
 - MCP 四层一致已实现：四层 `mcp.json`、凭据引用、stdio 客户端、会话级注册、心跳与崩溃重连。

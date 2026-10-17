@@ -11,7 +11,7 @@ import { mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  findSessionOwner, interruptRoom, roomTranscripts, sessionChains, type Relation,
+  findSessionOwner, interruptRoom, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
@@ -130,7 +130,7 @@ async function handleRooms(
     json(res, 404, { error: "房间不存在" });
     return;
   }
-  const defaults = { model: config.model };
+  const defaults = sessionDefaults(config)!;
   // 群聊归一化需要成员表（判定 @ 对象是否有效、决定“视为发给老板”的兜底）。
   const memberIds = relation.kind === "group" ? parseMembers(deps.ws, relation.project) : [];
   const bossNames = bossNamesFor(deps.ws);
@@ -247,6 +247,11 @@ async function handleRooms(
     const count = pinCounts([{ key: roomKey, messages: merged }], state).rooms[roomKey] ?? 0;
     deps.hub?.broadcast({ type: "room.pins", roomKey, count });
     json(res, 200, { ok: true, count });
+    return;
+  }
+
+  if (rest.length === 2 && rest[0] === "sessions" && rest[1] === "info" && method === "GET") {
+    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation) });
     return;
   }
 
@@ -378,7 +383,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                     harness,
                     store,
                     queue: deps.queue,
-                    defaults: { model: config.model },
+                    defaults: sessionDefaults(config)!,
                     ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
                     ...(deps.pump === undefined ? {} : { register: (convId, ref) => deps.pump!.register(convId, ref) }),
                     ...(deps.hub === undefined ? {} : { broadcast: (rid) => deps.hub!.broadcast({ type: "permission.resolved", id: rid }) }),

@@ -44,6 +44,9 @@ class FakePort implements HarnessPort {
   sessionInfo(): undefined {
     return undefined;
   }
+  async sessionUsage(): Promise<never> {
+    throw new Error("FakePort 不提供会话信息");
+  }
   async submit(convId: string, text: string, meta?: InputMeta) {
     this.submits.push({ convId, text, meta }); // 先记录"进入 submit"，再被 gate 阻塞（模拟 admission 在途）
     if (this.gate !== undefined) await this.gate;

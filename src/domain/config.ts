@@ -11,6 +11,8 @@ export type WorkspaceConfig = {
   providers: Record<string, ProviderEntry>;
   /** 全局默认模型 "provider/modelId"（员工未配模型时的兜底）。 */
   model: string;
+  /** 全局默认思考强度（员工未配时兜底；配置端不校验档位，展示层按模型能力判定）。 */
+  thinkingLevel?: string;
   port: number;
 };
 
@@ -64,11 +66,13 @@ export function readConfig(ws: Workspace): WorkspaceConfig | undefined {
     const providers = parseProviders(parsed.providers);
     const model = requiredString(parsed.model);
     if (providers === undefined || model === undefined || parseModelRef(model) === undefined) return undefined;
+    // 思考档位不校验（每个模型支持的档不同；不支持的档由展示层呈现为 null）。
+    const thinkingLevel = requiredString(parsed.thinkingLevel);
     const port =
       typeof parsed.port === "number" && Number.isInteger(parsed.port) && parsed.port > 0 && parsed.port < 65536
         ? parsed.port
         : DEFAULT_PORT;
-    return { providers, model, port };
+    return { providers, model, ...(thinkingLevel === undefined ? {} : { thinkingLevel }), port };
   } catch {
     return undefined;
   }
@@ -173,6 +177,21 @@ export function resolveEmployeeModel(globalModel: string, employee: ModelChoice)
 /** 解析结果 → "provider/modelId"（展示/API 输出用）。 */
 export function formatModelRef(ref: ModelRefLike): string {
   return `${ref.provider}/${ref.modelId}`;
+}
+
+/** 思考档位全集（pi-ai ModelThinkingLevel）；配置端不校验，展示层用它识别非法档。 */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * 展示层思考强度判定：
+ * - 非法档（不在 THINKING_LEVELS 里）→ null；
+ * - 模型目录给出支持列表、但该档不在列表 → null（不回落成别的档，也不原样显示无效值）；
+ * - 支持 / 模型目录缺失（无法判定）→ 原值。
+ */
+export function displayThinkingLevel(level: string, supportedThinkingLevels: readonly string[] | undefined): string | null {
+  if (typeof level !== "string" || !(THINKING_LEVELS as readonly string[]).includes(level)) return null;
+  if (supportedThinkingLevels !== undefined && !supportedThinkingLevels.includes(level)) return null;
+  return level;
 }
 
 /** @提及解析用的负责人写法：当前称谓 + 历史写法（双认；首项 = 当前称谓）。 */

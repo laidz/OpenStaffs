@@ -1,7 +1,7 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
-import type { EmployeeSummary, PermissionRequestView, ProjectSummary } from "./api.ts";
+import type { EmployeeSummary, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
 
 export type Live = {
   convId: string;
@@ -25,6 +25,8 @@ export type State = {
   messages: RoomMessage[];
   /** 排队中的老板消息（当前房间）：还没投递给员工，按投递顺序。 */
   queued: QueuedItemView[];
+  /** 当前房间各成员活跃会话信息（模型 / 思考强度 / 上下文用量）；私聊最多一条。 */
+  sessions: RoomSessionInfo[];
   live: Record<string, Live>;
   /** 侧栏红点：每房间被 pin 的消息数（房间当前视图口径）。 */
   pins: Record<string, number>;
@@ -43,6 +45,7 @@ export const initialState: State = {
   projects: [],
   permissionRequests: [],
   messages: [],
+  sessions: [],
   queued: [],
   live: {},
   pins: {},
@@ -56,6 +59,7 @@ export type UiEvent =
   | { type: "employees"; list: EmployeeSummary[] }
   | { type: "projects"; list: ProjectSummary[] }
   | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
+  | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
   | { type: "close-room" }
   | { type: "panel"; panel?: "history" }
   | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
@@ -103,12 +107,16 @@ export function reduce(state: State, event: UiEvent): State {
         messages: event.messages,
         pinned: event.pinned,
         queued: event.queued ?? [],
+        sessions: [],
         freshSession: false,
         live: {},
         panel: undefined,
       };
+    case "sessions":
+      // 迟到的结果不串台：只接受当前房间。
+      return state.roomKey === event.roomKey ? { ...state, sessions: event.sessions } : state;
     case "close-room":
-      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], freshSession: false, live: {}, panel: undefined };
+      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], sessions: [], freshSession: false, live: {}, panel: undefined };
     case "panel":
       return { ...state, panel: event.panel };
     case "fresh-session":

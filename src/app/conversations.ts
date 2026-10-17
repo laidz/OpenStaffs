@@ -4,7 +4,7 @@ import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir,
 import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
-import { readSkillPaths, resolveEmployeeModel } from "../domain/config.ts";
+import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
@@ -101,8 +101,17 @@ export function accessFor(ws: Workspace, relation: Relation, speaker: Employee):
   };
 }
 
-/** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）。 */
-export type SessionDefaults = { model: string };
+/** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）与默认思考强度。 */
+export type SessionDefaults = { model: string; thinkingLevel?: string };
+
+/** 全局配置 → 新会话默认值（model / thinkingLevel 都只是兜底，员工配置优先）。 */
+export function sessionDefaults(config: WorkspaceConfig | undefined): SessionDefaults | undefined {
+  if (config === undefined) return undefined;
+  return {
+    model: config.model,
+    ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
+  };
+}
 
 function specFor(
   ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
@@ -112,13 +121,15 @@ function specFor(
   }
   const cwd = relationCwd(ws, relation);
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
+  // 思考强度独立于 model 解析：员工 > 会话默认（全局配置）。配置端不校验档位。
+  const thinkingLevel = speaker.model.thinkingLevel ?? defaults?.thinkingLevel;
   const mcpExtensions = mcp?.extensionsFor(relation, speaker.id) ?? [];
   return {
     cwd,
     // 技能清单与 MCP 选择随会话快照固化：这里读一次（新开会话才重读）
     instructions: instructionsFor(ws, relation, speaker, readSkillPaths(ws)),
     model: { provider: model.provider, modelId: model.modelId },
-    ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
     access: accessFor(ws, relation, speaker),
     ...(mcpExtensions.length === 0 ? {} : { mcpExtensions }),
   };
@@ -179,6 +190,41 @@ export function activeMemberSessions(ws: Workspace, relation: Relation): { membe
   for (const chain of sessionChains(ws, relation)) {
     const active = chain.rows.filter((row) => row.ended === null).at(-1);
     if (active !== undefined) out.push({ memberId: chain.memberId, convId: active.id });
+  }
+  return out;
+}
+
+/** 会话信息条（展示层）：模型全值 + 思考强度 + 上下文用量 / 模型窗口。 */
+export type RoomSessionInfo = {
+  memberId: string;
+  convId: string;
+  /** "provider/modelId"（会话快照）。 */
+  model: string;
+  /** 展示层判定后的档位；模型明确不支持 → null。 */
+  thinkingLevel: string | null;
+  contextUsed: number;
+  contextWindow?: number;
+};
+
+/** 关系下各成员活跃会话的实际信息；坏会话（链指向不存在等）跳过，不连坐整个房间。 */
+export async function roomSessionInfo(
+  ws: Workspace, harness: HarnessPort, relation: Relation,
+): Promise<RoomSessionInfo[]> {
+  const out: RoomSessionInfo[] = [];
+  for (const session of activeMemberSessions(ws, relation)) {
+    try {
+      const usage = await harness.sessionUsage(session.convId);
+      out.push({
+        memberId: session.memberId,
+        convId: session.convId,
+        model: formatModelRef(usage.model),
+        thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
+        contextUsed: usage.contextUsed,
+        ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
+      });
+    } catch {
+      // 坏会话跳过：一个坏会话不该让整房间的信息条 500。
+    }
   }
   return out;
 }

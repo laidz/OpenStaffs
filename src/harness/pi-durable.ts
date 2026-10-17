@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import path from "node:path";
-import { createModels, type Models } from "@earendil-works/pi-ai/models";
+import { createModels, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import {
   AssistantEntry, Harness, watchEvents, createRegistry,
@@ -194,6 +195,21 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
     },
     sessionInfo(convId) {
       return sessionInfoByConv.get(convId);
+    },
+    async sessionUsage(convId) {
+      const conv = await conversation(convId as unknown as ConversationId);
+      // 会话快照：agent.model / thinkingLevel 是创建时固化 + Pi 解析后的实际值，不是配置现值。
+      const agent = await conv.agent(ctx);
+      if (agent.model === undefined) throw new Error(`会话没有模型: ${convId}`);
+      const model = models.getModel(agent.model.provider, agent.model.modelId);
+      const context = await conv.context(ctx);
+      return {
+        model: { provider: agent.model.provider, modelId: agent.model.modelId },
+        thinkingLevel: agent.thinkingLevel,
+        ...(model === undefined ? {} : { supportedThinkingLevels: getSupportedThinkingLevels(model) }),
+        contextUsed: estimateContextTokens(context.messages).tokens,
+        ...(model?.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+      };
     },
     async send(convId, text) {
       const conv = await conversation(convId as unknown as ConversationId);

@@ -1,5 +1,6 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
+import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
 import type { Live, State } from "./state.ts";
 
@@ -131,6 +132,40 @@ export function freshSessionHint(state: State): string {
     : "下一条消息将开启新会话（当前会话将结束，可在历史中回看）；再点「新开会话」可取消";
 }
 
+/** 上下文 token 数的紧凑展示：999 / 12.8K / 1.2M。 */
+export function formatTokenCount(tokens: number): string {
+  const trim = (value: number): string => value.toFixed(1).replace(/\.0$/u, "");
+  if (tokens >= 1_000_000) return `${trim(tokens / 1_000_000)}M`;
+  if (tokens >= 1000) return `${trim(tokens / 1000)}K`;
+  return String(Math.max(0, Math.round(tokens)));
+}
+
+/**
+ * 会话信息条：显示每条活跃会话**实际在用**的模型全值、思考强度、已用上下文 / 模型窗口。
+ * 群聊逐成员展示（私聊不重复成员名）；思考强度 null = 模型明确不支持该档。
+ */
+export function sessionInfoHtml(state: State): string {
+  const isGroup = state.roomKey?.startsWith("group:") === true;
+  const metas = state.sessions
+    .map((info: RoomSessionInfo) => {
+      const employee = state.employees.find((e) => e.id === info.memberId);
+      const name = employee?.alias ?? info.memberId;
+      const parts: string[] = [];
+      if (isGroup) parts.push(`<span class="session-member">${escapeHtml(name)}</span>`);
+      parts.push(`<span class="session-model">${escapeHtml(info.model)}</span>`);
+      parts.push(`<span class="session-thinking">思考 ${escapeHtml(String(info.thinkingLevel ?? "null"))}</span>`);
+      const used = formatTokenCount(info.contextUsed);
+      const context =
+        info.contextWindow === undefined
+          ? `上下文 ${used}`
+          : `上下文 ${used} / ${formatTokenCount(info.contextWindow)}，${Math.round((info.contextUsed / info.contextWindow) * 100)}%`;
+      parts.push(`<span class="session-context">${context}</span>`);
+      return `<span class="session-meta" data-member="${escapeHtml(info.memberId)}">${parts.join("")}</span>`;
+    })
+    .join("");
+  return `<div class="session-info" id="session-info">${metas}</div>`;
+}
+
 export function chatHtml(state: State): string {
   if (state.roomKey === undefined) {
     return `<section class="chat"><div class="empty">从左侧选择一个员工或项目开始对话。</div></section>`;
@@ -155,6 +190,7 @@ export function chatHtml(state: State): string {
       <button id="btn-history">历史</button>
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>
+    ${sessionInfoHtml(state)}
     <div class="msg-list" id="msg-list">
       <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned, state.queued)}</div>
       <div id="live-area">${liveHtml(state.live)}</div>

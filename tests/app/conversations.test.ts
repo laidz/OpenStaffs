@@ -9,7 +9,8 @@ import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
   activeMemberSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
-  permissionFilesFor, relationKey, roomTranscripts, sessionChains, skillDirsFor, type SessionDefaults,
+  permissionFilesFor, relationKey, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults, skillDirsFor,
+  type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
 import { readSkillPaths } from "../../src/domain/config.ts";
@@ -28,7 +29,7 @@ function seedEmployee(id: string) {
 }
 
 function harnessWithFaux() {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", reasoning: true }] });
   faux.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("ok")]);
   const models = createModels();
   models.setProvider(faux.provider);
@@ -514,6 +515,104 @@ describe("应用用例", () => {
       expect(seenSystem).toContain("你是 dave。");
     } finally {
       await reopened.close();
+    }
+  });
+
+  it("思考强度装配：员工 > 会话默认；员工非法档原样保留；未配置则不写进 spec", async () => {
+    seedEmployee("alice");
+    fs.writeFileSync(
+      path.join(root, "agents", "alice", "config.json"),
+      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "high" }),
+    );
+    seedEmployee("bob");
+    seedEmployee("carol");
+    fs.writeFileSync(
+      path.join(root, "agents", "carol", "config.json"),
+      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "banana" }),
+    );
+    const ws = createWorkspace(root);
+    const specs: ConversationSpec[] = [];
+    const stub = {
+      startSession: async (spec: ConversationSpec) => {
+        specs.push(spec);
+        return `conv_${specs.length}`;
+      },
+      attach: async () => false,
+    } as unknown as HarnessPort;
+
+    const defaults: SessionDefaults = { model: "faux/faux-model", thinkingLevel: "low" };
+    await newSession(ws, stub, { kind: "dm", employeeId: "alice" }, "alice", defaults);
+    await newSession(ws, stub, { kind: "dm", employeeId: "bob" }, "bob", defaults);
+    await newSession(ws, stub, { kind: "dm", employeeId: "carol" }, "carol", defaults);
+    await newSession(ws, stub, { kind: "dm", employeeId: "bob" }, "bob", { model: "faux/faux-model" });
+    // model 非法不影响 thinkingLevel（两者独立解析）
+    fs.writeFileSync(
+      path.join(root, "agents", "alice", "config.json"),
+      JSON.stringify({ model: "invalid", thinkingLevel: "high" }),
+    );
+    await newSession(ws, stub, { kind: "dm", employeeId: "alice" }, "alice", { model: "faux/faux-model", thinkingLevel: "low" });
+
+    expect(specs[0]?.thinkingLevel).toBe("high"); // 员工覆盖全局
+    expect(specs[1]?.thinkingLevel).toBe("low"); // 员工没配 → 全局/会话默认兜底
+    expect(specs[2]?.thinkingLevel).toBe("banana"); // 配置端不校验档位
+    expect(specs[3] !== undefined && "thinkingLevel" in specs[3]).toBe(false); // 都没配 → 交给 Pi 默认
+    expect(specs[4]?.model).toEqual({ provider: "faux", modelId: "faux-model" }); // 员工 model 非法 → 全局模型兜底
+    expect(specs[4]?.thinkingLevel).toBe("high"); // 思考强度仍保留员工值
+  });
+
+  it("sessionDefaults：把全局 model / thinkingLevel 转成会话默认值", () => {
+    const config = { providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 };
+    expect(sessionDefaults(undefined)).toBeUndefined();
+    expect(sessionDefaults(config)).toEqual({ model: "faux/faux-model" });
+    expect(sessionDefaults({ ...config, thinkingLevel: "max" })).toEqual({ model: "faux/faux-model", thinkingLevel: "max" });
+  });
+
+  it("roomSessionInfo：读会话实际快照（模型全值/思考强度/上下文用量与窗口）；坏会话跳过", async () => {
+    seedEmployee("alice");
+    fs.writeFileSync(
+      path.join(root, "agents", "alice", "config.json"),
+      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "high" }),
+    );
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      expect(await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" })).toEqual([]);
+      const convId = await openDm(ws, harness, "alice");
+      await harness.send(convId, "你好");
+      const [info] = await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" });
+      expect(info).toMatchObject({
+        memberId: "alice",
+        convId,
+        model: "faux/faux-model",
+        thinkingLevel: "high",
+        contextWindow: 128000,
+      });
+      expect(info!.contextUsed).toBeGreaterThan(0);
+
+      // 链指向不存在的会话：只跳过该成员，好会话照常返回
+      fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+      fs.mkdirSync(path.join(root, "projects", "yt", "conversation_ids"), { recursive: true });
+      fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "- alice\n- ghost\n");
+      const aliceGroupConv = await openGroup(ws, harness, "yt", "alice");
+      fs.writeFileSync(
+        path.join(root, "projects", "yt", "conversation_ids", "ghost.md"),
+        ["# 会话链", "", "| id | started | ended | previous |", "|----|---------|-------|----------|", "| conv:不存在 | 2026-10-16T00:00:00Z |  | - |", ""].join("\n"),
+      );
+      const groupInfo = await roomSessionInfo(ws, harness, { kind: "group", project: "yt" });
+      expect(groupInfo.map((s) => s.memberId)).toEqual(["alice"]);
+      expect(groupInfo[0]!.convId).toBe(aliceGroupConv);
+
+      // 模型不支持 max（faux 推理模型无 xhigh / max 显式映射）→ 展示 null，不回落成 high
+      fs.writeFileSync(
+        path.join(root, "agents", "alice", "config.json"),
+        JSON.stringify({ model: "faux/faux-model", thinkingLevel: "max" }),
+      );
+      await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
+      const [unsupported] = await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" });
+      expect(unsupported!.thinkingLevel).toBeNull();
+    } finally {
+      await harness.close();
     }
   });
 

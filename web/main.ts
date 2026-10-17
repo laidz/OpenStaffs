@@ -1,6 +1,6 @@
 import { api, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "./render.ts";
+import { escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -42,6 +42,11 @@ function renderDynamic(event: UiEvent): void {
       renderFreshSession();
       return;
     }
+    // 会话信息条：模型 / 思考强度 / 上下文用量。
+    if (event.type === "sessions") {
+      renderSessionInfo();
+      return;
+    }
     // pin 事件同时改当前房间气泡高亮与侧栏红点，两处都要局部更新。
     if (event.type === "pin") {
       renderMessages();
@@ -62,13 +67,16 @@ function renderDynamic(event: UiEvent): void {
       renderLive();
       return;
     case "room.activity":
-      // run 起止改忙碌点（侧栏）；tool 起止改 live 的工具行。
-      if (event.event.kind === "run") renderSidebar();
-      else renderLive();
+      // run 起止改忙碌点（侧栏）；tool 起止改 live 的工具行。run 结束刷新上下文用量。
+      if (event.event.kind === "run") {
+        renderSidebar();
+        if (event.event.phase === "end") void refreshSessionInfo(event.event.roomKey);
+      } else renderLive();
       return;
     case "room.message":
       renderMessages();
       renderLive(); // 员工正式消息到达 → 清掉对应 live 气泡
+      void refreshSessionInfo(event.event.roomKey); // 上下文随回复增长
       return;
     case "room.pins":
       renderSidebar();
@@ -152,6 +160,23 @@ function renderLive(): void {
   const stick = nearBottom();
   liveArea.innerHTML = liveHtml(state.live);
   if (stick) scrollToBottom();
+}
+
+/** 会话信息条局部更新（模型 / 思考强度 / 上下文用量）。 */
+function renderSessionInfo(): void {
+  const holder = document.getElementById("session-info");
+  if (holder === null) return;
+  holder.outerHTML = sessionInfoHtml(state);
+}
+
+/** 重拉当前房间的会话信息；辅助展示，失败静默等下一次事件。 */
+async function refreshSessionInfo(roomKey: string): Promise<void> {
+  try {
+    const { sessions } = await api.sessionInfo(roomKey);
+    dispatch({ type: "sessions", roomKey, sessions });
+  } catch {
+    // 信息条失败不打扰用户：下一条消息 / run 结束会再试。
+  }
 }
 
 /** 用户是否贴近底部（距底 <80px）。 */
@@ -349,14 +374,22 @@ async function refreshAll(): Promise<void> {
   dispatch({ type: "permissions", list: permissions.requests });
   if (state.roomKey !== undefined) {
     const roomKey = state.roomKey;
-    const { messages, pinned, queued } = await api.messages(roomKey);
-    dispatch({ type: "room", roomKey, messages, pinned, queued }, "all");
+    const [room, info] = await Promise.all([
+      api.messages(roomKey),
+      api.sessionInfo(roomKey).catch(() => undefined), // 信息条是辅助展示：失败不拖垮整页刷新
+    ]);
+    dispatch({ type: "room", roomKey, messages: room.messages, pinned: room.pinned, queued: room.queued }, "all");
+    if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
   }
 }
 
 async function enterRoom(roomKey: string): Promise<void> {
-  const { messages, pinned, queued } = await api.messages(roomKey);
-  dispatch({ type: "room", roomKey, messages, pinned, queued }, "all");
+  const [room, info] = await Promise.all([
+    api.messages(roomKey),
+    api.sessionInfo(roomKey).catch(() => undefined),
+  ]);
+  dispatch({ type: "room", roomKey, messages: room.messages, pinned: room.pinned, queued: room.queued }, "all");
+  if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
 }
 
 async function sendCurrent(): Promise<void> {
@@ -387,6 +420,7 @@ async function sendCurrent(): Promise<void> {
       await syncRoomMessages(roomKey);
     }
     if (untouched) applyDraft(isGroup ? draftAfterSend(targets) : "");
+    void refreshSessionInfo(roomKey); // 上下文随这轮投递变化
   } catch (error) {
     reportError(error);
   } finally {
