@@ -162,6 +162,30 @@ describe("Pi Durable HarnessPort", () => {
       await harness.close();
     }
   });
+  it("sessionInfo：私聊/群聊各归其位（startSession 与 attach 都登记）", async () => {
+    const { models } = fauxModels([fauxAssistantMessage("ok")]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-sinfo.sqlite"), models });
+    await harness.open();
+    try {
+      const dmCwd = path.join(root, "agents", "alice");
+      const groupCwd = path.join(root, "projects", "demo");
+      fs.mkdirSync(dmCwd, { recursive: true });
+      fs.mkdirSync(groupCwd, { recursive: true });
+
+      const dmConv = await harness.startSession(spec(dmCwd));
+      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+
+      const groupSpec: ConversationSpec = { ...spec(groupCwd), cwd: groupCwd, access: { ...access(groupCwd), cwd: groupCwd } };
+      const groupConv = await harness.startSession(groupSpec);
+      expect(harness.sessionInfo(groupConv)).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" } });
+
+      expect(await harness.attach(dmConv, access(dmCwd))).toBe(true);
+      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+      expect(harness.sessionInfo("conv:不存在")).toBeUndefined();
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe("提交与推流", () => {
@@ -179,6 +203,26 @@ describe("提交与推流", () => {
       expect(boss?.kind).toBe("chat.message");
       expect(boss?.text).toBe("做X");
       expect((boss?.data as { roomMessageId?: string } | undefined)?.roomMessageId).toBe("rm_1");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("append：落一条被动消息（transcript 可见）且不触发模型回答", async () => {
+    const { models } = fauxModels([fauxAssistantMessage("不该被用到")]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-append.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      await harness.append(convId, { kind: "chat.message", text: "我主动说一句", data: { author: "alice" } });
+      await waitFor(async () => (await harness.transcript(convId)).some((m) => m.text === "我主动说一句"));
+      const history = await harness.transcript(convId);
+      const posted = history.find((m) => m.text === "我主动说一句");
+      expect(posted?.kind).toBe("chat.message");
+      expect((posted?.data as { author?: string } | undefined)?.author).toBe("alice");
+      expect(history.some((m) => m.role === "assistant")).toBe(false); // 未触发 run
     } finally {
       await harness.close();
     }

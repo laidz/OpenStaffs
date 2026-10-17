@@ -36,6 +36,10 @@ class FakePort implements HarnessPort {
   async attach(convId: string): Promise<boolean> {
     return convId.startsWith("conv-");
   }
+  async append(): Promise<void> {}
+  sessionInfo(): undefined {
+    return undefined;
+  }
   async submit(convId: string, text: string, meta?: InputMeta): Promise<void> {
     this.submits.push({ convId, text, meta }); // 先记录"进入 submit"，再被 gate 阻塞（模拟 admission 在途）
     if (this.gate !== undefined) await this.gate;

@@ -86,6 +86,21 @@ describe("房间合并视图", () => {
     expect(merged[1]!.speaker).toEqual({ kind: "employee", id: "alice" });
   });
 
+  it("员工主动发言 / 工具投递（data.author = 员工 id）归属该员工，而非老板", () => {
+    const merged = mergeRoomMessages("group:demo", [
+      { memberId: "alice", convId: "c1", messages: [
+        chat("7", "user", "我主动汇报", { kind: "chat.message", data: { author: "alice" } }),
+      ] },
+      { memberId: "bob", convId: "c2", messages: [
+        chat("8", "user", "alice 对 bob 说", { kind: "chat.message", data: { author: "alice" } }),
+      ] },
+    ]);
+    expect(merged.map((m) => m.speaker)).toEqual([
+      { kind: "employee", id: "alice" },
+      { kind: "employee", id: "alice" },
+    ]);
+  });
+
   it("countUnread：watermark 之后的员工消息计数，老板消息不计", () => {
     const members: MemberTranscript[] = [
       { memberId: "alice", convId: "c1", messages: [

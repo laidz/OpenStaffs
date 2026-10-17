@@ -167,6 +167,23 @@ projects/demo/
 
 - 环境段同样在**会话创建时固化**：改模板后要「新开会话」才生效。
 
+## 员工工具（OpenStaffs 内置）
+
+员工（运行时 agent）除通用文件工具（`read` / `write` / `edit` / `bash`）外，还有一组办公室内置工具（集中在 `src/tools/`，统一注册）：
+
+| 工具 | 作用 |
+| --- | --- |
+| `office_list` | 列出办公室成员与项目（含你在不在其中） |
+| `member_profile` | 读某成员资料（id / 展示名 / `profile.md` 正文） |
+| `room_history` | 读某房间聊天记录（`room?` 缺省当前房间；`limit?` 缺省 50） |
+| `send_message` | 发消息：`target` = `boss` / `member:<id>`（当前群触发该成员 = @他）/ `project:<id>` |
+| `new_session` | 重开一段新会话（下一轮生效） |
+
+- 工具**对员工会话默认全量暴露**（作为 `openstaffs-tools` 扩展装进 harness）。
+- 员工经 `send_message` 投递的消息会**归属到该员工**（房间视图显示"是他说的"），老板据此产生未读待办。
+- **@ 他人的节制**靠系统提示词约束（`src/prompts/group.md` + `openstaffs` 技能），本版本不做代码级防循环。
+- 新增工具：在 `src/tools/registry.ts` 加一条，并同步 `src/skills/openstaffs/SKILL.md` 与本 README（见仓库 `AGENTS.md` 约定）。
+
 ## 使用
 
 - 左侧栏列出全部员工与项目（列表为空时显示创建提示）；点一项进入房间。

@@ -1,9 +1,10 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import path from "node:path";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import {
   AssistantEntry, Harness, watchEvents, createRegistry,
-  type AgentEvent as PiAgentEvent, type Conversation, type ConversationId, type EntryRecord,
+  type AgentEvent as PiAgentEvent, type Conversation, type ConversationId, type EntryRecord, type Extension,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -11,13 +12,25 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Message } from "@earendil-works/pi-ai";
 import { createAccessExtension } from "./access-extension.ts";
 import type { AccessContext } from "../domain/access-control.ts";
-import type { ChatMessage, HarnessEvent, HarnessPort } from "./port.ts";
+import type { Relation } from "../domain/types.ts";
+import type { ChatMessage, HarnessEvent, HarnessPort, PostEntry } from "./port.ts";
 
 export type PiHarnessOptions = {
   root: string;
   sqlitePath: string;
   models?: Models;
+  /** 额外安装的扩展（如 OpenStaffs 自有工具）。 */
+  extensions?: readonly Extension[];
 };
+
+/** 由会话 cwd 推断关系（根目录下：agents/<id> = 私聊；projects/<id> = 群聊）。 */
+function relationFor(root: string, selfId: string, cwd: string): Relation {
+  const segments = path.relative(root, cwd).split(path.sep);
+  if (segments[0] === "projects" && segments.length === 2 && segments[1] !== undefined && segments[1] !== "") {
+    return { kind: "group", project: segments[1] };
+  }
+  return { kind: "dm", employeeId: selfId };
+}
 
 function textOf(message: Message | undefined): string {
   const content = (message as { content?: unknown } | undefined)?.content;
@@ -92,7 +105,9 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
 
   let harness: Harness | undefined;
   const accessByConv = new Map<string, AccessContext>();
+  const sessionInfoByConv = new Map<string, { selfId: string; relation: Relation }>();
   registry.install(createAccessExtension((id) => accessByConv.get(id)));
+  for (const extension of options.extensions ?? []) registry.install(extension);
 
   async function conversation(id: ConversationId): Promise<Conversation> {
     const found = await harness!.conversation(id, ctx);
@@ -127,13 +142,24 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
         ctx,
       );
       accessByConv.set(String(conv.id), spec.access);
+      sessionInfoByConv.set(String(conv.id), {
+        selfId: spec.access.selfId,
+        relation: relationFor(options.root, spec.access.selfId, spec.cwd),
+      });
       return String(conv.id);
     },
     async attach(convId, access) {
       const found = await harness!.conversation(convId as unknown as ConversationId, ctx);
       if (!found) return false;
       accessByConv.set(String(found.id), access);
+      sessionInfoByConv.set(String(found.id), {
+        selfId: access.selfId,
+        relation: relationFor(options.root, access.selfId, access.cwd),
+      });
       return true;
+    },
+    sessionInfo(convId) {
+      return sessionInfoByConv.get(convId);
     },
     async send(convId, text) {
       const conv = await conversation(convId as unknown as ConversationId);
@@ -157,6 +183,20 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
             ? {}
             : { entry: { kind: meta.kind, ...(meta.data === undefined ? {} : { data: meta.data as never }) } }),
           ...(meta?.requestId === undefined ? {} : { requestId: meta.requestId }),
+        },
+        ctx,
+      );
+    },
+    async append(convId, entry) {
+      const conv = await conversation(convId as unknown as ConversationId);
+      await conv.submit(
+        {
+          type: "write",
+          entry: {
+            kind: entry.kind,
+            ...(entry.data === undefined ? {} : { data: entry.data as never }),
+            model: [{ role: "user", content: entry.text, timestamp: Date.now() }],
+          },
         },
         ctx,
       );

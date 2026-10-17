@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../harness/port.ts";
+import { BOSS_ID } from "../domain/mention.ts";
 import type { Relation } from "./conversations.ts";
 
 export type RoomSpeaker = { kind: "boss" } | { kind: "employee"; id: string; alias?: string };
@@ -49,10 +50,16 @@ function bossDataOf(chat: ChatMessage): { roomMessageId?: string } {
   return typeof data.roomMessageId === "string" ? { roomMessageId: data.roomMessageId } : {};
 }
 
+/** entry data.author（发言者 id）；缺省 undefined。 */
+function authorOf(chat: ChatMessage): string | undefined {
+  const data = typeof chat.data === "object" && chat.data !== null ? (chat.data as Record<string, unknown>) : {};
+  return typeof data.author === "string" && data.author.trim() !== "" ? data.author.trim() : undefined;
+}
+
 /**
  * 单条聊天消息 → 房间消息。
  * - assistant → 员工发言；
- * - user 且 kind 为 chat.message / pi.user → 老板发言；
+ * - user 且 kind 为 chat.message / pi.user：data.author 是员工 id（员工主动发言 / 工具投递）→ 归属该员工；否则 → 老板发言；
  * - 其余 user 条目（如 pi.compaction / pi.reset 等合成条目）→ undefined（跳过）。
  */
 export function normalizeChatMessage(roomKey: string, member: MemberTranscript, chat: ChatMessage): RoomMessage | undefined {
@@ -66,6 +73,10 @@ export function normalizeChatMessage(roomKey: string, member: MemberTranscript, 
     };
   }
   if (chat.role === "user" && (chat.kind === "chat.message" || chat.kind === "pi.user")) {
+    const author = authorOf(chat);
+    if (author !== undefined && author !== BOSS_ID) {
+      return { convId: member.convId, entryId: chat.id, roomKey, speaker: { kind: "employee", id: author }, text: chat.text };
+    }
     return {
       convId: member.convId,
       entryId: chat.id,

@@ -8,12 +8,11 @@ import { resolveEmployeeModel, type ModelRefLike } from "../domain/config.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
+import type { Relation } from "../domain/types.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
 import type { MemberTranscript } from "./rooms.ts";
 
-export type Relation =
-  | { kind: "dm"; employeeId: string }
-  | { kind: "group"; project: string };
+export type { Relation };
 
 export function relationKey(relation: Relation, speakerId: string): string {
   return relation.kind === "dm" ? `dm:${relation.employeeId}` : `group:${relation.project}:${speakerId}`;

@@ -4,6 +4,7 @@ import { createWorkspace } from "../domain/paths.ts";
 import { DEFAULT_PORT, readConfig } from "../domain/config.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
+import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
 import { createConfiguredModels } from "./models.ts";
 import { createHttpServer } from "./http.ts";
 import { SseHub } from "./sse.ts";
@@ -33,7 +34,8 @@ async function main(): Promise<void> {
   if (config !== undefined) {
     try {
       const models = await createConfiguredModels(config);
-      harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+      const tools = createOpenStaffsToolsExtension({ ws, getHarness: () => harness! });
+      harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models, extensions: [tools] });
       await harness.open();
       pump = new Pump({ ws, harness, hub });
       await pump.registerAll();
