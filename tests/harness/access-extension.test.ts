@@ -4,6 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeBlockMessage } from "../../src/harness/access-extension.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { ConversationSpec } from "../../src/harness/port.ts";
 
@@ -64,5 +65,14 @@ describe("访问控制钩子", () => {
       await harness.close();
     }
     expect(fs.existsSync(path.join(aliceCwd, "made-by-bash.txt"))).toBe(true);
+  });
+});
+
+describe("越界提示", () => {
+  it("拦截文案引导申请授权（异步说明）", () => {
+    const message = writeBlockMessage("/etc/passwd");
+    expect(message).toContain('不可写 "/etc/passwd"');
+    expect(message).toContain("request_permission");
+    expect(message).toContain("异步");
   });
 });

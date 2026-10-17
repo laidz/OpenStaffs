@@ -107,4 +107,41 @@ describe("群回复 @触发（pump 集成）", () => {
       await harness.close();
     }
   }, 30_000);
+
+  it("称谓自定义：pump 广播的 fallback 文本用真称谓（读 config）", async () => {
+    seedEmployee("alice");
+    const groupDir = path.join(root, "projects", "yt");
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(path.join(groupDir, "members.md"), "# 成员\n- alice\n");
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([fauxAssistantMessage("收到！")]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const ws = createWorkspace(root);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    await harness.open();
+
+    const events: ServerEvent[] = [];
+    const hub = {
+      broadcast: (event: ServerEvent) => events.push(event),
+      add: () => ({ pending: 0, close: () => {} }),
+      size: 0,
+    } as unknown as SseHub;
+    const pump = new Pump({ ws, harness, hub });
+    try {
+      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
+      await harness.submit(aliceConv, "请回答");
+      await waitFor(async () =>
+        events.some((e) => e.type === "room.message" && e.message.speaker.kind === "employee") ? true : undefined,
+      );
+      const message = events.find((e) => e.type === "room.message" && e.message.speaker.kind === "employee");
+      expect(message?.type === "room.message" ? message.message.text : "").toBe("@掌柜 收到！");
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
 });

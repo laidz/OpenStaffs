@@ -38,14 +38,16 @@
 ```json
 {
   "providers": { "opencode-go": { "apiKey": "sk-…" } },
-  "model": "opencode-go/deepseek-v4.1-flash"
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "bossName": "老板"
 }
 ```
 
 - `providers`：供应商 → 密钥。可选 `opencode-go` / `anthropic` / `openai` / `deepseek` / `google` / `openrouter`（写了名单外的供应商，启动会直接报错）。
 - `model`：全局默认模型，格式 `供应商/模型 id`；员工没有单独指定模型时用它兜底。
+- `bossName`：可选，负责人称谓（缺省「老板」；空值自动回落，不可为空）。界面、消息与员工文案都用它。
 - 可只配一家，也可多配几家、按员工分配不同模型。
-- 配置是进程级的：**改完重启服务才生效**。建议 `chmod 600 .openstaffs/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
+- 配置是进程级的：**改完重启服务才生效**（例外：`bossName` 直读，刷新页面 / 新开会话即生效）。建议 `chmod 600 .openstaffs/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
 
 ### 2. Agent（员工）
 

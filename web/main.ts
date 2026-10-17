@@ -1,6 +1,6 @@
 import { api, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { escapeHtml, layoutHtml, liveHtml, messagesHtml, setupPage, sidebarHtml } from "./render.ts";
+import { escapeHtml, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -32,11 +32,20 @@ function renderAll(): void {
 /** SSE 高频更新（spec §8.2）：按事件只更新受影响的容器，绝不重建输入框与消息列表。 */
 function renderDynamic(event: UiEvent): void {
   if (event.type !== "sse") {
+    // 授权事件只影响右下角卡片堆叠，不碰侧栏。
+    if (event.type === "permissions" || event.type === "permission-busy" || event.type === "permission-error" || event.type === "permission-resolved") {
+      renderPermCards();
+      return;
+    }
     // UI 事件（employees/projects/unread 等）只影响侧栏；需要整页的调用点走 "all" 档。
     renderSidebar();
     return;
   }
   switch (event.event.type) {
+    case "permission.request":
+    case "permission.resolved":
+      renderPermCards();
+      return;
     case "room.delta":
     case "room.failed":
       renderLive();
@@ -71,7 +80,7 @@ function renderMessages(): void {
   const messagesPart = document.getElementById("messages-part");
   if (messagesPart === null) return;
   const stick = nearBottom();
-  messagesPart.innerHTML = messagesHtml(state.messages);
+  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName);
   if (stick) scrollToBottom();
 }
 
@@ -174,6 +183,42 @@ function bindEvents(): void {
   document.getElementById("btn-new-session")?.addEventListener("click", () => guard(newSession()));
   document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
   document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
+  bindPermCards();
+}
+
+/** 授权卡片局部更新；无容器（setup 页等）时跳过。 */
+function renderPermCards(): void {
+  const holder = document.getElementById("perm-cards");
+  if (holder === null) return;
+  holder.outerHTML = permissionCardsHtml(state);
+  bindPermCards(); // outerHTML 重建了卡片，需重新挂载按钮
+}
+
+function bindPermCards(): void {
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-perm-accept]")) {
+    button.addEventListener("click", () => guard(resolvePermission(button.dataset.permAccept!, "accept")));
+  }
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-perm-reject]")) {
+    button.addEventListener("click", () => guard(resolvePermission(button.dataset.permReject!, "reject")));
+  }
+}
+
+/** 处理一条授权请求：成功（含投递告警）本地移除；404 视为已处理同步移除；其余错误回到可重试态并显示红字。 */
+async function resolvePermission(id: string, decision: "accept" | "reject"): Promise<void> {
+  dispatch({ type: "permission-busy", id, busy: true });
+  try {
+    const result = await api.resolvePermission(id, decision);
+    dispatch({ type: "permission-resolved", id });
+    if (result.warning !== undefined) window.alert(result.warning);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("不存在或已处理")) {
+      dispatch({ type: "permission-resolved", id }); // 其他标签页已处理：本地同步移除
+      return;
+    }
+    dispatch({ type: "permission-busy", id, busy: false });
+    dispatch({ type: "permission-error", id, error: message });
+  }
 }
 
 async function refreshUnread(): Promise<void> {
@@ -201,10 +246,16 @@ function onServerEvent(event: ServerEvent): void {
 }
 
 async function refreshAll(): Promise<void> {
-  const [employees, projects, unread] = await Promise.all([api.employees(), api.projects(), api.unread()]);
+  const [employees, projects, unread, permissions] = await Promise.all([
+    api.employees(),
+    api.projects(),
+    api.unread(),
+    api.permissionRequests(),
+  ]);
   dispatch({ type: "employees", list: employees });
   dispatch({ type: "projects", list: projects });
   dispatch({ type: "unread", unread });
+  dispatch({ type: "permissions", list: permissions.requests });
   if (state.roomKey !== undefined) {
     const roomKey = state.roomKey;
     const { messages } = await api.messages(roomKey);
@@ -300,9 +351,10 @@ async function openHistory(): Promise<void> {
       )
       .join("") || `<p class="hint">还没有会话。</p>`}
     <p><button id="btn-history-back">返回聊天</button></p>
-  </div></div>`;
+  </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
   bindRoomButtons(); // 面板内也带一份侧栏
+  bindPermCards(); // 全局授权卡片在只读视图里也可见可点
   for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
     const convId = element.dataset.conv!;
     element.addEventListener("click", () => guard(loadHistoryView(roomKey, convId)));
@@ -313,21 +365,28 @@ async function loadHistoryView(roomKey: string, convId: string): Promise<void> {
   const { messages } = await api.history(roomKey, convId);
   app.innerHTML = `<div class="layout">${sidebarHtml(state)}<div class="panel">
     <p><button id="btn-history-back">返回列表</button></p>
-    ${messagesHtml(messages)}
-  </div></div>`;
+    ${messagesHtml(messages, state.bossName)}
+  </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => guard(openHistory()));
   bindRoomButtons(); // 详情视图同样带一份侧栏
+  bindPermCards(); // 全局授权卡片在只读视图里也可见可点
 }
 
 async function main(): Promise<void> {
   try {
     status = await api.status();
-    dispatch({ type: "status", configured: status.configured }, "all");
+    dispatch({ type: "status", configured: status.configured, bossName: status.bossName }, "all");
     if (!status.configured) return;
-    const [employees, projects, unread] = await Promise.all([api.employees(), api.projects(), api.unread()]);
+    const [employees, projects, unread, permissions] = await Promise.all([
+      api.employees(),
+      api.projects(),
+      api.unread(),
+      api.permissionRequests(),
+    ]);
     dispatch({ type: "employees", list: employees }, "all");
     dispatch({ type: "projects", list: projects }, "all");
     dispatch({ type: "unread", unread }, "all");
+    dispatch({ type: "permissions", list: permissions.requests }, "all");
 
     connectEvents({
       onEvent: onServerEvent,

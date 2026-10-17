@@ -5,6 +5,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
+import { PermissionRequestStore } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
 import { createOpenStaffsToolsExtension } from "../../src/tools/extension.ts";
@@ -23,10 +24,10 @@ function fauxModels() {
 }
 
 describe("OpenStaffs 工具扩展", () => {
-  it("暴露 5 个工具，名字唯一", () => {
+  it("暴露 6 个工具，名字唯一", () => {
     const ext = createOpenStaffsToolsExtension({ ws: createWorkspace(root), getHarness: () => ({} as HarnessPort) });
     expect((ext.tools ?? []).map((t) => t.name).sort()).toEqual([
-      "member_profile", "new_session", "office_list", "room_history", "send_message",
+      "member_profile", "new_session", "office_list", "request_permission", "room_history", "send_message",
     ]);
   });
 
@@ -55,6 +56,39 @@ describe("OpenStaffs 工具扩展", () => {
 
       const missing = (await officeList.execute({}, { conversationId: "conv:不存在" } as never, {} as never)) as ToolResultLike;
       expect(missing.isError).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("注入 permissions 后 request_permission 可用：落库一条请求、无错误", async () => {
+    const dir = path.join(root, "agents", "alice");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
+
+    const ws = createWorkspace(root);
+    const store = new PermissionRequestStore(ws);
+    let harness: ReturnType<typeof createPiHarness>;
+    const ext = createOpenStaffsToolsExtension({
+      ws,
+      getHarness: () => harness,
+      permissions: { store, notify: () => {} },
+    });
+    harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models: fauxModels(), extensions: [ext] });
+    await harness.open();
+    try {
+      const spec: ConversationSpec = {
+        cwd: dir,
+        instructions: "你是 alice。",
+        model: { provider: "faux", modelId: "faux-model" },
+        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [] },
+      };
+      const convId = await harness.startSession(spec);
+      const tool = (ext.tools ?? []).find((t) => t.name === "request_permission")!;
+      const result = (await tool.execute({ paths: ["x.md"], reason: "r" }, { conversationId: convId } as never, {} as never)) as ToolResultLike;
+      expect(result.isError).toBeFalsy();
+      expect(store.list()).toHaveLength(1);
+      expect(store.list()[0]).toMatchObject({ agentId: "alice", roomKey: "dm:alice", reason: "r" });
     } finally {
       await harness.close();
     }

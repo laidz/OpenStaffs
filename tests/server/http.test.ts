@@ -11,6 +11,7 @@ import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import type { WorkspaceConfig } from "../../src/domain/config.ts";
+import { PermissionRequestStore } from "../../src/domain/permission-requests.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-http-"));
 const publicDir = path.join(root, "public");
@@ -46,10 +47,18 @@ describe("HTTP 骨架", () => {
     try {
       const status = await fetch(`${base}/api/status`);
       expect(status.status).toBe(200);
-      expect(await status.json()).toEqual({ configured: false, root: ws.root, port: 4319 });
+      expect(await status.json()).toEqual({ configured: false, root: ws.root, port: 4319, bossName: "老板" });
 
       expect((await fetch(`${base}/api/employees`)).status).toBe(409);
       expect((await fetch(`${base}/api/unread`)).status).toBe(409);
+      expect((await fetch(`${base}/api/permission-requests`)).status).toBe(409);
+      expect(
+        (await fetch(`${base}/api/permission-requests/pr_x/resolve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision: "accept" }),
+        })).status,
+      ).toBe(409);
 
       const page = await fetch(`${base}/`);
       expect(page.status).toBe(200);
@@ -80,6 +89,7 @@ describe("HTTP 骨架", () => {
       expect(status.configured).toBe(true);
       expect(status.model).toBe("faux/faux-model");
       expect(status.providers).toEqual(["faux"]);
+      expect(status.bossName).toBe("老板");
 
       const employees = (await (await fetch(`${base}/api/employees`)).json()) as { id: string; alias?: string; model: string }[];
       expect(employees.map((e) => e.id)).toEqual(["alice", "carol"]);
@@ -136,7 +146,11 @@ describe("HTTP 骨架", () => {
   });
 });
 
-async function startWithFaux(employeeIds: string[], groupMembers: string[]): Promise<{ base: string; close: () => Promise<void> }> {
+async function startWithFaux(
+  employeeIds: string[],
+  groupMembers: string[],
+  options: { bossName?: string } = {},
+): Promise<{ base: string; close: () => Promise<void>; store: PermissionRequestStore }> {
   for (const id of employeeIds) {
     const dir = path.join(root, "agents", id);
     fs.mkdirSync(dir, { recursive: true });
@@ -148,6 +162,13 @@ async function startWithFaux(employeeIds: string[], groupMembers: string[]): Pro
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...groupMembers.map((m) => `- ${m}`), ""].join("\n"));
   }
+  const config = { ...configured, ...(options.bossName === undefined ? {} : { bossName: options.bossName }) };
+  // 称谓解析（bossNamesFor/readBossName）读的是 .openstaffs/config.json 文件，内存 getConfig 只服务 defaults；
+  // 故自定义称谓必须落盘才生效（与 pump-trigger 用例同一真相源约定）。
+  if (options.bossName !== undefined) {
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify(config));
+  }
   const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
   faux.setResponses(Array.from({ length: 20 }, (_, i) => fauxAssistantMessage(`收到${i}`)));
   const models = createModels();
@@ -155,7 +176,8 @@ async function startWithFaux(employeeIds: string[], groupMembers: string[]): Pro
   const harness = createPiHarness({ root, sqlitePath: path.join(root, `.openstaffs/state-${Date.now()}-${Math.random()}.sqlite`), models });
   await harness.open();
   const ws = createWorkspace(root);
-  const server = createHttpServer({ ws, getConfig: () => configured, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319 });
+  const store = new PermissionRequestStore(ws);
+  const server = createHttpServer({ ws, getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319, permissionRequests: store });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
@@ -164,6 +186,7 @@ async function startWithFaux(employeeIds: string[], groupMembers: string[]): Pro
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await harness.close();
     },
+    store,
   };
 }
 
@@ -372,6 +395,110 @@ describe("房间 API", () => {
 
       const after = (await (await fetch(`${base}/api/unread`)).json()) as { total: number; rooms: Record<string, number> };
       expect(after.rooms["dm:alice"] ?? 0).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("称谓自定义：群回复 fallback 用真称谓（@掌柜）", async () => {
+    const { base, close } = await startWithFaux(["alice"], ["alice"], { bossName: "掌柜" });
+    try {
+      // status 是 UI 发言人名的真相源：自定义称谓必须透出（读盘，不是硬编码默认值）
+      const status = (await (await fetch(`${base}/api/status`)).json()) as { bossName: string };
+      expect(status.bossName).toBe("掌柜");
+      await fetch(`${base}/api/rooms/group:yt/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "@alice 你好" }),
+      });
+      const merged = await waitFor(async () => {
+        const body = (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { speaker: { kind: string }; text: string }[] };
+        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
+      });
+      expect(merged.messages.some((m) => m.text === "@掌柜 收到0")).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("授权请求 API", () => {
+  it("GET 列表（新在前、带 agentName）；accept 写权限并投递「已完成授权」；处理后列表清空", async () => {
+    const { base, close, store } = await startWithFaux(["alice"], []);
+    try {
+      const target = path.join(root, "outside", "shared");
+      const added = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [target], reason: "要写共享目录" });
+
+      const list = (await (await fetch(`${base}/api/permission-requests`)).json()) as {
+        requests: { id: string; agentName: string; paths: string[]; reason: string }[];
+      };
+      expect(list.requests).toHaveLength(1);
+      expect(list.requests[0]).toMatchObject({ id: added.id, agentName: "爱丽丝", paths: [target], reason: "要写共享目录" });
+
+      const resolve = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      expect(resolve.status).toBe(200);
+      expect(await resolve.json()).toEqual({ ok: true });
+
+      expect(JSON.parse(fs.readFileSync(path.join(root, "agents", "alice", "permission.json"), "utf8"))).toEqual([target]);
+      await waitFor(async () => {
+        const body = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { speaker: { kind: string }; text: string }[] };
+        return body.messages.some((m) => m.speaker.kind === "boss" && m.text === "已完成授权") ? body : undefined;
+      });
+      const after = (await (await fetch(`${base}/api/permission-requests`)).json()) as { requests: unknown[] };
+      expect(after.requests).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("群聊 accept：消息以 @alice 已完成授权 开头（只触发该成员）", async () => {
+    const { base, close, store } = await startWithFaux(["alice"], ["alice"]);
+    try {
+      const added = store.add({ agentId: "alice", roomKey: "group:yt", paths: [path.join(root, "outside")], reason: "r" });
+      const resolve = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      expect(resolve.status).toBe(200);
+      const merged = await waitFor(async () => {
+        const body = (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { text: string }[] };
+        return body.messages.some((m) => m.text === "@alice 已完成授权") ? body : undefined;
+      });
+      expect(merged.messages.some((m) => m.text === "@alice 已完成授权")).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reject 不写文件；未知 id 404；非法 decision 400", async () => {
+    const { base, close, store } = await startWithFaux(["alice"], []);
+    try {
+      const added = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [path.join(root, "outside")], reason: "r" });
+      const reject = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "reject" }),
+      });
+      expect(reject.status).toBe(200);
+      expect(fs.existsSync(path.join(root, "agents", "alice", "permission.json"))).toBe(false);
+
+      const bad = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "maybe" }),
+      });
+      expect(bad.status).toBe(400);
+      const missing = await fetch(`${base}/api/permission-requests/pr_ghost/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "accept" }),
+      });
+      expect(missing.status).toBe(404);
     } finally {
       await close();
     }

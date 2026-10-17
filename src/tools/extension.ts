@@ -1,5 +1,6 @@
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
 import type { Workspace } from "../domain/paths.ts";
+import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
 
@@ -10,6 +11,8 @@ import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
 export function createOpenStaffsToolsExtension(options: {
   ws: Workspace;
   getHarness: () => HarnessPort;
+  /** 授权请求依赖（装配层注入；缺省时 request_permission 不可用）。 */
+  permissions?: { store: PermissionRequestStore; notify: (request: PermissionRequest) => void };
 }): Extension {
   return defineExtension({
     name: "openstaffs-tools",
@@ -24,7 +27,13 @@ export function createOpenStaffsToolsExtension(options: {
           if (info === undefined) {
             return { output: [{ type: "text", text: "工具不可用：未注册的会话" }], isError: true };
           }
-          const ctx: ToolContext = { ws: options.ws, harness, selfId: info.selfId, relation: info.relation };
+          const ctx: ToolContext = {
+            ws: options.ws,
+            harness,
+            selfId: info.selfId,
+            relation: info.relation,
+            ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
+          };
           try {
             return { output: [{ type: "text", text: await def.run(args as Record<string, unknown>, ctx) }] };
           } catch (error) {

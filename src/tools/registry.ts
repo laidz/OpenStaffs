@@ -2,14 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { parseMembers, projectsOf } from "../domain/access-control.ts";
-import { readConfig } from "../domain/config.ts";
+import { bossNamesFor, readBossName, readConfig } from "../domain/config.ts";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import type { Workspace } from "../domain/paths.ts";
+import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
 import type { HarnessPort } from "../harness/port.ts";
-import { newSession, openDm, openGroup, roomTranscripts, type SessionDefaults } from "../app/conversations.ts";
+import { newSession, openDm, openGroup, relationCwd, roomTranscripts, type SessionDefaults } from "../app/conversations.ts";
 import { mergeRoomMessages, parseRoomKey, roomKeyOf, type RoomSpeaker } from "../app/rooms.ts";
+
+/** 授权请求依赖（由装配层注入；未注入时 request_permission 报"不可用"）。 */
+export type ToolPermissions = {
+  store: PermissionRequestStore;
+  notify: (request: PermissionRequest) => void;
+};
 
 /** 工具运行上下文：会话身份 + 编排依赖。 */
 export type ToolContext = {
@@ -17,6 +24,7 @@ export type ToolContext = {
   harness: HarnessPort;
   selfId: string;
   relation: Relation;
+  permissions?: ToolPermissions;
 };
 
 /** 统一注册表条目。 */
@@ -82,7 +90,7 @@ const memberProfile: ToolDef = {
 };
 
 function speakerName(ws: Workspace, speaker: RoomSpeaker): string {
-  if (speaker.kind === "boss") return "老板";
+  if (speaker.kind === "boss") return readBossName(ws);
   return speaker.alias ?? displayName(ws, speaker.id);
 }
 
@@ -104,7 +112,7 @@ const roomHistory: ToolDef = {
 
     const transcripts = await roomTranscripts(ctx.ws, ctx.harness, relation);
     const memberIds = relation.kind === "group" ? parseMembers(ctx.ws, relation.project) : [];
-    const merged = mergeRoomMessages(roomKeyOf(relation), transcripts, memberIds);
+    const merged = mergeRoomMessages(roomKeyOf(relation), transcripts, memberIds, bossNamesFor(ctx.ws));
     const recent = merged.slice(-limit);
     if (recent.length === 0) return "（暂无消息）";
     return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");
@@ -115,7 +123,7 @@ const roomHistory: ToolDef = {
 const sendMessage: ToolDef = {
   name: "send_message",
   description:
-    "发消息。target 三选一：boss（主动私聊老板，会进老板待办）；member:<成员id>（在**当前群聊**里触发该成员，即 @他）；project:<项目id>（投递到你在该项目群的会话）。text 为消息内容。",
+    "发消息。target 三选一：boss（主动私聊负责人，会进其待办）；member:<成员id>（在**当前群聊**里触发该成员，即 @他）；project:<项目id>（投递到你在该项目群的会话）。text 为消息内容。",
   parameters: Type.Object({
     target: Type.String({ description: "boss | member:<成员id> | project:<项目id>" }),
     text: Type.String({ description: "消息内容" }),
@@ -126,7 +134,7 @@ const sendMessage: ToolDef = {
     if (target === "boss") {
       const convId = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx));
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
-      return "已发给老板（会显示在老板的待办里）。";
+      return `已发给「${readBossName(ctx.ws)}」（会显示在其待办里）。`;
     }
     const memberMatch = /^member:(.+)$/u.exec(target);
     if (memberMatch !== null) {
@@ -159,5 +167,45 @@ const newSessionTool: ToolDef = {
   },
 };
 
+/** 申请写权限（异步：负责人稍后在界面弹框中处理）。 */
+const requestPermission: ToolDef = {
+  name: "request_permission",
+  description:
+    "向负责人申请写入某些路径的权限。**异步**：工具立即返回；负责人稍后在界面弹框中接受或拒绝，结果会以一条新消息通知你——在此之前不要重复发起，也不要尝试写入这些路径或用其他方式绕过拦截。paths 为要申请的路径（目录或文件，可多个；相对路径按当前工作目录解析）；reason 为简短理由（必填，会展示给负责人）。",
+  parameters: Type.Object({
+    paths: Type.Array(Type.String(), { description: "要申请的路径（目录 / 文件，可多个）" }),
+    reason: Type.String({ description: "简短理由：为什么需要这些路径（会展示给负责人）" }),
+  }),
+  async run(args, ctx) {
+    const permissions = ctx.permissions;
+    if (permissions === undefined) throw new Error("授权申请不可用：当前会话未装配该能力。");
+    const cwd = relationCwd(ctx.ws, ctx.relation);
+    const rawPaths = Array.isArray(args["paths"]) ? args["paths"] : [];
+    const paths = [
+      ...new Set(
+        rawPaths
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter((value) => value !== "")
+          .map((value) => path.resolve(cwd, value)),
+      ),
+    ];
+    const bossName = readBossName(ctx.ws);
+    if (paths.length === 0) throw new Error("paths 不能为空：至少给出一个要申请的路径。");
+    const reason = String(args["reason"] ?? "").trim();
+    if (reason === "") throw new Error(`reason 不能为空：用一两句话说明为什么要这些路径（会展示给「${bossName}」）。`);
+    if (permissions.store.findDuplicate(ctx.selfId, paths) !== undefined) {
+      return `已有相同的授权请求在等待「${bossName}」处理（${paths.length} 个地址），请勿重复发起。`;
+    }
+    const request = permissions.store.add({ agentId: ctx.selfId, roomKey: roomKeyOf(ctx.relation), paths, reason });
+    permissions.notify(request);
+    return [
+      `已向「${bossName}」发起授权请求（${paths.length} 个地址）：`,
+      ...paths.map((value) => `- ${value}`),
+      "等待处理：请勿重复发起，也不要尝试写入这些路径或用其他方式绕过拦截；处理后你会收到新消息。",
+    ].join("\n");
+  },
+};
+
 /** OpenStaffs 自有工具（统一注册表，唯一真相源）。加工具 = 加一条并在此登记。 */
-export const openStaffsToolDefs: readonly ToolDef[] = [officeList, memberProfile, roomHistory, sendMessage, newSessionTool];
+export const openStaffsToolDefs: readonly ToolDef[] = [officeList, memberProfile, roomHistory, sendMessage, newSessionTool, requestPermission];

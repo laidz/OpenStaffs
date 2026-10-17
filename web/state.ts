@@ -1,6 +1,6 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
-import type { EmployeeSummary, ProjectSummary } from "./api.ts";
+import type { EmployeeSummary, PermissionRequestView, ProjectSummary } from "./api.ts";
 
 export type Live = {
   convId: string;
@@ -11,10 +11,15 @@ export type Live = {
   error?: string;
 };
 
+/** 授权卡片条目：视图数据 + 本地处理态（busy 禁用按钮、error 红字提示）。 */
+export type PermissionRequestItem = PermissionRequestView & { busy?: boolean; error?: string };
+
 export type State = {
   configured: boolean;
+  bossName: string;
   employees: EmployeeSummary[];
   projects: ProjectSummary[];
+  permissionRequests: PermissionRequestItem[];
   roomKey?: string;
   messages: RoomMessage[];
   live: Record<string, Live>;
@@ -25,8 +30,10 @@ export type State = {
 
 export const initialState: State = {
   configured: false,
+  bossName: "老板",
   employees: [],
   projects: [],
+  permissionRequests: [],
   messages: [],
   live: {},
   unread: {},
@@ -34,13 +41,17 @@ export const initialState: State = {
 };
 
 export type UiEvent =
-  | { type: "status"; configured: boolean }
+  | { type: "status"; configured: boolean; bossName: string }
   | { type: "employees"; list: EmployeeSummary[] }
   | { type: "projects"; list: ProjectSummary[] }
   | { type: "room"; roomKey: string; messages: RoomMessage[] }
   | { type: "close-room" }
   | { type: "panel"; panel?: "history" }
   | { type: "unread"; unread: { total: number; rooms: Record<string, number> } }
+  | { type: "permissions"; list: PermissionRequestView[] }
+  | { type: "permission-busy"; id: string; busy: boolean }
+  | { type: "permission-error"; id: string; error: string }
+  | { type: "permission-resolved"; id: string }
   | { type: "sse"; event: ServerEvent };
 
 export function selectView(state: State): "setup" | "main" {
@@ -67,7 +78,7 @@ function liveOf(state: State, convId: string, memberId: string): Live {
 export function reduce(state: State, event: UiEvent): State {
   switch (event.type) {
     case "status":
-      return { ...state, configured: event.configured };
+      return { ...state, configured: event.configured, bossName: event.bossName };
     case "employees":
       return { ...state, employees: event.list };
     case "projects":
@@ -80,6 +91,14 @@ export function reduce(state: State, event: UiEvent): State {
       return { ...state, panel: event.panel };
     case "unread":
       return { ...state, unread: event.unread.rooms };
+    case "permissions":
+      return { ...state, permissionRequests: event.list };
+    case "permission-busy":
+      return { ...state, permissionRequests: state.permissionRequests.map((r) => (r.id === event.id ? { ...r, busy: event.busy } : r)) };
+    case "permission-error":
+      return { ...state, permissionRequests: state.permissionRequests.map((r) => (r.id === event.id ? { ...r, error: event.error } : r)) };
+    case "permission-resolved":
+      return { ...state, permissionRequests: state.permissionRequests.filter((r) => r.id !== event.id) };
     case "sse":
       return reduceSse(state, event.event);
   }
@@ -88,6 +107,16 @@ export function reduce(state: State, event: UiEvent): State {
 function reduceSse(state: State, event: ServerEvent): State {
   if (event.type === "room.unread") {
     return { ...state, unread: { ...state.unread, [event.roomKey]: event.count } };
+  }
+  // 授权事件是全局的（不属于任何房间视图，也不受当前房间过滤）：先于 roomKey 过滤处理。
+  if (event.type === "permission.request") {
+    if (state.permissionRequests.some((r) => r.id === event.request.id)) return state; // 重连重拉去重
+    return { ...state, permissionRequests: [event.request, ...state.permissionRequests] }; // 新请求在前
+  }
+  if (event.type === "permission.resolved") {
+    const next = state.permissionRequests.filter((r) => r.id !== event.id);
+    // 未命中（本地已移除）返回同一引用 → 上层短路，避免无谓重建。
+    return next.length === state.permissionRequests.length ? state : { ...state, permissionRequests: next };
   }
   if (state.roomKey !== event.roomKey) {
     if (event.type === "room.activity" && event.kind === "run") {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, liveHtml, messageHtml, messagesHtml, setupPage } from "../../web/render.ts";
+import { chatHtml, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
@@ -18,6 +18,13 @@ describe("渲染", () => {
     expect(messageHtml(employee)).toContain('class="msg employee"');
     expect(messageHtml(employee)).toContain("爱丽丝");
     expect(messagesHtml([])).toContain("还没有消息");
+  });
+
+  it("老板消息发言人名消费 bossName（默认「老板」）", () => {
+    const boss: RoomMessage = { convId: "c1", entryId: "1", roomKey: "dm:a", speaker: { kind: "boss" }, text: "你好", bossDirected: false };
+    expect(messageHtml(boss, "掌柜")).toContain("掌柜");
+    expect(messageHtml(boss, "掌柜")).not.toContain(">老板<");
+    expect(messageHtml(boss)).toContain("老板");
   });
 
   it("引导页示例为多供应商新格式", () => {
@@ -98,5 +105,41 @@ describe("群聊定向（输入框上方复选框）", () => {
   it("空成员群：给出占位提示", () => {
     const state = { ...initialState, configured: true, projects: [{ id: "yt", alias: "油管", members: [] }], roomKey: "group:yt" };
     expect(chatHtml(state)).toContain("还没有成员");
+  });
+});
+
+describe("授权卡片", () => {
+  const request = {
+    id: "pr_1", agentId: "alice", agentName: "爱丽丝<b>", roomKey: "group:yt",
+    paths: ["/x/<script>"], reason: "整理素材", createdAt: "t",
+  };
+
+  it("卡片：发起人/来源/理由/路径转义、接受与拒绝按钮", () => {
+    const state = { ...initialState, configured: true, projects: [{ id: "yt", alias: "演示", members: [] }], permissionRequests: [request] };
+    const html = permissionCardsHtml(state);
+    expect(html).toContain("授权请求");
+    expect(html).toContain("爱丽丝&lt;b&gt;");
+    expect(html).toContain("群聊「演示」");
+    expect(html).toContain("理由：整理素材");
+    expect(html).toContain("/x/&lt;script&gt;");
+    expect(html).toContain('data-perm-accept="pr_1"');
+    expect(html).toContain('data-perm-reject="pr_1"');
+    expect(html).not.toContain("<script>");
+  });
+
+  it("处理中禁用按钮、错误行显示；私聊来源标签", () => {
+    const state = {
+      ...initialState,
+      configured: true,
+      permissionRequests: [{ ...request, roomKey: "dm:alice", busy: true, error: "写盘失败" }],
+    };
+    const html = permissionCardsHtml(state);
+    expect(html).toMatch(/data-perm-accept="pr_1" disabled/u);
+    expect(html).toContain("写盘失败");
+    expect(html).toContain("私聊");
+  });
+
+  it("空列表 → 空容器", () => {
+    expect(permissionCardsHtml(initialState)).toBe('<div class="perm-cards" id="perm-cards"></div>');
   });
 });

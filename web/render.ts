@@ -50,18 +50,18 @@ export function sidebarHtml(state: State): string {
   </aside>`;
 }
 
-export function messageHtml(message: RoomMessage): string {
+export function messageHtml(message: RoomMessage, bossName = "老板"): string {
   const speaker = message.speaker;
   const boss = speaker.kind === "boss";
-  const name = speaker.kind === "boss" ? "老板" : (speaker.alias ?? speaker.id);
+  const name = speaker.kind === "boss" ? bossName : (speaker.alias ?? speaker.id);
   // 老板消息原样展示（转义 + 样式换行）；员工消息按 Markdown 渲染（UI 层，见 markdown.ts）
   const body = boss ? escapeHtml(message.text) : markdownHtml(message.text);
   const bodyClass = boss ? "msg-text" : "msg-text md";
   return `<div class="msg ${boss ? "boss" : "employee"}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div></div>`;
 }
 
-export function messagesHtml(messages: RoomMessage[]): string {
-  return messages.length === 0 ? `<div class="empty">还没有消息，发一条试试。</div>` : messages.map(messageHtml).join("");
+export function messagesHtml(messages: RoomMessage[], bossName = "老板"): string {
+  return messages.length === 0 ? `<div class="empty">还没有消息，发一条试试。</div>` : messages.map((message) => messageHtml(message, bossName)).join("");
 }
 
 export function liveHtml(live: Record<string, Live>): string {
@@ -108,7 +108,7 @@ export function chatHtml(state: State): string {
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>
     <div class="msg-list" id="msg-list">
-      <div id="messages-part">${messagesHtml(state.messages)}</div>
+      <div id="messages-part">${messagesHtml(state.messages, state.bossName)}</div>
       <div id="live-area">${liveHtml(state.live)}</div>
     </div>
     <div class="composer">
@@ -137,6 +137,36 @@ function composerTargetsHtml(members: { id: string; alias?: string }[]): string 
   return `<div class="composer-targets" id="composer-targets"><span class="targets-label">发送给：</span>${items}</div>`;
 }
 
+/** 授权卡片来源标签：群聊取项目别名，其余（dm:）为私聊。 */
+function roomLabel(state: State, roomKey: string): string {
+  if (!roomKey.startsWith("group:")) return "私聊";
+  const project = state.projects.find((p) => `group:${p.id}` === roomKey);
+  return project === undefined ? roomKey : `群聊「${project.alias}」`;
+}
+
+/** 右下角授权卡片堆叠（新请求在前；空列表为空容器）。 */
+export function permissionCardsHtml(state: State): string {
+  const cards = state.permissionRequests
+    .map((request) => {
+      const flavour = request.busy === true ? " disabled" : "";
+      const error = request.error === undefined ? "" : `<div class="perm-error">${escapeHtml(request.error)}</div>`;
+      const paths = request.paths.map((p) => `<li><code>${escapeHtml(p)}</code></li>`).join("");
+      return `<div class="perm-card">
+        <div class="perm-title">授权请求</div>
+        <div class="perm-meta">发起人：${escapeHtml(request.agentName)}（${escapeHtml(request.agentId)}） · 来自：${escapeHtml(roomLabel(state, request.roomKey))}</div>
+        <div class="perm-reason">理由：${escapeHtml(request.reason)}</div>
+        <ul class="perm-paths">${paths}</ul>
+        <div class="perm-actions">
+          <button data-perm-accept="${escapeHtml(request.id)}"${flavour}>接受</button>
+          <button data-perm-reject="${escapeHtml(request.id)}"${flavour}>拒绝</button>
+        </div>
+        ${error}
+      </div>`;
+    })
+    .join("");
+  return `<div class="perm-cards" id="perm-cards">${cards}</div>`;
+}
+
 export function layoutHtml(state: State): string {
-  return `<div class="layout">${sidebarHtml(state)}${chatHtml(state)}</div>`;
+  return `<div class="layout">${sidebarHtml(state)}${chatHtml(state)}</div>${permissionCardsHtml(state)}`;
 }

@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkspace, type Workspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
+import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { openDm, openGroup } from "../../src/app/conversations.ts";
@@ -191,9 +192,97 @@ describe("new_session", () => {
   });
 });
 
+describe("request_permission", () => {
+  function ctxWithStore(ws: Workspace, selfId: string, relation: Relation) {
+    const store = new PermissionRequestStore(ws);
+    const notify = vi.fn();
+    return { ctx: { ...ctxFor(ws, selfId, relation), permissions: { store, notify } }, store, notify };
+  }
+
+  it("发起成功：相对路径按会话 cwd 归一为绝对并去重；store 落盘；notify 广播", async () => {
+    seedEmployee("alice", "爱丽丝");
+    const ws = createWorkspace(root);
+    const { ctx, store, notify } = ctxWithStore(ws, "alice", dm("alice"));
+    const out = await tool("request_permission").run(
+      { paths: ["notes/a.md", "./notes/a.md", "/abs/x"], reason: "整理笔记" },
+      ctx,
+    );
+    const expected = path.join(root, "agents", "alice", "notes", "a.md");
+    expect(out).toContain("发起授权请求");
+    expect(out).toContain("2 个地址");
+    expect(out).toContain(expected);
+    expect(out).toContain("/abs/x");
+    expect(out).toContain("不要尝试写入这些路径或用其他方式绕过拦截");
+    const requests = store.list();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.agentId).toBe("alice");
+    expect(requests[0]!.roomKey).toBe("dm:alice");
+    expect(requests[0]!.paths).toEqual([expected, "/abs/x"]);
+    expect(requests[0]!.reason).toBe("整理笔记");
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(readPermissionRequests(ws)).toHaveLength(1);
+  });
+
+  it("群聊：roomKey 与相对路径按项目目录解析", async () => {
+    seedEmployee("alice");
+    seedProject("demo", ["alice"]);
+    const ws = createWorkspace(root);
+    const { ctx, store } = ctxWithStore(ws, "alice", { kind: "group", project: "demo" });
+    await tool("request_permission").run({ paths: ["data/x"], reason: "r" }, ctx);
+    expect(store.list()[0]!.roomKey).toBe("group:demo");
+    expect(store.list()[0]!.paths).toEqual([path.join(root, "projects", "demo", "data", "x")]);
+  });
+
+  it("校验：paths 空 / reason 空白 → 报错", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const { ctx } = ctxWithStore(ws, "alice", dm("alice"));
+    await expect(tool("request_permission").run({ paths: [], reason: "r" }, ctx)).rejects.toThrow("paths 不能为空");
+    await expect(tool("request_permission").run({ paths: ["  "], reason: "r" }, ctx)).rejects.toThrow("paths 不能为空");
+    await expect(tool("request_permission").run({ paths: ["a"], reason: "" }, ctx)).rejects.toThrow("reason 不能为空");
+  });
+
+  it("重复申请：同路径集合不新建，返回提示；称谓进入文案", async () => {
+    seedEmployee("alice");
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    const ws = createWorkspace(root);
+    const { ctx, store, notify } = ctxWithStore(ws, "alice", dm("alice"));
+    const first = await tool("request_permission").run({ paths: ["a", "b"], reason: "r" }, ctx);
+    expect(first).toContain("「掌柜」");
+    const second = await tool("request_permission").run({ paths: ["b", "a"], reason: "r2" }, ctx);
+    expect(second).toContain("已有相同的授权请求");
+    expect(store.list()).toHaveLength(1);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("注册表", () => {
-  it("暴露 5 个工具且名字唯一", () => {
+  it("暴露 6 个工具且名字唯一", () => {
     const names = openStaffsToolDefs.map((t) => t.name).sort();
-    expect(names).toEqual(["member_profile", "new_session", "office_list", "room_history", "send_message"]);
+    expect(names).toEqual(["member_profile", "new_session", "office_list", "request_permission", "room_history", "send_message"]);
+  });
+});
+
+describe("称谓消费", () => {
+  it("自定义 bossName：send_message 返回与 room_history 输出用真称谓", async () => {
+    seedEmployee("alice");
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    const ws = createWorkspace(root);
+    const harness = fauxHarness();
+    await harness.open();
+    try {
+      const out = await tool("send_message").run({ target: "boss", text: "汇报一下" }, ctxFor(ws, "alice", dm("alice"), harness));
+      expect(out).toContain("掌柜");
+
+      const dmConv = await openDm(ws, harness, "alice");
+      await harness.submit(dmConv, "任务Y", { kind: "chat.message", data: { author: "boss" } });
+      await waitFor(async () => (await harness.transcript(dmConv)).some((m) => m.role === "assistant"));
+      const history = await tool("room_history").run({}, ctxFor(ws, "alice", dm("alice"), harness));
+      expect(history).toContain("掌柜：任务Y");
+    } finally {
+      await harness.close();
+    }
   });
 });

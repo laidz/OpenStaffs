@@ -109,3 +109,8 @@ export function resolveEmployeeModel(globalModel: string, employee: ModelChoice)
 export function formatModelRef(ref: ModelRefLike): string {
   return `${ref.provider}/${ref.modelId}`;
 }
+
+/** @提及解析用的负责人写法：当前称谓 + 历史写法（双认；首项 = 当前称谓）。 */
+export function bossNamesFor(ws: Workspace): string[] {
+  return [...new Set([readBossName(ws), DEFAULT_BOSS_NAME, "boss"])];
+}

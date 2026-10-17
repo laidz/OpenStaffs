@@ -43,4 +43,11 @@ describe("parseMentions", () => {
     expect(parseMentions("@nobody @alice 你好", employees).targets).toEqual(["alice"]);
     expect(parseMentions("@alice", employees).targets).toEqual(["alice"]);
   });
+
+  it("bossNames 参数：自定义称谓命中 BOSS_ID（双认列表由调用方给出）", () => {
+    const bossNames = ["掌柜", "老板", "boss"];
+    expect(parseMentions("@掌柜 汇报", employees, bossNames).targets).toEqual([BOSS_ID]);
+    expect(parseMentions("@老板 汇报", employees, bossNames).targets).toEqual([BOSS_ID]);
+    expect(parseMentions("@掌柜 汇报", employees).targets).toEqual([]); // 默认参数不含自定义称谓
+  });
 });

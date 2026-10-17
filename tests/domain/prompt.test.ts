@@ -106,4 +106,16 @@ describe("环境段渲染", () => {
     fs.writeFileSync(override, "   \n");
     expect(renderEnvironment(dmCtx("alice"))).toBe("");
   });
+
+  it("bossName 自定义：环境段用真称谓，@ 语法教真称谓", () => {
+    seedEmployee("alice");
+    seedProject("demo", ["alice"]);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    const out = renderEnvironment(groupCtx("demo", "alice"));
+    expect(out).toContain("「掌柜」");
+    expect(out).toContain("把 `@掌柜` 写在最前面");
+    expect(out).toContain("`@老板`、`@boss` 同样有效");
+    expect(out).toContain("自动补 `@掌柜`");
+  });
 });

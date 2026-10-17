@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import {
-  DEFAULT_PORT, configFile, parseModelRef, readBossName, readConfig, resolveEmployeeModel,
+  bossNamesFor, DEFAULT_PORT, configFile, parseModelRef, readBossName, readConfig, resolveEmployeeModel,
 } from "../../src/domain/config.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-config-"));
@@ -85,5 +85,19 @@ describe("全局配置", () => {
     expect(resolveEmployeeModel(global, { model: "faux/f", thinkingLevel: "high" })).toEqual({
       provider: "faux", modelId: "f", thinkingLevel: "high",
     });
+  });
+});
+
+describe("bossNamesFor（@提及双认）", () => {
+  it("缺省 → [老板, boss]；自定义 → [当前称谓, 老板, boss] 去重保序", () => {
+    const ws = createWorkspace(root);
+    expect(bossNamesFor(ws)).toEqual(["老板", "boss"]);
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "掌柜" }));
+    expect(bossNamesFor(ws)).toEqual(["掌柜", "老板", "boss"]);
+    fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "老板" }));
+    expect(bossNamesFor(ws)).toEqual(["老板", "boss"]);
+    fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "boss" }));
+    expect(bossNamesFor(ws)).toEqual(["boss", "老板"]);
   });
 });

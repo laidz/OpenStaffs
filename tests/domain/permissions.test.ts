@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  isWriteAllowedByPermission, matchesPermission, readPermissionPaths,
+  appendPermissionPaths, isWriteAllowedByPermission, matchesPermission, readPermissionPaths,
 } from "../../src/domain/permissions.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-perm-"));
@@ -93,5 +93,43 @@ describe("isWriteAllowedByPermission", () => {
 
   it("坏/缺文件 → false（不放大权限）", () => {
     expect(isWriteAllowedByPermission([path.join(root, "nope.json")], path.join(root, "agents", "bob", "x.md"))).toBe(false);
+  });
+});
+
+describe("appendPermissionPaths", () => {
+  it("追加新条目并保留原有：JSON 数组、2 空格缩进、尾换行、无 .tmp 残留", () => {
+    const f = path.join(root, "agents", "alice", "permission.json");
+    write(f, JSON.stringify(["../shared/"], null, 2) + "\n");
+    appendPermissionPaths(f, ["/abs/new"]);
+    expect(readPermissionPaths(f)).toEqual(["../shared/", "/abs/new"]);
+    const raw = fs.readFileSync(f, "utf8");
+    expect(raw.endsWith("\n")).toBe(true);
+    expect(raw).toContain("  ");
+    expect(fs.existsSync(`${f}.tmp`)).toBe(false);
+  });
+
+  it("已存在的条目（含归一后相同）不重复追加；父目录缺失自动创建；空 paths 不落文件", () => {
+    const f = path.join(root, "deep", "nested", "permission.json");
+    appendPermissionPaths(f, ["/x", "/y", "/x"]);
+    expect(readPermissionPaths(f)).toEqual(["/x", "/y"]);
+    appendPermissionPaths(f, ["/x"]);
+    expect(readPermissionPaths(f)).toEqual(["/x", "/y"]);
+    const g = path.join(root, "none.json");
+    appendPermissionPaths(g, []);
+    expect(fs.existsSync(g)).toBe(false);
+  });
+
+  it("坏文件（坏 JSON / 非数组 / 含非字符串）→ 备份 .bak 后覆盖为新数组", () => {
+    const bad = path.join(root, "bad.json");
+    write(bad, "{ 坏");
+    appendPermissionPaths(bad, ["/a"]);
+    expect(readPermissionPaths(bad)).toEqual(["/a"]);
+    expect(fs.readFileSync(`${bad}.bak`, "utf8")).toBe("{ 坏");
+
+    const obj = path.join(root, "obj.json");
+    write(obj, JSON.stringify({ write: ["/x"] }));
+    appendPermissionPaths(obj, ["/b"]);
+    expect(readPermissionPaths(obj)).toEqual(["/b"]);
+    expect(fs.existsSync(`${obj}.bak`)).toBe(true);
   });
 });

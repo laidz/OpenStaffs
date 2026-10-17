@@ -50,6 +50,19 @@ describe("SseHub", () => {
     client.close();
     expect(hub.size).toBe(0);
   });
+
+  it("授权事件可序列化广播（permission.request / permission.resolved）", () => {
+    const hub = new SseHub();
+    const { res, writes } = fakeRes();
+    hub.add({ on: () => {} } as never, res);
+    hub.broadcast({
+      type: "permission.request",
+      request: { id: "pr_1", agentId: "alice", agentName: "爱丽丝", roomKey: "dm:alice", paths: ["/x"], reason: "r", createdAt: "t" },
+    });
+    hub.broadcast({ type: "permission.resolved", id: "pr_1" });
+    expect(writes.some((w) => w.includes("permission.request"))).toBe(true);
+    expect(writes.some((w) => w.includes("permission.resolved"))).toBe(true);
+  });
 });
 
 async function collect(body: ReadableStream<Uint8Array>, sink: ServerEvent[]): Promise<void> {

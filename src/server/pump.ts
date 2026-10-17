@@ -1,6 +1,7 @@
 import { loadEmployee, listEmployees } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
+import { bossNamesFor } from "../domain/config.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
@@ -123,7 +124,7 @@ export class Pump {
           const relation = parseRoomKey(ref.roomKey);
           const memberIds = relation?.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
           const member: MemberTranscript = { memberId: ref.memberId, ...(ref.alias === undefined ? {} : { alias: ref.alias }), convId, messages: [] };
-          const message = normalizeChatMessage(ref.roomKey, member, event.message, memberIds);
+          const message = normalizeChatMessage(ref.roomKey, member, event.message, memberIds, bossNamesFor(this.#deps.ws));
           if (message === undefined) return;
           hub.broadcast({ type: "room.message", roomKey: ref.roomKey, message });
           if (message.speaker.kind === "employee") void this.#pushUnread(ref.roomKey);
@@ -155,7 +156,7 @@ export class Pump {
       if (relation === undefined) return;
       const memberIds = relation.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
       const members = await roomTranscripts(this.#deps.ws, this.#deps.harness, relation);
-      const messages = mergeRoomMessages(roomKey, members, memberIds);
+      const messages = mergeRoomMessages(roomKey, members, memberIds, bossNamesFor(this.#deps.ws));
       const seen = readSeen(this.#deps.ws);
       this.#deps.hub.broadcast({ type: "room.unread", roomKey, count: countUnread(messages, seen.seen[roomKey]) });
     } catch {

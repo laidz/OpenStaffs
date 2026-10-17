@@ -63,16 +63,17 @@ function authorOf(chat: ChatMessage): string | undefined {
  * 单条聊天消息 → 房间消息。
  * - assistant → 员工发言；**群消息一律以 @ 开头、且必须落到确定对象**：没写 @、或开头 @ 了但这条回复
  *   解析不出有效对象（写错 id / 标点粘连 / 只 @ 自己 / 只有 @ 没正文）→ 视为“发给老板”：显示/历史层
- *   补 @老板（不改写落盘原文）；
+ *   补当前称谓（bossNames 首项，缺省「老板」，不改写落盘原文）；
  * - user 且 kind 为 chat.message / pi.user：data.author 是员工 id（员工主动发言 / 工具投递）→ 归属该员工；否则 → 老板发言；
  * - 其余 user 条目（如 pi.compaction / pi.reset 等合成条目）→ undefined（跳过）。
- * bossDirected：群聊按前缀块是否含 @老板判定（见 RoomMessage）；私聊发言一律算给老板。
+ * bossDirected：群聊按前缀块是否含负责人（双认列表）判定（见 RoomMessage）；私聊发言一律算给老板。
  */
 export function normalizeChatMessage(
   roomKey: string,
   member: MemberTranscript,
   chat: ChatMessage,
   memberIds: string[] = [],
+  bossNames: string[] = ["老板", "boss"],
 ): RoomMessage | undefined {
   const isGroup = roomKey.startsWith("group:");
   if (chat.role === "assistant") {
@@ -80,14 +81,14 @@ export function normalizeChatMessage(
     const prefixEnd = leadingMentionLength(trimmed);
     const deliveries = prefixEnd === 0 ? [] : planRouting(trimmed, memberIds);
     const reachesOtherMember = hasBodyAfterPrefix(trimmed) && deliveries.some((delivery) => delivery.to !== member.memberId);
-    const bossTargeted = parseMentions(trimmed, memberIds).targets.includes(BOSS_ID);
+    const bossTargeted = parseMentions(trimmed, memberIds, bossNames).targets.includes(BOSS_ID);
     const fallback = isGroup && trimmed !== "" && (prefixEnd === 0 || (!reachesOtherMember && !bossTargeted));
     return {
       convId: member.convId,
       entryId: chat.id,
       roomKey,
       speaker: { kind: "employee", id: member.memberId, ...(member.alias === undefined ? {} : { alias: member.alias }) },
-      text: fallback ? `@老板 ${chat.text}` : chat.text,
+      text: fallback ? `@${bossNames[0]!} ${chat.text}` : chat.text,
       bossDirected: isGroup ? fallback || bossTargeted : true,
     };
   }
@@ -100,7 +101,7 @@ export function normalizeChatMessage(
         roomKey,
         speaker: { kind: "employee", id: author },
         text: chat.text,
-        bossDirected: isGroup ? parseMentions(chat.text.trim(), memberIds).targets.includes(BOSS_ID) : true,
+        bossDirected: isGroup ? parseMentions(chat.text.trim(), memberIds, bossNames).targets.includes(BOSS_ID) : true,
       };
     }
     return {
@@ -117,11 +118,16 @@ export function normalizeChatMessage(
 }
 
 /** 合并各成员活跃会话的 transcript：按 entryId 排序；老板消息按 roomMessageId 去重取最小 entryId。 */
-export function mergeRoomMessages(roomKey: string, members: MemberTranscript[], memberIds: string[] = []): RoomMessage[] {
+export function mergeRoomMessages(
+  roomKey: string,
+  members: MemberTranscript[],
+  memberIds: string[] = [],
+  bossNames: string[] = ["老板", "boss"],
+): RoomMessage[] {
   const all: RoomMessage[] = [];
   for (const member of members) {
     for (const chat of member.messages) {
-      const message = normalizeChatMessage(roomKey, member, chat, memberIds);
+      const message = normalizeChatMessage(roomKey, member, chat, memberIds, bossNames);
       if (message !== undefined) all.push(message);
     }
   }

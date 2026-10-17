@@ -9,7 +9,7 @@ function msg(entryId: string, convId: string, kind: "boss" | "employee", text: s
 }
 
 function inRoom(): State {
-  let state = reduce(initialState, { type: "status", configured: true });
+  let state = reduce(initialState, { type: "status", configured: true, bossName: "老板" });
   state = reduce(state, { type: "room", roomKey: "dm:alice", messages: [] });
   return state;
 }
@@ -17,7 +17,12 @@ function inRoom(): State {
 describe("前端状态归约", () => {
   it("selectView：configured 决定引导页/主界面", () => {
     expect(selectView(initialState)).toBe("setup");
-    expect(selectView(reduce(initialState, { type: "status", configured: true }))).toBe("main");
+    expect(selectView(reduce(initialState, { type: "status", configured: true, bossName: "老板" }))).toBe("main");
+  });
+
+  it("bossName 随 status 事件更新", () => {
+    const state = reduce(initialState, { type: "status", configured: true, bossName: "掌柜" });
+    expect(state.bossName).toBe("掌柜");
   });
 
   it("room.message 增量合并：幂等（复合键/roomMessageId 双去重）、保持排序", () => {
@@ -132,5 +137,29 @@ describe("前端状态归约", () => {
     state = reduce(state, { type: "close-room" });
     expect(state.roomKey).toBeUndefined();
     expect(state.messages).toHaveLength(0);
+  });
+
+  it("授权请求：全量替换、SSE 增量去重（新在前）、busy/error 与本地移除", () => {
+    const request = { id: "pr_1", agentId: "alice", agentName: "爱丽丝", roomKey: "dm:alice", paths: ["/x"], reason: "r", createdAt: "t" };
+    let state = inRoom();
+    state = reduce(state, { type: "permissions", list: [request] });
+    expect(state.permissionRequests).toHaveLength(1);
+
+    state = reduce(state, { type: "sse", event: { type: "permission.request", request } });
+    expect(state.permissionRequests).toHaveLength(1); // 去重
+
+    const second = { ...request, id: "pr_2" };
+    state = reduce(state, { type: "sse", event: { type: "permission.request", request: second } });
+    expect(state.permissionRequests.map((r) => r.id)).toEqual(["pr_2", "pr_1"]); // 新的在前
+
+    state = reduce(state, { type: "permission-busy", id: "pr_2", busy: true });
+    expect(state.permissionRequests[0]!.busy).toBe(true);
+    state = reduce(state, { type: "permission-error", id: "pr_2", error: "写盘失败" });
+    expect(state.permissionRequests[0]!.error).toBe("写盘失败");
+
+    state = reduce(state, { type: "sse", event: { type: "permission.resolved", id: "pr_1" } });
+    expect(state.permissionRequests.map((r) => r.id)).toEqual(["pr_2"]);
+    state = reduce(state, { type: "permission-resolved", id: "pr_2" });
+    expect(state.permissionRequests).toEqual([]);
   });
 });

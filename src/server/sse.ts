@@ -1,12 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RoomMessage } from "../app/rooms.ts";
+import type { PermissionRequestView } from "../app/permission-flow.ts";
 
 export type ServerEvent =
   | { type: "room.message"; roomKey: string; message: RoomMessage }
   | { type: "room.delta"; roomKey: string; convId: string; memberId: string; channel: "text" | "thinking"; delta: string }
   | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool"; phase: "start" | "end"; name?: string }
   | { type: "room.failed"; roomKey: string; convId: string; memberId: string; message: string; kind?: string }
-  | { type: "room.unread"; roomKey: string; count: number };
+  | { type: "room.unread"; roomKey: string; count: number }
+  | { type: "permission.request"; request: PermissionRequestView }
+  | { type: "permission.resolved"; id: string };
 
 export interface SseClientHandle {
   readonly pending: number;

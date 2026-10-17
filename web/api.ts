@@ -1,6 +1,9 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
+import type { PermissionRequestView } from "../src/app/permission-flow.ts";
 
-export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[] };
+export type { PermissionRequestView } from "../src/app/permission-flow.ts";
+
+export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[]; bossName: string };
 export type EmployeeSummary = { id: string; alias?: string; model: string };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
 export type RoomMessages = { roomKey: string; messages: RoomMessage[] };
@@ -48,4 +51,11 @@ export const api = {
   read: (roomKey: string) => request<{ ok: boolean }>(`${roomPath(roomKey)}/read`, { method: "POST" }),
   interrupt: (roomKey: string) => request<{ aborted: string[] }>(`${roomPath(roomKey)}/interrupt`, { method: "POST" }),
   unread: () => request<{ total: number; rooms: Record<string, number> }>("/api/unread"),
+  permissionRequests: () => request<{ requests: PermissionRequestView[] }>("/api/permission-requests"),
+  resolvePermission: (id: string, decision: "accept" | "reject") =>
+    request<{ ok: boolean; warning?: string }>(`/api/permission-requests/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    }),
 };

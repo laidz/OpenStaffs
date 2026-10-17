@@ -4,7 +4,7 @@ import path from "node:path";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
-import { formatModelRef, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { countUnread, mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { markSeen, readSeen, unreadCounts } from "../app/unread.ts";
@@ -12,6 +12,8 @@ import {
   activeMemberSessions, findSessionOwner, interruptRoom, newSession, roomTranscripts, sessionChains, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
+import type { PermissionRequestStore } from "../domain/permission-requests.ts";
+import { permissionRequestView, resolvePermissionRequest, PermissionRequestNotFoundError } from "../app/permission-flow.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { SseHub } from "./sse.ts";
 
@@ -30,6 +32,8 @@ export type ServerDeps = {
   port: number;
   pump?: PumpLike;
   hub?: SseHub;
+  /** 授权请求存储（装配层注入；缺省时相关端点降级）。 */
+  permissionRequests?: PermissionRequestStore;
 };
 
 const MIME: Record<string, string> = {
@@ -122,10 +126,11 @@ async function handleRooms(
   const defaults = { model: config.model };
   // 群聊归一化需要成员表（判定 @ 对象是否有效、决定“视为发给老板”的兜底）。
   const memberIds = relation.kind === "group" ? parseMembers(deps.ws, relation.project) : [];
+  const bossNames = bossNamesFor(deps.ws);
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
     const members = await roomTranscripts(deps.ws, harness, relation);
-    json(res, 200, { roomKey, messages: mergeRoomMessages(roomKey, members, memberIds) });
+    json(res, 200, { roomKey, messages: mergeRoomMessages(roomKey, members, memberIds, bossNames) });
     return;
   }
 
@@ -195,7 +200,7 @@ async function handleRooms(
 
   if (rest.length === 1 && rest[0] === "read" && method === "POST") {
     const members = await roomTranscripts(deps.ws, harness, relation);
-    const merged = mergeRoomMessages(roomKey, members, memberIds);
+    const merged = mergeRoomMessages(roomKey, members, memberIds, bossNames);
     const max = merged.reduce((acc, m) => Math.max(acc, Number(m.entryId)), 0);
     if (max > 0) markSeen(deps.ws, roomKey, String(max));
     const count = countUnread(merged, readSeen(deps.ws).seen[roomKey]);
@@ -230,7 +235,7 @@ async function handleRooms(
     }
     const messages = mergeRoomMessages(roomKey, [
       { memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId) },
-    ], memberIds);
+    ], memberIds, bossNames);
     json(res, 200, { convId, memberId: owner, messages });
     return;
   }
@@ -253,6 +258,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
               configured: config !== undefined,
               root: deps.ws.root,
               port: deps.port,
+              bossName: readBossName(deps.ws),
               ...(config === undefined ? {} : { model: config.model, providers: Object.keys(config.providers) }),
             });
             return;
@@ -298,15 +304,66 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             await handleRooms(deps, req, res, method, segments[2], segments.slice(3));
             return;
           }
+          if (segments[1] === "permission-requests" && harness !== undefined) {
+            const store = deps.permissionRequests;
+            if (segments.length === 2 && method === "GET") {
+              const requests = store?.list() ?? [];
+              json(res, 200, { requests: requests.map((request) => permissionRequestView(deps.ws, request)) });
+              return;
+            }
+            if (segments.length === 4 && segments[2] !== undefined && segments[3] === "resolve" && method === "POST") {
+              if (store === undefined) {
+                json(res, 503, { error: "授权请求服务未启用" });
+                return;
+              }
+              let id: string;
+              try {
+                id = decodeURIComponent(segments[2]);
+              } catch {
+                json(res, 404, { error: "授权请求不存在或已处理" });
+                return;
+              }
+              const body = (await readJsonBody(req)) as { decision?: unknown } | undefined;
+              const decision = body?.decision;
+              if (decision !== "accept" && decision !== "reject") {
+                json(res, 400, { error: "decision 必须是 accept 或 reject" });
+                return;
+              }
+              try {
+                const result = await resolvePermissionRequest(
+                  {
+                    ws: deps.ws,
+                    harness,
+                    store,
+                    queue: deps.queue,
+                    defaults: { model: config.model },
+                    ...(deps.pump === undefined ? {} : { register: (convId, ref) => deps.pump!.register(convId, ref) }),
+                    ...(deps.hub === undefined ? {} : { broadcast: (rid) => deps.hub!.broadcast({ type: "permission.resolved", id: rid }) }),
+                  },
+                  id,
+                  decision,
+                );
+                json(res, 200, result);
+              } catch (error) {
+                if (error instanceof PermissionRequestNotFoundError) {
+                  json(res, 404, { error: error.message });
+                  return;
+                }
+                throw error;
+              }
+              return;
+            }
+          }
           if (segments[1] === "unread" && method === "GET" && harness !== undefined) {
+            const bossNames = bossNamesFor(deps.ws);
             const rooms: { key: string; messages: ReturnType<typeof mergeRoomMessages> }[] = [];
             for (const employee of listEmployees(deps.ws)) {
               const key = `dm:${employee.id}`;
-              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "dm", employeeId: employee.id })) });
+              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "dm", employeeId: employee.id }), [], bossNames) });
             }
             for (const project of listProjects(deps.ws)) {
               const key = `group:${project.id}`;
-              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "group", project: project.id })) });
+              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "group", project: project.id }), [], bossNames) });
             }
             json(res, 200, unreadCounts(rooms, readSeen(deps.ws)));
             return;

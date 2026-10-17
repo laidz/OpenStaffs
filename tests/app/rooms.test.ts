@@ -198,4 +198,21 @@ describe("群聊 @前缀约定（历史整洁 + 待办口径）", () => {
     expect(countUnread(merged, undefined)).toBe(2);
     expect(countUnread(merged, 11)).toBe(1);
   });
+
+  it("bossNames 双认：@掌柜 视为给老板（不补前缀）；fallback 用当前称谓（首项）", () => {
+    const bossNames = ["掌柜", "老板", "boss"];
+    const direct = normalizeChatMessage("group:demo", alice, chat("9", "assistant", "@掌柜 汇报：已完成"), memberIds, bossNames);
+    expect(direct?.text).toBe("@掌柜 汇报：已完成"); // 命中：不补 fallback 前缀
+    expect(direct?.bossDirected).toBe(true);
+
+    const legacy = normalizeChatMessage("group:demo", alice, chat("10", "assistant", "@老板 汇报"), memberIds, bossNames);
+    expect(legacy?.bossDirected).toBe(true); // 历史写法仍有效
+
+    const fallback = normalizeChatMessage("group:demo", alice, chat("11", "assistant", "好的，已完成"), memberIds, bossNames);
+    expect(fallback?.text).toBe("@掌柜 好的，已完成");
+    expect(fallback?.bossDirected).toBe(true);
+
+    const merged = mergeRoomMessages("group:demo", [{ memberId: "alice", convId: "c1", messages: [chat("12", "assistant", "群里说句话")] }], memberIds, bossNames);
+    expect(merged[0]!.text).toBe("@掌柜 群里说句话"); // mergeRoomMessages 透传
+  });
 });
