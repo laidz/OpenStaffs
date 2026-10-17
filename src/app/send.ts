@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { parseMembers } from "../domain/access-control.ts";
 import { loadEmployee } from "../domain/employee.ts";
 import type { Workspace } from "../domain/paths.ts";
-import type { HarnessPort, InputMeta } from "../harness/port.ts";
-import { openDm, openGroup, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
+import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
+import { openDm, openGroup, newSession, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
 
 /** per-key 串行队列：同 key 串行（FIFO）、异 key 并行；前序失败不连坐后续。 */
@@ -30,18 +30,21 @@ export class EmptyGroupError extends Error {}
 /** 群聊消息没有 @ 到任何成员时拒绝发送（不再广播）。 */
 export class NoTargetsError extends Error {}
 
-export type DeliveryReport = { memberId: string; convId: string };
+export type DeliveryReport = { memberId: string; convId: string; submissionId: string; status: SubmissionStatus };
 
 /**
  * 发送编排：私聊直投原文；群聊按正文 @ 定向（不 @ 到任何成员即拒绝，不再广播）。
  * 只等全部 admission 落盘（模型回答并行在途，经 watch 推流）。
+ *
+ * options.newSession = true 时，投递这一刻对每个目标成员**真正新开会话**（结束旧链、开新条）：
+ * 于是「点了新开会话却什么都没发」不产生空会话；排队中被撤回 / 中断也不产生会话。
  */
 export async function sendToRoom(
   ws: Workspace,
   harness: HarnessPort,
   relation: Relation,
   text: string,
-  options: { queue: KeyedQueue; defaults?: SessionDefaults; requestId?: string },
+  options: { queue: KeyedQueue; defaults?: SessionDefaults; requestId?: string; newSession?: boolean },
 ): Promise<{ roomMessageId: string; deliveries: DeliveryReport[] }> {
   const body = text.trim();
   if (body === "") throw new Error("消息不能为空");
@@ -63,17 +66,20 @@ export async function sendToRoom(
   const deliveries = await Promise.all(
     targets.map((target) =>
       options.queue.run(relationKey(relation, target.memberId), async (): Promise<DeliveryReport> => {
+        const group = relation.kind === "group" ? relation.project : undefined;
         const convId =
-          relation.kind === "dm"
-            ? await openDm(ws, harness, relation.employeeId, options.defaults)
-            : await openGroup(ws, harness, relation.project, target.memberId, options.defaults);
+          options.newSession === true
+            ? await newSession(ws, harness, relation, target.memberId, options.defaults)
+            : group === undefined
+              ? await openDm(ws, harness, target.memberId, options.defaults)
+              : await openGroup(ws, harness, group, target.memberId, options.defaults);
         const meta: InputMeta = {
           kind: "chat.message",
           data: { author: "boss", roomMessageId },
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
         };
-        await harness.submit(convId, target.body, meta);
-        return { memberId: target.memberId, convId };
+        const receipt = await harness.submit(convId, target.body, meta);
+        return { memberId: target.memberId, convId, submissionId: receipt.id, status: receipt.status };
       }),
     ),
   );
@@ -126,8 +132,8 @@ export async function triggerFromGroupReply(
     deliveries.map((delivery) =>
       options.queue.run(relationKey({ kind: "group", project: options.project }, delivery.to), async (): Promise<DeliveryReport> => {
         const convId = await openGroup(ws, harness, options.project, delivery.to, options.defaults);
-        await harness.submit(convId, `${label}：${delivery.body}`, meta);
-        return { memberId: delivery.to, convId };
+        const receipt = await harness.submit(convId, `${label}：${delivery.body}`, meta);
+        return { memberId: delivery.to, convId, submissionId: receipt.id, status: receipt.status };
       }),
     ),
   );

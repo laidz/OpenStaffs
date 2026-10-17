@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RoomMessage } from "../app/rooms.ts";
+import type { QueuedItemView } from "../app/outbox.ts";
 import type { PermissionRequestView } from "../app/permission-flow.ts";
 
 export type ServerEvent =
@@ -8,6 +9,10 @@ export type ServerEvent =
   | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool"; phase: "start" | "end"; name?: string }
   | { type: "room.failed"; roomKey: string; convId: string; memberId: string; message: string; kind?: string }
   | { type: "room.pins"; roomKey: string; count: number }
+  /** 老板的消息进了待发队列（员工在跑）：前端显示「排队中」。 */
+  | { type: "room.queued"; item: QueuedItemView }
+  /** 出队：投递开始（delivered）/ 被撤回（cancelled）/ 随中断撤下（aborted）。 */
+  | { type: "room.dequeued"; roomKey: string; submissionId: string; reason: "delivered" | "cancelled" | "aborted" }
   | { type: "permission.request"; request: PermissionRequestView }
   | { type: "permission.resolved"; id: string };
 

@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe("SSE 订阅", () => {
-  it("订阅名单含授权事件：permission.request / permission.resolved 能送达 onEvent", () => {
+  it("订阅名单含授权与排队事件：permission / room.queued / room.dequeued 能送达 onEvent", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     const events: unknown[] = [];
     const close = connectEvents({ onEvent: (event) => events.push(event), onReconnect: () => {} });
@@ -51,6 +51,8 @@ describe("SSE 订阅", () => {
       "room.activity",
       "room.failed",
       "room.pins",
+      "room.queued",
+      "room.dequeued",
       "permission.request",
       "permission.resolved",
       "open",
@@ -59,9 +61,14 @@ describe("SSE 订阅", () => {
     const request = { id: "pr_1", agentId: "alice", agentName: "爱丽丝", roomKey: "dm:alice", paths: ["/x"], reason: "r", createdAt: "t" };
     source.emit("permission.request", { type: "permission.request", request });
     source.emit("permission.resolved", { type: "permission.resolved", id: "pr_1" });
+    const item = { submissionId: "11", roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
+    source.emit("room.queued", { type: "room.queued", item });
+    source.emit("room.dequeued", { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" });
     expect(events).toEqual([
       { type: "permission.request", request },
       { type: "permission.resolved", id: "pr_1" },
+      { type: "room.queued", item },
+      { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" },
     ]);
     close();
   });

@@ -1,4 +1,5 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
+import type { QueuedItemView } from "../src/app/outbox.ts";
 import { markdownHtml } from "./markdown.ts";
 import type { Live, State } from "./state.ts";
 
@@ -50,7 +51,12 @@ export function sidebarHtml(state: State): string {
   </aside>`;
 }
 
-export function messageHtml(message: RoomMessage, bossName = "老板", pinned = false): string {
+/** 排队标识（挂在真气泡上，或独立占位气泡里）：等待的成员 + 撤回入口（撤回 = 撤掉这条消息所有没开始的投递）。 */
+function queuedBarHtml(roomMessageId: string, memberIds: string[]): string {
+  return `<div class="msg-queue">排队中：${escapeHtml(memberIds.join("、"))}<button type="button" class="msg-unqueue" data-action="unqueue" data-room-message="${escapeHtml(roomMessageId)}" title="撤回这条还没投递的消息">撤回</button></div>`;
+}
+
+export function messageHtml(message: RoomMessage, bossName = "老板", pinned = false, pending: string[] = []): string {
   const speaker = message.speaker;
   const boss = speaker.kind === "boss";
   const name = speaker.kind === "boss" ? bossName : (speaker.alias ?? speaker.id);
@@ -60,13 +66,42 @@ export function messageHtml(message: RoomMessage, bossName = "老板", pinned = 
   // 悬浮工具栏：复制（Markdown 原文）与 pin（逐条标记的唯一入口）。所有消息一视同仁。
   const tools = `<div class="msg-tools"><button type="button" class="msg-tool" data-action="copy" title="复制 Markdown 原文">复制</button><button type="button" class="msg-tool" data-action="pin" title="加图钉（给自己留提醒）">📌</button></div>`;
   const pinnedClass = pinned ? " pinned" : "";
-  return `<div class="msg ${boss ? "boss" : "employee"}${pinnedClass}" data-conv-id="${escapeHtml(message.convId)}" data-entry-id="${escapeHtml(message.entryId)}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div>${tools}</div>`;
+  // 这条消息还有投递在排队（如群里只 @ 到了忙的成员）：贴在气泡上提示，不再另出占位气泡。
+  const queue = message.roomMessageId === undefined || pending.length === 0 ? "" : queuedBarHtml(message.roomMessageId, pending);
+  return `<div class="msg ${boss ? "boss" : "employee"}${pinnedClass}${queue === "" ? "" : " has-queue"}" data-conv-id="${escapeHtml(message.convId)}" data-entry-id="${escapeHtml(message.entryId)}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div>${tools}${queue}</div>`;
 }
 
-export function messagesHtml(messages: RoomMessage[], bossName = "老板", pinned: Iterable<string> = []): string {
-  if (messages.length === 0) return `<div class="empty">还没有消息，发一条试试。</div>`;
+/**
+ * 消息区：已落盘消息（含 markdown/pin/工具栏）+ 排队中的老板消息。
+ * 排队条目按「消息」粒度合并（同一次发送的 N 份投递共享 roomMessageId）：
+ * - 该消息还没进 transcript → 出独立占位气泡（灰底 + 排队标识 + 撤回）；
+ * - 已有真气泡（如群里只有忙的那位还在排）→ 把排队标识贴在真气泡上，避免同一句话两个气泡。
+ */
+export function messagesHtml(
+  messages: RoomMessage[],
+  bossName = "老板",
+  pinned: Iterable<string> = [],
+  queued: QueuedItemView[] = [],
+): string {
   const pinnedSet = new Set(pinned);
-  return messages.map((message) => messageHtml(message, bossName, pinnedSet.has(`${message.convId}:${message.entryId}`))).join("");
+  const byMessage = new Map<string, QueuedItemView[]>();
+  for (const item of queued) {
+    const list = byMessage.get(item.roomMessageId);
+    if (list === undefined) byMessage.set(item.roomMessageId, [item]);
+    else list.push(item);
+  }
+  const bubbles = messages.map((message) => {
+    const roomMessageId = message.roomMessageId;
+    const pending = roomMessageId === undefined ? undefined : byMessage.get(roomMessageId);
+    if (roomMessageId !== undefined) byMessage.delete(roomMessageId); // 真气泡已出：排队标识贴上去，不出占位
+    return messageHtml(message, bossName, pinnedSet.has(`${message.convId}:${message.entryId}`), pending?.map((item) => item.memberId) ?? []);
+  });
+  // 残留的 byMessage = 完全还没落盘的消息 → 占位气泡（Map 保留首次出现顺序 = 投递顺序）
+  for (const [roomMessageId, items] of byMessage) {
+    bubbles.push(`<div class="msg boss queued" data-room-message="${escapeHtml(roomMessageId)}"><div class="msg-name">${escapeHtml(bossName)}</div><div class="msg-text">${escapeHtml(items[0]!.text)}</div>${queuedBarHtml(roomMessageId, items.map((item) => item.memberId))}</div>`);
+  }
+  if (bubbles.length === 0) return `<div class="empty">还没有消息，发一条试试。</div>`;
+  return bubbles.join("");
 }
 
 export function liveHtml(live: Record<string, Live>): string {
@@ -85,6 +120,17 @@ export function liveHtml(live: Record<string, Live>): string {
     .join("");
 }
 
+/**
+ * 「新开会话」已就绪时的提示文案（空串 = 未就绪）。
+ * 语义：按钮只置标志，下一条消息**投递时**才真正建会话——空点不建、撤回/中断也不建。
+ */
+export function freshSessionHint(state: State): string {
+  if (!state.freshSession || state.roomKey === undefined) return "";
+  return state.roomKey.startsWith("group:")
+    ? "下一条消息将开启新会话（@ 到的成员各开一条）；再点「新开会话」可取消"
+    : "下一条消息将开启新会话（当前会话将结束，可在历史中回看）；再点「新开会话」可取消";
+}
+
 export function chatHtml(state: State): string {
   if (state.roomKey === undefined) {
     return `<section class="chat"><div class="empty">从左侧选择一个员工或项目开始对话。</div></section>`;
@@ -93,31 +139,29 @@ export function chatHtml(state: State): string {
   const project = isGroup ? state.projects.find((p) => `group:${p.id}` === state.roomKey) : undefined;
   const employee = !isGroup ? state.employees.find((e) => `dm:${e.id}` === state.roomKey) : undefined;
   const title = isGroup ? (project?.alias ?? state.roomKey) : (employee?.alias ?? employee?.id ?? state.roomKey);
-  const memberSelect = isGroup
-    ? `<select id="member-select">${(project?.members ?? [])
-        .map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.alias ?? m.id)}</option>`)
-        .join("")}</select>`
-    : "";
   // 群聊：输入框上方罗列成员复选框，勾选 = 往正文写 @（唯一真相源）；无勾选则发送禁用。
   const targetsRow = isGroup ? composerTargetsHtml(project?.members ?? []) : "";
   const placeholder = isGroup
     ? "输入消息，Enter 发送（发送对象 = 上方勾选的成员）"
     : "输入消息，Enter 发送";
   const sendDisabled = isGroup ? " disabled" : "";
+  // 「新开会话」只置标志：下一条消息投递时才真正建会话（空点不产生空会话，撤回也不建）。
+  const armed = state.freshSession ? " armed" : "";
+  const hint = freshSessionHint(state);
   return `<section class="chat">
     <header class="chat-head">
       <span class="title">${escapeHtml(title)}</span>
-      ${memberSelect}
-      <button id="btn-new-session">新开会话</button>
+      <button id="btn-new-session" class="btn-new-session${armed}" title="下一条消息开启新会话">新开会话</button>
       <button id="btn-history">历史</button>
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>
     <div class="msg-list" id="msg-list">
-      <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned)}</div>
+      <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned, state.queued)}</div>
       <div id="live-area">${liveHtml(state.live)}</div>
     </div>
     <div class="composer">
       ${targetsRow}
+      ${hint === "" ? "" : `<div class="fresh-hint" id="fresh-hint">${escapeHtml(hint)}</div>`}
       <div class="composer-row">
         <textarea id="composer-input" placeholder="${placeholder}"></textarea>
         <button id="composer-send"${sendDisabled}>发送</button>

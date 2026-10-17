@@ -1,12 +1,14 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
+import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { PermissionRequestView } from "../src/app/permission-flow.ts";
 
 export type { PermissionRequestView } from "../src/app/permission-flow.ts";
+export type { QueuedItemView } from "../src/app/outbox.ts";
 
 export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[]; bossName: string };
 export type EmployeeSummary = { id: string; alias?: string; model: string };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
-export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[] };
+export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[]; queued: QueuedItemView[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
 export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null };
 
@@ -30,17 +32,19 @@ export const api = {
   employees: () => request<EmployeeSummary[]>("/api/employees"),
   projects: () => request<ProjectSummary[]>("/api/projects"),
   messages: (roomKey: string) => request<RoomMessages>(`${roomPath(roomKey)}/messages`),
-  send: (roomKey: string, text: string, requestId: string) =>
+  /** newSession=true：这条消息投递时对目标成员真正新开会话（「新开会话」按钮的落地）。 */
+  send: (roomKey: string, text: string, requestId: string, newSession = false) =>
     request<SendResult>(`${roomPath(roomKey)}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, requestId }),
+      body: JSON.stringify({ text, requestId, newSession }),
     }),
-  newSession: (roomKey: string, memberId?: string) =>
-    request<{ convId: string }>(`${roomPath(roomKey)}/new-session`, {
+  /** 撤回一条排队中的消息（该条所有还没开始的投递）。 */
+  cancelQueued: (roomKey: string, roomMessageId: string) =>
+    request<{ cancelled: string[] }>(`${roomPath(roomKey)}/queue/cancel`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(memberId === undefined ? {} : { memberId }),
+      body: JSON.stringify({ roomMessageId }),
     }),
   sessions: (roomKey: string) =>
     request<{ chains: { memberId: string; rows: ChainRow[] }[] }>(`${roomPath(roomKey)}/sessions`),

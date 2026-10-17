@@ -15,13 +15,24 @@ function stubFetch(body: unknown, status = 200) {
 }
 
 describe("前端 API 封装", () => {
-  it("send：POST JSON、roomKey 编码、返回解析", async () => {
+  it("send：POST JSON、roomKey 编码、返回解析；newSession 透传", async () => {
     const calls = stubFetch({ roomMessageId: "rm_1", deliveries: [] });
     const result = await api.send("dm:alice", "你好", "req-1");
     expect(result.roomMessageId).toBe("rm_1");
     expect(calls[0]!.url).toBe("/api/rooms/dm%3Aalice/messages");
     expect(calls[0]!.init?.method).toBe("POST");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ text: "你好", requestId: "req-1" });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ text: "你好", requestId: "req-1", newSession: false });
+
+    await api.send("dm:alice", "重开", "req-2", true);
+    expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({ text: "重开", requestId: "req-2", newSession: true });
+  });
+
+  it("cancelQueued：POST 撤回排队中的消息（按 roomMessageId）", async () => {
+    const calls = stubFetch({ cancelled: ["sub-1"] });
+    const result = await api.cancelQueued("group:yt", "rm_1");
+    expect(result.cancelled).toEqual(["sub-1"]);
+    expect(calls[0]!.url).toBe("/api/rooms/group%3Ayt/queue/cancel");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ roomMessageId: "rm_1" });
   });
 
   it("错误响应抛 Error（带服务端 message）", async () => {

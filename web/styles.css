@@ -33,6 +33,17 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 /* pinned 气泡：淡红底（在老板蓝底规则之后 → 同权重后者胜）+ 图钉按钮高亮 */
 .msg.pinned .msg-text { background: #fff1f0; border-color: #ffccc7; }
 .msg.pinned .msg-tool[data-action="pin"] { background: #fff1f0; border-color: #ffa39e; }
+/* 排队中的老板消息：灰 / 半透明 + 排队标识（等待成员 + 撤回）；撤回只撤还没投递的，拦不住已开始的 */
+.msg.queued { opacity: 0.65; }
+.msg.queued .msg-text { background: #f2f3f5; border-color: #dfe2e7; color: #5a6270; }
+.msg-queue { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8a9099; margin-top: 3px; }
+.msg.boss .msg-queue { justify-content: flex-end; }
+.msg-unqueue { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 0 6px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; }
+.msg-unqueue:hover { background: #f0f2f5; }
+.msg-unqueue:disabled { opacity: 0.5; cursor: default; }
+/* 「新开会话」就绪态：按钮高亮 + 输入框上方提示（下一条消息才真正建会话） */
+.btn-new-session.armed { border-color: #1677ff; background: #eaf3ff; color: #0b57d0; }
+.fresh-hint { font-size: 12px; color: #0b57d0; background: #f0f7ff; border: 1px solid #cfe4ff; border-radius: 6px; padding: 4px 8px; }
 /* 员工消息 Markdown 渲染（.md 容器）：换行由块级排版负责，不依赖 pre-wrap */
 .msg-text.md { white-space: normal; }
 .msg-text.md > :first-child { margin-top: 0; }

@@ -153,6 +153,43 @@ describe("前端状态归约", () => {
     expect(state.pinned).toEqual([]);
   });
 
+  it("待发队列：入队追加（去重）、出队移除；非当前房间不污染；换房间重取", () => {
+    const item = { submissionId: "11", roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.queued", item } });
+    expect(state.queued.map((q) => q.submissionId)).toEqual(["11"]);
+    // 重复投递（重连重拉）：去重，返回同一引用
+    const before = state;
+    expect(reduce(state, { type: "sse", event: { type: "room.queued", item } })).toBe(before);
+    // 第二条按投递顺序追加
+    state = reduce(state, { type: "sse", event: { type: "room.queued", item: { ...item, submissionId: "12", text: "再问" } } });
+    expect(state.queued.map((q) => q.text)).toEqual(["在吗", "再问"]);
+    // 别处的排队：不污染当前房间
+    const cross = reduce(state, { type: "sse", event: { type: "room.queued", item: { ...item, roomKey: "group:yt" } } });
+    expect(cross).toBe(state);
+    // 出队：按 submissionId 移除
+    state = reduce(state, { type: "sse", event: { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" } });
+    expect(state.queued.map((q) => q.submissionId)).toEqual(["12"]);
+    // 出队一个不存在的：同一引用（不触发重建）
+    expect(reduce(state, { type: "sse", event: { type: "room.dequeued", roomKey: "dm:alice", submissionId: "999", reason: "delivered" } })).toBe(state);
+    // 房间事件带入排队态（刷新 / 换房间）；离开房间清空
+    state = reduce(state, { type: "room", roomKey: "group:yt", messages: [], pinned: [], queued: [{ ...item, roomKey: "group:yt" }] });
+    expect(state.queued.map((q) => q.roomKey)).toEqual(["group:yt"]);
+    expect(reduce(state, { type: "close-room" }).queued).toEqual([]);
+  });
+
+  it("「新开会话」标志：切换开关；换房间 / 离开房间清掉（一次一条）", () => {
+    let state = inRoom();
+    expect(state.freshSession).toBe(false);
+    state = reduce(state, { type: "fresh-session", on: true });
+    expect(state.freshSession).toBe(true);
+    expect(reduce(state, { type: "fresh-session", on: true })).toBe(state); // 幂等：同一引用
+    expect(reduce(state, { type: "fresh-session", on: false }).freshSession).toBe(false);
+    // 换房间 / 离开房间：标志清零（不会跨房间带过去）
+    expect(reduce(reduce(state, { type: "fresh-session", on: true }), { type: "room", roomKey: "group:yt", messages: [], pinned: [] }).freshSession).toBe(false);
+    expect(reduce(reduce(state, { type: "fresh-session", on: true }), { type: "close-room" }).freshSession).toBe(false);
+  });
+
   it("room / close-room / panel 状态迁移", () => {
     let state = inRoom();
     state = reduce(state, { type: "panel", panel: "history" });

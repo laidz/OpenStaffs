@@ -37,9 +37,11 @@ class FakePort implements HarnessPort {
   async append(): Promise<void> {}
   async abort(): Promise<void> {}
   sessionInfo(): undefined { return undefined; }
-  async submit(convId: string, text: string, meta?: InputMeta): Promise<void> {
+  async submit(convId: string, text: string, meta?: InputMeta) {
     this.submits.push({ convId, text, meta });
+    return { id: `sub-${this.submits.length}`, status: "placed" as const };
   }
+  async withdrawSubmission(): Promise<boolean> { return false; }
   async watch(): Promise<() => Promise<void>> { return async () => {}; }
   async send(convId: string, text: string): Promise<ChatMessage> { return { id: "x", role: "assistant", text }; }
   async transcript(): Promise<ChatMessage[]> { return []; }

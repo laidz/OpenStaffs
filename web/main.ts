@@ -1,6 +1,6 @@
 import { api, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { escapeHtml, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "./render.ts";
+import { escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -37,6 +37,11 @@ function renderDynamic(event: UiEvent): void {
       renderPermCards();
       return;
     }
+    // 新开会话标志：只影响按钮态与输入框上方的提示。
+    if (event.type === "fresh-session") {
+      renderFreshSession();
+      return;
+    }
     // pin 事件同时改当前房间气泡高亮与侧栏红点，两处都要局部更新。
     if (event.type === "pin") {
       renderMessages();
@@ -68,8 +73,42 @@ function renderDynamic(event: UiEvent): void {
     case "room.pins":
       renderSidebar();
       return;
+    case "room.queued":
+      renderMessages(); // 待发消息进入消息区（排队中）
+      return;
+    case "room.dequeued":
+      renderMessages(); // 出队：占位撤下 / 排队标识摘掉
+      if (event.event.reason === "delivered") void syncAfterDelivered(event.event.roomKey, event.event.submissionId);
+      return;
     default:
       return;
+  }
+}
+
+/**
+ * 出队（投递开始）后的兜底：待发占位撤下时，真气泡可能还没到（服务端 pump 订阅晚于提交 / 事件丢失）。
+ * 重拉当前房间补齐——已经有这条消息的话重喂会被去重，零副作用。
+ */
+async function syncAfterDelivered(roomKey: string, submissionId: string): Promise<void> {
+  if (state.roomKey !== roomKey) return;
+  const delivered = state.queued.find((item) => item.submissionId === submissionId);
+  if (delivered === undefined) return;
+  if (state.messages.some((message) => message.roomMessageId === delivered.roomMessageId)) return;
+  await syncRoomMessages(roomKey);
+}
+
+/** 重拉房间消息，只把**尚未见过**的喂入 reducer（复用发送后的补齐口径）。 */
+async function syncRoomMessages(roomKey: string): Promise<void> {
+  try {
+    const { messages } = await api.messages(roomKey);
+    const known = new Set(state.messages.map((m) => `${m.convId}:${m.entryId}`));
+    for (const message of messages) {
+      if (!known.has(`${message.convId}:${message.entryId}`)) {
+        dispatch({ type: "sse", event: { type: "room.message", roomKey, message } });
+      }
+    }
+  } catch {
+    // 重拉失败不影响结论：等 SSE 或下次进房间补齐。
   }
 }
 
@@ -86,8 +125,24 @@ function renderMessages(): void {
   const messagesPart = document.getElementById("messages-part");
   if (messagesPart === null) return;
   const stick = nearBottom();
-  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName, state.pinned);
+  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
   if (stick) scrollToBottom();
+}
+
+/** 「新开会话」已就绪态：按钮高亮 + 输入框上方提示（就地改 DOM，不重建输入框）。 */
+function renderFreshSession(): void {
+  document.getElementById("btn-new-session")?.classList.toggle("armed", state.freshSession);
+  const hint = document.getElementById("fresh-hint");
+  const text = freshSessionHint(state);
+  if (text === "") {
+    hint?.remove();
+    return;
+  }
+  const existing = hint ?? document.createElement("div");
+  if (hint === null) document.querySelector(".composer")?.prepend(existing);
+  existing.className = "fresh-hint";
+  existing.id = "fresh-hint";
+  existing.textContent = text;
 }
 
 /** 流式气泡局部更新（增量文本 / 工具行 / 失败气泡）。 */
@@ -186,7 +241,7 @@ function bindEvents(): void {
       area.focus();
     });
   }
-  document.getElementById("btn-new-session")?.addEventListener("click", () => guard(newSession()));
+  document.getElementById("btn-new-session")?.addEventListener("click", () => dispatch({ type: "fresh-session", on: !state.freshSession }));
   document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
   document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
   // 气泡工具栏用事件委托挂在消息容器上：renderMessages 整体重建 innerHTML 时监听器不丢。
@@ -197,10 +252,22 @@ function bindEvents(): void {
   bindPermCards();
 }
 
-/** 气泡工具栏动作：复制 Markdown 原文 / 切换 pin（先乐观更新，失败回滚）。 */
+/** 气泡工具栏 / 排队撤回：先本地即时反馈（乐观更新），失败回滚并提示。 */
 async function messageAction(button: HTMLButtonElement): Promise<void> {
-  const msgEl = button.closest<HTMLElement>(".msg");
   const roomKey = state.roomKey;
+  if (button.dataset.action === "unqueue") {
+    const roomMessageId = button.dataset.roomMessage;
+    if (roomKey === undefined || roomMessageId === undefined) return;
+    button.disabled = true;
+    try {
+      await api.cancelQueued(roomKey, roomMessageId); // 成功后服务端广播 room.dequeued，占位随之撤下
+    } catch (error) {
+      button.disabled = false;
+      reportError(error);
+    }
+    return;
+  }
+  const msgEl = button.closest<HTMLElement>(".msg");
   const convId = msgEl?.dataset.convId;
   const entryId = msgEl?.dataset.entryId;
   if (msgEl === null || roomKey === undefined || convId === undefined || entryId === undefined) return;
@@ -282,14 +349,14 @@ async function refreshAll(): Promise<void> {
   dispatch({ type: "permissions", list: permissions.requests });
   if (state.roomKey !== undefined) {
     const roomKey = state.roomKey;
-    const { messages, pinned } = await api.messages(roomKey);
-    dispatch({ type: "room", roomKey, messages, pinned }, "all");
+    const { messages, pinned, queued } = await api.messages(roomKey);
+    dispatch({ type: "room", roomKey, messages, pinned, queued }, "all");
   }
 }
 
 async function enterRoom(roomKey: string): Promise<void> {
-  const { messages, pinned } = await api.messages(roomKey);
-  dispatch({ type: "room", roomKey, messages, pinned }, "all");
+  const { messages, pinned, queued } = await api.messages(roomKey);
+  dispatch({ type: "room", roomKey, messages, pinned, queued }, "all");
 }
 
 async function sendCurrent(): Promise<void> {
@@ -302,33 +369,24 @@ async function sendCurrent(): Promise<void> {
   const targets = composerTargets();
   // 兜底门禁：群聊需「有效对象 + 前缀外的正文」（按钮已禁用、Enter 也走这里）；后端同样会拒绝无对象。
   if (isGroup && !groupSendable(input?.value ?? "", roomMembers().memberIds)) return;
+  const fresh = state.freshSession; // 「新开会话」：这条消息投递时对目标成员真正建会话（撤回/中断则不建）
   const button = document.getElementById("composer-send") as HTMLButtonElement | null;
   sending = true;
   if (button !== null) button.disabled = true;
   try {
-    await api.send(roomKey, text, crypto.randomUUID());
-    // 发送期间用户又改了输入（或点了别的成员）则不覆盖；未改动才重置为“保留勾选”的草稿。
-    if (input !== null && input.value.trim() === text) {
-      if (isGroup) {
-        input.value = draftAfterSend(targets); // 保留勾选对象的 @ 前缀：接着发下一条无需重新勾选
-        input.focus();
-      } else {
-        input.value = "";
-      }
+    await api.send(roomKey, text, crypto.randomUUID(), fresh);
+    if (fresh) dispatch({ type: "fresh-session", on: false }); // 一次一条：用完即清
+    // 发送期间用户又改了输入（或点了别的成员）则不覆盖：未改动才重置草稿（重建 DOM 后也要补回）。
+    const untouched = input !== null && input.value.trim() === text;
+    if (fresh) {
+      // 新开会话换了整条会话：房间视图整套消息都变了，走全量重取（增量合并会留着旧会话的消息）。
+      await enterRoom(roomKey);
+    } else {
+      // R9 兜底：服务端 pump 订阅晚于 submit，新房间的首条 boss 消息不会经 SSE 推来。
+      // 重拉当前房间，仅把**尚未见过**的消息喂入 reducer（复合键过滤：只为新消息触发一次重渲）。
+      await syncRoomMessages(roomKey);
     }
-    // R9 兜底：服务端 pump 订阅晚于 submit，新房间的首条 boss 消息不会经 SSE 推来。
-    // 重拉当前房间，仅把**尚未见过**的消息喂入 reducer（复合键过滤：只为新消息触发一次重渲）。
-    try {
-      const { messages } = await api.messages(roomKey);
-      const known = new Set(state.messages.map((m) => `${m.convId}:${m.entryId}`));
-      for (const message of messages) {
-        if (!known.has(`${message.convId}:${message.entryId}`)) {
-          dispatch({ type: "sse", event: { type: "room.message", roomKey, message } });
-        }
-      }
-    } catch {
-      // 重拉失败不影响发送成功的结论：静默忽略，等 SSE（Task 14）或下次进房间补齐。
-    }
+    if (untouched) applyDraft(isGroup ? draftAfterSend(targets) : "");
   } catch (error) {
     reportError(error);
   } finally {
@@ -337,20 +395,13 @@ async function sendCurrent(): Promise<void> {
   }
 }
 
-async function newSession(): Promise<void> {
-  if (state.roomKey === undefined) return;
-  const roomKey = state.roomKey;
-  const isGroup = roomKey.startsWith("group:");
-  let memberId: string | undefined;
-  if (isGroup) {
-    const select = document.getElementById("member-select") as HTMLSelectElement | null;
-    memberId = select?.value;
-    if (memberId === undefined || memberId === "") return;
-  }
-  const label = isGroup ? `成员 ${memberId} 的` : "";
-  if (!window.confirm(`确定新开${label}会话？当前会话将结束（可在历史中回看）。`)) return;
-  await api.newSession(roomKey, memberId);
-  await enterRoom(roomKey);
+/** 发送成功后写入草稿（room 事件可能重建过输入框，故重新取元素）；保留勾选对象的 @ 前缀便于接着发。 */
+function applyDraft(draft: string): void {
+  const area = composerInput();
+  if (area === null) return;
+  area.value = draft;
+  syncComposerUi();
+  if (draft !== "") area.focus();
 }
 
 async function interruptCurrent(): Promise<void> {

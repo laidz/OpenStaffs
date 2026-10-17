@@ -345,6 +345,65 @@ describe("提交与推流", () => {
     expect(mapped).toEqual([{ type: "failed", convId: "c1", kind: "model", message: "模型不可用" }]);
   });
 
+  it("submit 回执与 submission 事件：忙时 queued；withdrawSubmission 撤回后不进 transcript；已 placed 撤不回", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { models } = fauxModels([
+      async () => {
+        await gate; // 第一轮卡住不返回 → 会话保持忙
+        return fauxAssistantMessage("第一轮完成");
+      },
+      fauxAssistantMessage("第二轮完成"),
+    ]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-queue.sqlite"), models });
+    await harness.open();
+    try {
+      const cwd = path.join(root, "agents", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
+      const convId = await harness.startSession(spec(cwd));
+      const events: HarnessEvent[] = [];
+      const unsubscribe = await harness.watch(convId, (e) => events.push(e));
+      try {
+        const first = await harness.submit(convId, "第一轮");
+        expect(first.status).toBe("placed"); // 空闲：直接进 transcript
+        await waitFor(() => events.some((e) => e.type === "submission" && e.id === first.id));
+
+        const second = await harness.submit(convId, "第二轮");
+        expect(second.status).toBe("queued"); // 忙：进了 Pi 的 inbox，还没进 transcript
+        await waitFor(() => events.some((e) => e.type === "submission" && e.id === second.id && e.status === "queued"));
+        expect((await harness.transcript(convId)).some((m) => m.text === "第二轮")).toBe(false);
+
+        expect(await harness.withdrawSubmission(convId, second.id)).toBe(true); // 撤回：不投递给员工
+        await waitFor(() => events.some((e) => e.type === "submission" && e.id === second.id && e.status === "unanswered"));
+
+        release();
+        await waitFor(async () => (await harness.transcript(convId)).some((m) => m.role === "assistant"));
+        const users = (await harness.transcript(convId)).filter((m) => m.role === "user");
+        expect(users.map((m) => m.text)).toEqual(["第一轮"]);
+
+        const third = await harness.submit(convId, "第三轮");
+        expect(third.status).toBe("placed");
+        expect(await harness.withdrawSubmission(convId, third.id)).toBe(false); // 已开始：撤不回（那是中断语义）
+        expect(await harness.withdrawSubmission(convId, "sub-不存在")).toBe(false);
+      } finally {
+        await unsubscribe();
+        release();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("mapPiEvent：submission 事件透传 id 与状态（待发队列的真相源）", () => {
+    const mapped = mapPiEvent(
+      { type: "submission", record: { id: 42, conversationId: 1, type: "input", status: "queued" } } as unknown as Parameters<typeof mapPiEvent>[0],
+      "c1",
+    );
+    expect(mapped).toEqual([{ type: "submission", convId: "c1", id: "42", status: "queued" }]);
+  });
+
   it("同 requestId 重复提交不产生重复输入（Pi 去重语义）", async () => {
     const { models } = fauxModels([fauxAssistantMessage("一"), fauxAssistantMessage("二")]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-request.sqlite"), models });

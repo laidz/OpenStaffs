@@ -1,4 +1,5 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
+import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
 import type { EmployeeSummary, PermissionRequestView, ProjectSummary } from "./api.ts";
 
@@ -22,11 +23,15 @@ export type State = {
   permissionRequests: PermissionRequestItem[];
   roomKey?: string;
   messages: RoomMessage[];
+  /** 排队中的老板消息（当前房间）：还没投递给员工，按投递顺序。 */
+  queued: QueuedItemView[];
   live: Record<string, Live>;
   /** 侧栏红点：每房间被 pin 的消息数（房间当前视图口径）。 */
   pins: Record<string, number>;
   /** 当前房间被 pin 的消息键（convId:entryId），用于气泡高亮。 */
   pinned: string[];
+  /** 「新开会话」已就绪：下一条消息投递时对目标成员真正新开会话（一次一条，发完清零）。 */
+  freshSession: boolean;
   busy: Record<string, boolean>;
   panel?: "history";
 };
@@ -38,9 +43,11 @@ export const initialState: State = {
   projects: [],
   permissionRequests: [],
   messages: [],
+  queued: [],
   live: {},
   pins: {},
   pinned: [],
+  freshSession: false,
   busy: {},
 };
 
@@ -48,11 +55,12 @@ export type UiEvent =
   | { type: "status"; configured: boolean; bossName: string }
   | { type: "employees"; list: EmployeeSummary[] }
   | { type: "projects"; list: ProjectSummary[] }
-  | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[] }
+  | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
   | { type: "close-room" }
   | { type: "panel"; panel?: "history" }
   | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
   | { type: "pin"; roomKey: string; key: string; pinned: boolean }
+  | { type: "fresh-session"; on: boolean }
   | { type: "permissions"; list: PermissionRequestView[] }
   | { type: "permission-busy"; id: string; busy: boolean }
   | { type: "permission-error"; id: string; error: string }
@@ -89,11 +97,22 @@ export function reduce(state: State, event: UiEvent): State {
     case "projects":
       return { ...state, projects: event.list };
     case "room":
-      return { ...state, roomKey: event.roomKey, messages: event.messages, pinned: event.pinned, live: {}, panel: undefined };
+      return {
+        ...state,
+        roomKey: event.roomKey,
+        messages: event.messages,
+        pinned: event.pinned,
+        queued: event.queued ?? [],
+        freshSession: false,
+        live: {},
+        panel: undefined,
+      };
     case "close-room":
-      return { ...state, roomKey: undefined, messages: [], pinned: [], live: {}, panel: undefined };
+      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], freshSession: false, live: {}, panel: undefined };
     case "panel":
       return { ...state, panel: event.panel };
+    case "fresh-session":
+      return state.freshSession === event.on ? state : { ...state, freshSession: event.on };
     case "pins":
       return { ...state, pins: event.pins.rooms };
     case "pin": {
@@ -122,6 +141,17 @@ export function reduce(state: State, event: UiEvent): State {
 function reduceSse(state: State, event: ServerEvent): State {
   if (event.type === "room.pins") {
     return { ...state, pins: { ...state.pins, [event.roomKey]: event.count } };
+  }
+  // 待发队列（入队 / 出队）：只影响当前房间的消息区展示。
+  if (event.type === "room.queued") {
+    if (state.roomKey !== event.item.roomKey) return state;
+    if (state.queued.some((item) => item.submissionId === event.item.submissionId)) return state; // 重连重拉去重
+    return { ...state, queued: [...state.queued, event.item] }; // 追加即投递顺序（服务端按入队序发）
+  }
+  if (event.type === "room.dequeued") {
+    if (state.roomKey !== event.roomKey) return state;
+    const next = state.queued.filter((item) => item.submissionId !== event.submissionId);
+    return next.length === state.queued.length ? state : { ...state, queued: next };
   }
   // 授权事件是全局的（不属于任何房间视图，也不受当前房间过滤）：先于 roomKey 过滤处理。
   if (event.type === "permission.request") {

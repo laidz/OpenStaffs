@@ -5,6 +5,7 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import {
   AssistantEntry, Harness, watchEvents, createRegistry,
   type AgentEvent as PiAgentEvent, type Conversation, type ConversationId, type EntryRecord, type Extension,
+  type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -88,6 +89,9 @@ export function mapPiEvent(event: PiAgentEvent, convId: string): HarnessEvent[] 
       return [{ type: "tool", convId, name: event.toolName, phase: "end" }];
     case "task_failed":
       return [{ type: "failed", convId, message: event.message, kind: event.kind }];
+    // 输入受理状态：queued（排队中）→ placed（进 transcript）→ done / unanswered（撤回、中断等）。
+    case "submission":
+      return [{ type: "submission", convId, id: String(event.record.id), status: event.record.status }];
     default:
       return [];
   }
@@ -175,7 +179,7 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
     },
     async submit(convId, text, meta) {
       const conv = await conversation(convId as unknown as ConversationId);
-      await conv.submit(
+      const submission = await conv.submit(
         {
           type: "input",
           content: text,
@@ -186,6 +190,18 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
         },
         ctx,
       );
+      // 受理回执：状态在提交事务内定稿——queued = 会话忙，输入进了 Pi 的 inbox（排队中）。
+      const record = await submission.status(ctx);
+      return { id: String(submission.id), status: record.status };
+    },
+    async withdrawSubmission(convId, submissionId) {
+      const conv = await conversation(convId as unknown as ConversationId);
+      // 必须换成数值 id：Pi 在 inbox 里用严格比较找条目，字符串 id 会「settle 了记录、却漏删 inbox 条目」——
+      // 表现为撤回成功但输入照旧排到下一轮投递给员工。回执里的 id 是字符串（要能过 JSON/SSE），这里转回来。
+      const id = Number(submissionId);
+      if (!Number.isInteger(id)) return false;
+      const result = await harness!.abortSubmission(id as unknown as SubmissionId, ctx, conv.id);
+      return result === "aborted"; // 只有 queued 能撤；placed/settled/not_found 都表示撤不回
     },
     async append(convId, entry) {
       const conv = await conversation(convId as unknown as ConversationId);

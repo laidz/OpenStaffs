@@ -10,6 +10,8 @@ import { createWorkspace } from "../../src/domain/paths.ts";
 import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
+import { Outbox } from "../../src/app/outbox.ts";
+import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import type { WorkspaceConfig } from "../../src/domain/config.ts";
 import { PermissionRequestStore } from "../../src/domain/permission-requests.ts";
 
@@ -272,7 +274,7 @@ describe("房间 API", () => {
     }
   });
 
-  it("new-session（群聊校验成员）、sessions、历史消息、read/unread", async () => {
+  it("新开会话（发送时 newSession）：投递那一刻才建会话、视线随之清空；sessions / 历史 / pins 形状", async () => {
     const { base, close } = await startWithFaux(["alice"], ["alice"]);
     try {
       // 先发一条消息建立链
@@ -291,27 +293,31 @@ describe("房间 API", () => {
       expect(chains.chains[0]!.memberId).toBe("alice");
       const firstConv = chains.chains[0]!.rows[0]!.id;
 
-      const newSessionRes = await fetch(`${base}/api/rooms/dm:alice/new-session`, {
+      // 普通发送：复用同一条会话（链不增长）
+      await fetch(`${base}/api/rooms/dm:alice/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ text: "同一条会话里再说一句" }),
       });
-      const { convId } = (await newSessionRes.json()) as { convId: string };
-      expect(convId).not.toBe(firstConv);
+      const same = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
+      expect(same.chains[0]!.rows).toHaveLength(1);
 
-      const after = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: unknown[] };
-      expect(after.messages).toEqual([]); // 新会话视线清空
+      // newSession=true：这条消息投递给 alice 时新开会话（旧会话结束、视线清空）
+      const fresh = await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "重新开始", newSession: true }),
+      });
+      expect(fresh.status).toBe(202);
+
+      const after = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string; convId: string }[] };
+      expect(after.messages[0]!.text).toBe("重新开始");
+      expect(after.messages[0]!.convId).not.toBe(firstConv);
+      expect(after.messages.some((m) => m.text === "第一轮")).toBe(false); // 新会话视线里没有旧内容
 
       const history = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${firstConv}/messages`)).json()) as { memberId: string; messages: unknown[] };
       expect(history.memberId).toBe("alice");
-      expect(history.messages.length).toBeGreaterThanOrEqual(2);
-
-      const badMember = await fetch(`${base}/api/rooms/group:yt/new-session`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ memberId: "ghost" }),
-      });
-      expect(badMember.status).toBe(400);
+      expect(history.messages.length).toBeGreaterThanOrEqual(2); // 旧会话仍可回看
 
       // pins：新会话为空 → 红点为 0；此处只验证 /api/pins 接口形状
       const pins = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
@@ -452,6 +458,154 @@ describe("房间 API", () => {
       await close();
     }
   });
+});
+
+describe("待发队列 API（排队中了要看得见、可单条撤回）", () => {
+  async function startQueued(): Promise<{
+    base: string;
+    close: () => Promise<void>;
+    release: () => void;
+    events: ServerEvent[];
+  }> {
+    const dir = path.join(root, "agents", "alice");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    // 第一条卡住不返回 → alice 一直在跑，后面的消息只能排队
+    faux.setResponses([async () => {
+      await gate;
+      return fauxAssistantMessage("第一轮回复");
+    }, fauxAssistantMessage("第二轮回复")]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, `.openstaffs/state-queue-${Date.now()}.sqlite`), models });
+    await harness.open();
+    const ws = createWorkspace(root);
+    const events: ServerEvent[] = [];
+    const hub = {
+      broadcast: (event: ServerEvent) => events.push(event),
+      add: () => ({ pending: 0, close: () => {} }),
+      size: 0,
+    } as unknown as SseHub;
+    const server = createHttpServer({
+      ws,
+      getConfig: () => configured,
+      getHarness: () => harness,
+      queue: new KeyedQueue(),
+      outbox: new Outbox(),
+      hub,
+      publicDir,
+      port: 4319,
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      base: `http://127.0.0.1:${port}`,
+      release,
+      events,
+      close: async () => {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await harness.close();
+      },
+    };
+  }
+
+  function post(base: string, body: unknown): Promise<Response> {
+    return fetch(`${base}/api/rooms/dm:alice/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function room(base: string): Promise<{ messages: { text: string }[]; queued: { text: string; roomMessageId: string; memberId: string }[] }> {
+    return (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as never;
+  }
+
+  it("员工在跑：第二条以 queued 返回 + 进待发表 + 广播；撤回后不再投递", async () => {
+    const { base, close, release, events } = await startQueued();
+    try {
+      const first = await post(base, { text: "第一轮" });
+      expect(first.status).toBe(202);
+      expect(((await first.json()) as { deliveries: { status: string }[] }).deliveries[0]!.status).toBe("placed");
+
+      const second = await post(base, { text: "第二条" });
+      expect(second.status).toBe(202);
+      const accepted = (await second.json()) as { roomMessageId: string; deliveries: { status: string; submissionId: string }[] };
+      expect(accepted.deliveries[0]!.status).toBe("queued"); // 员工在跑 → 进了 Pi 的 inbox
+
+      await waitFor(async () => (events.some((e) => e.type === "room.queued") ? true : undefined));
+      const queuedEvent = events.find((e) => e.type === "room.queued");
+      expect(queuedEvent?.type === "room.queued" ? queuedEvent.item : undefined).toMatchObject({
+        submissionId: accepted.deliveries[0]!.submissionId,
+        memberId: "alice",
+        roomMessageId: accepted.roomMessageId,
+        text: "第二条",
+      });
+
+      // 消息区拿得到排队态（刷新 / 换标签页一致）
+      const withQueued = await room(base);
+      expect(withQueued.queued.map((item) => item.text)).toEqual(["第二条"]);
+      expect(withQueued.messages.map((m) => m.text)).not.toContain("第二条");
+
+      // 单条撤回：撤掉这条消息里还没开始的投递，广播出队
+      const cancel = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomMessageId: accepted.roomMessageId }),
+      });
+      expect(cancel.status).toBe(200);
+      expect(((await cancel.json()) as { cancelled: string[] }).cancelled).toEqual([accepted.deliveries[0]!.submissionId]);
+      expect(events.some((e) => e.type === "room.dequeued" && e.reason === "cancelled")).toBe(true);
+
+      const cleared = await room(base);
+      expect(cleared.queued).toEqual([]);
+
+      // 撤回的输入绝不投递：放开第一轮后，链里只有第一轮与其回复
+      release();
+      await waitFor(async () => {
+        const body = await room(base);
+        return body.messages.some((m) => m.text === "第一轮回复") ? body : undefined;
+      });
+      const after = await room(base);
+      expect(after.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复"]);
+      expect(after.queued).toEqual([]);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("撤不回已开始投递的：409 + 明确文案；roomMessageId 必填 400", async () => {
+    const { base, close, release } = await startQueued();
+    try {
+      const first = await post(base, { text: "第一轮" });
+      const accepted = (await first.json()) as { roomMessageId: string };
+      // 这条已经 placed（员工空闲 → 直接进 transcript）→ 撤不回
+      const conflict = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomMessageId: accepted.roomMessageId }),
+      });
+      expect(conflict.status).toBe(409);
+      expect(((await conflict.json()) as { error: string }).error).toContain("撤不回");
+
+      const missing = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(missing.status).toBe(400);
+    } finally {
+      release();
+      await close();
+    }
+  }, 30_000);
 });
 
 describe("授权请求 API", () => {

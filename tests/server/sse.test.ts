@@ -9,8 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkspace, conversationIdsFile, employeeDir } from "../../src/domain/paths.ts";
 import { startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
-import type { HarnessPort } from "../../src/harness/port.ts";
+import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
+import { Outbox } from "../../src/app/outbox.ts";
 import { openDm } from "../../src/app/conversations.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
@@ -146,11 +147,17 @@ describe("SSE 全链路", () => {
     void collect(sseRes.body!, events);
 
     try {
-      // 先开新会话（spec §6.3：新开会话在 API 层拿到 convId 后注册订阅）。
-      // 订阅必须先于提交：否则首条老板消息会在订阅建立前落盘而漏推（POST /messages 内 sendToRoom 先 submit 后注册）。
-      const opened = await fetch(`${base}/api/rooms/dm:alice/new-session`, { method: "POST" });
-      expect(opened.status).toBe(200);
+      // 先用一条消息把会话立起来（POST /messages 内 sendToRoom 先 submit、后注册订阅：
+      // 新会话的首条老板消息不经 SSE 推来，订阅在它之后才建立；后续消息才会被推）。
+      const bootstrap = await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "预热" }),
+      });
+      expect(bootstrap.status).toBe(202);
+      await waitUntil(() => events.some((e) => e.type === "room.message" && e.message.speaker.kind === "employee"));
 
+      // 已有订阅：老板消息 → 流式增量 → 员工消息 全链路可见
       const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -158,8 +165,7 @@ describe("SSE 全链路", () => {
       });
       expect(post.status).toBe(202);
 
-      await waitUntil(() => events.some((e) => e.type === "room.message" && e.message.speaker.kind === "employee"));
-      expect(events.some((e) => e.type === "room.message" && e.message.speaker.kind === "boss" && e.message.text === "你好")).toBe(true);
+      await waitUntil(() => events.some((e) => e.type === "room.message" && e.message.speaker.kind === "boss" && e.message.text === "你好"));
       expect(events.some((e) => e.type === "room.delta" && e.delta.length > 0)).toBe(true);
       const assistant = events.find((e) => e.type === "room.message" && e.message.speaker.kind === "employee");
       expect(assistant?.type === "room.message" ? assistant.message.text : "").toContain("流式回答内容");
@@ -178,6 +184,101 @@ describe("SSE 全链路", () => {
       await waitUntil(() => events.some((e) => e.type === "room.pins" && e.roomKey === "dm:alice" && e.count === 1));
     } finally {
       abort.abort(); // 客户端断开（hub 依 req close 清理）；否则常驻 SSE 连接会让 server.close() 一直阻塞
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await harness.close();
+    }
+  }, 30_000);
+});
+
+describe("待发队列全链路（Pi submission 事件驱动）", () => {
+  it("忙时发送 → room.queued；投递开始 → room.dequeued(delivered)；消息照常落盘", async () => {
+    const dir = path.join(root, "agents", "alice");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      async () => {
+        await gate; // 第一轮卡住 → alice 忙
+        return fauxAssistantMessage("第一轮回复");
+      },
+      fauxAssistantMessage("第二轮回复"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const ws = createWorkspace(root);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-outbox.sqlite"), models });
+    await harness.open();
+
+    const hub = new SseHub();
+    const outbox = new Outbox();
+    const pump = new Pump({ ws, harness, hub, outbox });
+    const server = createHttpServer({
+      ws,
+      getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
+      getHarness: () => harness,
+      queue: new KeyedQueue(),
+      outbox,
+      publicDir: path.join(root, "public"),
+      port: 4319,
+      pump,
+      hub,
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${port}`;
+
+    const events: ServerEvent[] = [];
+    const abort = new AbortController();
+    const sseRes = await fetch(`${base}/api/events`, { signal: abort.signal });
+    void collect(sseRes.body!, events);
+    const send = (text: string) =>
+      fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+
+    try {
+      const first = await send("第一轮");
+      expect(((await first.json()) as { deliveries: { status: string }[] }).deliveries[0]!.status).toBe("placed");
+      await pump.register((await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json() as { chains: { rows: { id: string }[] }[] }).chains[0]!.rows[0]!.id, { roomKey: "dm:alice", memberId: "alice" });
+
+      const second = await send("第二条");
+      const accepted = (await second.json()) as { roomMessageId: string; deliveries: { submissionId: string; status: string }[] };
+      expect(accepted.deliveries[0]!.status).toBe("queued");
+
+      // 入队事件：前端据此在消息区显示「排队中」
+      await waitUntil(() => events.some((e) => e.type === "room.queued"));
+      const queuedEvent = events.find((e) => e.type === "room.queued");
+      expect(queuedEvent?.type === "room.queued" ? queuedEvent.item : undefined).toMatchObject({
+        submissionId: accepted.deliveries[0]!.submissionId,
+        roomMessageId: accepted.roomMessageId,
+        memberId: "alice",
+      });
+
+      // 放开第一轮：Pi 在轮次边界把排队的输入落盘 → pump 收到 submission 事件 → 广播出队
+      release();
+      await waitUntil(() => events.some((e) => e.type === "room.dequeued" && e.submissionId === accepted.deliveries[0]!.submissionId));
+      const dequeued = events.find((e) => e.type === "room.dequeued");
+      expect(dequeued?.type === "room.dequeued" ? dequeued.reason : "").toBe("delivered");
+
+      // 照常投递：第二条进了 transcript，待发表清空
+      const merged = await waitFor(async () => {
+        const body = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[]; queued: unknown[] };
+        return body.messages.some((m) => m.text === "第二轮回复") ? body : undefined;
+      });
+      // 排队的输入在轮次边界落盘 → 排在上一轮回复之后（entryId 顺序即时间顺序）
+      expect(merged.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复", "第二条", "第二轮回复"]);
+      expect(merged.queued).toEqual([]);
+    } finally {
+      release();
+      abort.abort();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await harness.close();
     }
@@ -346,7 +447,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await pump.unregister("c1");
   }, 30_000);
 
-  it("F2a：new-session 的 pump.register 失败仍 200 + convId（会话已建，订阅由重启扫描兜底）", async () => {
+  it("F2a：发送（含 newSession）的 pump.register 失败仍 202 + 投递回执（会话已建，订阅由重启扫描兜底）", async () => {
     writeEmployee("alice");
     const ws = createWorkspace(root);
     const harness = fauxHarness("f2a");
@@ -364,13 +465,65 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/rooms/dm:alice/new-session`, { method: "POST" });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { convId?: unknown };
-      expect(typeof body.convId).toBe("string");
+      const res = await fetch(`http://127.0.0.1:${port}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "你好", newSession: true }),
+      });
+      expect(res.status).toBe(202);
+      const body = (await res.json()) as { deliveries?: { convId?: unknown }[] };
+      expect(body.deliveries).toHaveLength(1);
+      expect(typeof body.deliveries![0]!.convId).toBe("string");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await harness.close();
+    }
+  }, 30_000);
+
+  it("Pump：submission 事件 → 待发表出队并广播 room.dequeued（投递开始 delivered / 撤回与中断 aborted）", async () => {
+    writeEmployee("alice");
+    const ws = createWorkspace(root);
+    const outbox = new Outbox();
+    let listener: ((event: HarnessEvent) => void) | undefined;
+    const harness = {
+      watch: async (_convId: string, fn: (event: HarnessEvent) => void) => {
+        listener = fn;
+        return async () => {};
+      },
+    } as unknown as HarnessPort;
+    const events: ServerEvent[] = [];
+    const hub = {
+      broadcast: (event: ServerEvent) => events.push(event),
+      add: () => ({ pending: 0, close: () => {} }),
+      size: 0,
+    } as unknown as SseHub;
+    const pump = new Pump({ ws, harness, hub, outbox });
+    const item = { roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗", convId: "c1" };
+    try {
+      outbox.add({ ...item, submissionId: "11" });
+      outbox.add({ ...item, submissionId: "12" });
+      await pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
+
+      // 受理即 queued：还在排队，不出队
+      listener!({ type: "submission", convId: "c1", id: "11", status: "queued" });
+      expect(events).toEqual([]);
+      expect(outbox.size).toBe(2);
+
+      // 投递开始（placed）→ 出队 + 广播 delivered
+      listener!({ type: "submission", convId: "c1", id: "11", status: "placed" });
+      expect(events).toEqual([{ type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" }]);
+      expect(outbox.size).toBe(1);
+
+      // 撤回 / 中断（unanswered）→ 出队 + 广播 aborted
+      listener!({ type: "submission", convId: "c1", id: "12", status: "unanswered" });
+      expect(events[1]).toEqual({ type: "room.dequeued", roomKey: "dm:alice", submissionId: "12", reason: "aborted" });
+      expect(outbox.size).toBe(0);
+
+      // 不在待发表里的 submission（员工之间的触发、被动写入）：静默忽略
+      listener!({ type: "submission", convId: "c1", id: "99", status: "done" });
+      expect(events).toHaveLength(2);
+    } finally {
+      await pump.unregister("c1");
     }
   }, 30_000);
 

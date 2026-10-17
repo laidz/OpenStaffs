@@ -40,12 +40,23 @@ export type PostEntry = {
   data?: unknown;
 };
 
+/**
+ * 一条输入的受理状态（Pi submission 生命周期）：
+ * queued（已受理、还没进 transcript，即「排队中」）→ placed（进了 transcript）→ done（已答复）/ unanswered（撤回、中断等终止）。
+ */
+export type SubmissionStatus = "queued" | "placed" | "done" | "unanswered";
+
+/** submit 的受理回执：submission id + 受理时的状态。 */
+export type SubmissionReceipt = { id: string; status: SubmissionStatus };
+
 export type HarnessEvent =
   | { type: "delta"; convId: string; channel: "text" | "thinking"; delta: string }
   | { type: "message"; convId: string; message: ChatMessage }
   | { type: "run"; convId: string; phase: "start" | "end" }
   | { type: "tool"; convId: string; name: string; phase: "start" | "end" }
-  | { type: "failed"; convId: string; message: string; kind: string };
+  | { type: "failed"; convId: string; message: string; kind: string }
+  /** 输入受理状态变化（排队 → 落盘 → 结束）；待发队列据此展示与撤下。 */
+  | { type: "submission"; convId: string; id: string; status: SubmissionStatus };
 
 export interface HarnessPort {
   open(): Promise<void>;
@@ -58,8 +69,13 @@ export interface HarnessPort {
   sessionInfo(convId: string): { selfId: string; relation: Relation } | undefined;
   /** 阻塞发送（测试与非流式场景）；编排走 submit + watch（Task 5）。 */
   send(convId: string, text: string): Promise<ChatMessage>;
-  /** 提交输入，不等待回答（admission 完成即返回）。 */
-  submit(convId: string, text: string, meta?: InputMeta): Promise<void>;
+  /** 提交输入，不等待回答（admission 完成即返回，带上受理回执：id + 状态）。 */
+  submit(convId: string, text: string, meta?: InputMeta): Promise<SubmissionReceipt>;
+  /**
+   * 撤回一条**尚未开始**的输入（status=queued）：从待办里撤掉、不投递给员工。
+   * 已经开始（placed）/ 已结束的返回 false —— 那属于「中断」语义（harness.abort）。
+   */
+  withdrawSubmission(convId: string, submissionId: string): Promise<boolean>;
   /**
    * 追加一条己方发言：以 assistant 形态落盘（模型视角 =「我说过的话」，不会像 user 那样引发自我回显），
    * 可见（进入房间视图）但不触发模型回答。用于员工主动发言（send_message）。

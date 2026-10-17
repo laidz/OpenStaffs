@@ -25,6 +25,9 @@ function seedGroup(project: string, members: string[]) {
 class FakePort implements HarnessPort {
   readonly starts: ConversationSpec[] = [];
   readonly submits: { convId: string; text: string; meta?: InputMeta }[] = [];
+  /** 受理回执状态（缺省 placed）：置 queued 可模拟「员工在跑 → 输入排队」。 */
+  status: "queued" | "placed" | "done" | "unanswered" = "placed";
+  withdrawn: string[] = [];
   gate?: Promise<void>;
 
   async open(): Promise<void> {}
@@ -41,9 +44,14 @@ class FakePort implements HarnessPort {
   sessionInfo(): undefined {
     return undefined;
   }
-  async submit(convId: string, text: string, meta?: InputMeta): Promise<void> {
+  async submit(convId: string, text: string, meta?: InputMeta) {
     this.submits.push({ convId, text, meta }); // 先记录"进入 submit"，再被 gate 阻塞（模拟 admission 在途）
     if (this.gate !== undefined) await this.gate;
+    return { id: `sub-${this.submits.length}`, status: this.status };
+  }
+  async withdrawSubmission(_convId: string, submissionId: string): Promise<boolean> {
+    this.withdrawn.push(submissionId);
+    return true;
   }
   async watch(): Promise<() => Promise<void>> {
     return async () => {};
@@ -76,6 +84,47 @@ describe("发送编排", () => {
     const data = port.submits[0]!.meta?.data as { author?: string; roomMessageId?: string };
     expect(data.author).toBe("boss");
     expect(data.roomMessageId).toBe(result.roomMessageId);
+  });
+
+  it("受理回执透出：placed 表示已进 transcript；queued 表示在 Pi 的 inbox 里排队", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const port = new FakePort();
+    const placed = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "在吗", { queue: new KeyedQueue(), defaults });
+    expect(placed.deliveries[0]).toMatchObject({ memberId: "alice", status: "placed" });
+    expect(placed.deliveries[0]!.submissionId).toBeTruthy();
+
+    port.status = "queued";
+    const queued = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "再问", { queue: new KeyedQueue(), defaults });
+    expect(queued.deliveries[0]).toMatchObject({ memberId: "alice", status: "queued" });
+  });
+
+  it("newSession：对目标成员新开会话（不再 attach 旧会话），多 @ 各自开新会话", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("yt", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const port = new FakePort();
+    const relation = { kind: "group", project: "yt" } as const;
+    const queue = new KeyedQueue();
+
+    // 先各建一条会话（链上已有活跃会话）
+    await sendToRoom(ws, port, relation, "@alice @bob 先热身", { queue, defaults });
+    expect(port.starts).toHaveLength(2);
+    port.starts.length = 0;
+
+    // 再发一条：newSession → 每人各开一条新会话（而不是复用）
+    const fresh = await sendToRoom(ws, port, relation, "@alice @bob 重新开始", { queue, defaults, newSession: true });
+    expect(port.starts).toHaveLength(2);
+    expect(fresh.deliveries.map((d) => d.memberId)).toEqual(["alice", "bob"]);
+    expect(new Set(fresh.deliveries.map((d) => d.convId)).size).toBe(2);
+
+    // 不开新会话时复用旧会话：两次普通发送落在同一条 convId 上
+    await sendToRoom(ws, port, relation, "@alice 接着聊", { queue, defaults });
+    const reused = port.submits.at(-1)!.convId;
+    await sendToRoom(ws, port, relation, "@alice 继续聊", { queue, defaults });
+    expect(port.submits.at(-1)!.convId).toBe(reused);
+    expect(port.starts).toHaveLength(2); // 没开新会话：没有新增会话
   });
 
   it("群聊 @alice：只投递 alice，正文保留 @；多 @：各一份同 roomMessageId", async () => {

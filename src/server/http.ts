@@ -8,8 +8,9 @@ import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type 
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
 import { mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
 import { pinCounts, readPins, setPin } from "../app/pins.ts";
+import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  activeMemberSessions, findSessionOwner, interruptRoom, newSession, roomTranscripts, sessionChains, type Relation,
+  findSessionOwner, interruptRoom, roomTranscripts, sessionChains, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
@@ -32,6 +33,8 @@ export type ServerDeps = {
   port: number;
   pump?: PumpLike;
   hub?: SseHub;
+  /** 待发表（排队中的老板消息）：与 Pump 共享同一实例；缺省自建（则只服务本服务器的展示与撤回）。 */
+  outbox?: Outbox;
   /** 授权请求存储（装配层注入；缺省时相关端点降级）。 */
   permissionRequests?: PermissionRequestStore;
 };
@@ -103,6 +106,7 @@ function roomExists(ws: Workspace, relation: Relation): boolean {
 
 async function handleRooms(
   deps: ServerDeps,
+  outbox: Outbox,
   req: http.IncomingMessage,
   res: http.ServerResponse,
   method: string,
@@ -134,25 +138,40 @@ async function handleRooms(
     // pinned 只回当前视图里可见的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
     const pinnedKeys = new Set(readPins(deps.ws).pins[roomKey] ?? []);
     const pinned = merged.filter((m) => pinnedKeys.has(`${m.convId}:${m.entryId}`)).map((m) => `${m.convId}:${m.entryId}`);
-    json(res, 200, { roomKey, messages: merged, pinned });
+    // queued：还没投递给员工的老板消息（排队中）；刷新 / 重连 / 换标签页都能拿到真值。
+    json(res, 200, { roomKey, messages: merged, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
     return;
   }
 
   if (rest.length === 1 && rest[0] === "messages" && method === "POST") {
-    const body = (await readJsonBody(req)) as { text?: unknown; requestId?: unknown } | undefined;
+    const body = (await readJsonBody(req)) as { text?: unknown; requestId?: unknown; newSession?: unknown } | undefined;
     const text = typeof body?.text === "string" ? body.text : "";
     if (text.trim() === "") {
       json(res, 400, { error: "消息不能为空" });
       return;
     }
     const requestId = typeof body?.requestId === "string" && body.requestId !== "" ? body.requestId : undefined;
+    const newSession = body?.newSession === true;
     try {
       const result = await sendToRoom(deps.ws, harness, relation, text, {
         queue: deps.queue,
         defaults,
+        newSession,
         ...(requestId === undefined ? {} : { requestId }),
       });
       for (const delivery of result.deliveries) {
+        // 排队中（员工在跑）：记进待发表 + 广播，前端在消息区显示「排队中」并允许单条撤回。
+        if (delivery.status === "queued") {
+          const item = outbox.add({
+            submissionId: delivery.submissionId,
+            roomKey,
+            memberId: delivery.memberId,
+            roomMessageId: result.roomMessageId,
+            text: text.trim(),
+            convId: delivery.convId,
+          });
+          deps.hub?.broadcast({ type: "room.queued", item: queuedItemView(item) });
+        }
         // best-effort：消息已落盘，订阅缺失由重启扫描兜底；pump 故障不得把已 admitted 的发送变成 500。
         try {
           await deps.pump?.register(delivery.convId, { roomKey, memberId: delivery.memberId });
@@ -171,29 +190,32 @@ async function handleRooms(
     return;
   }
 
-  if (rest.length === 1 && rest[0] === "new-session" && method === "POST") {
-    const body = (await readJsonBody(req)) as { memberId?: unknown } | undefined;
-    let speakerId: string;
-    if (relation.kind === "dm") {
-      speakerId = relation.employeeId;
-    } else {
-      const memberId = typeof body?.memberId === "string" ? body.memberId : "";
-      if (!parseMembers(deps.ws, relation.project).includes(memberId)) {
-        json(res, 400, { error: "memberId 必须是该群成员" });
-        return;
+  if (rest.length === 2 && rest[0] === "queue" && rest[1] === "cancel" && method === "POST") {
+    const body = (await readJsonBody(req)) as { roomMessageId?: unknown } | undefined;
+    const roomMessageId = typeof body?.roomMessageId === "string" ? body.roomMessageId : "";
+    if (roomMessageId === "") {
+      json(res, 400, { error: "roomMessageId 必填" });
+      return;
+    }
+    // 单条撤回 = 撤掉这条消息里所有还没开始的投递（开始投递的拦不住 —— 那是「中断」的语义）。
+    const cancelled: string[] = [];
+    for (const item of outbox.byRoomMessage(roomKey, roomMessageId)) {
+      let ok = false;
+      try {
+        ok = await harness.withdrawSubmission(item.convId, item.submissionId);
+      } catch {
+        ok = false; // 坏会话（链指向不存在的 convId 等）：不连坐其它投递
       }
-      speakerId = memberId;
+      if (!ok) continue;
+      outbox.take(item.submissionId);
+      cancelled.push(item.submissionId);
+      deps.hub?.broadcast({ type: "room.dequeued", roomKey, submissionId: item.submissionId, reason: "cancelled" });
     }
-    const old = activeMemberSessions(deps.ws, relation).find((s) => s.memberId === speakerId);
-    if (old !== undefined) await deps.pump?.unregister(old.convId);
-    const convId = await newSession(deps.ws, harness, relation, speakerId, defaults);
-    // best-effort：会话已建；订阅缺失由重启扫描兜底，pump 故障不得改变"新开会话成功"的语义（响应仍返回 convId）。
-    try {
-      await deps.pump?.register(convId, { roomKey, memberId: speakerId });
-    } catch {
-      // 忽略：见上
+    if (cancelled.length === 0) {
+      json(res, 409, { error: "这条消息已经开始投递，撤不回了（要停住请看「中断」）" });
+      return;
     }
-    json(res, 200, { convId });
+    json(res, 200, { cancelled });
     return;
   }
 
@@ -259,6 +281,7 @@ async function handleRooms(
 }
 
 export function createHttpServer(deps: ServerDeps): http.Server {
+  const outbox = deps.outbox ?? new Outbox();
   return http.createServer((req, res) => {
     void (async () => {
       try {
@@ -316,7 +339,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             return;
           }
           if (segments[1] === "rooms" && segments[2] !== undefined && harness !== undefined) {
-            await handleRooms(deps, req, res, method, segments[2], segments.slice(3));
+            await handleRooms(deps, outbox, req, res, method, segments[2], segments.slice(3));
             return;
           }
           if (segments[1] === "permission-requests" && harness !== undefined) {

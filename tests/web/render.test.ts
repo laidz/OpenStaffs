@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
@@ -141,6 +141,56 @@ describe("授权卡片", () => {
 
   it("空列表 → 空容器", () => {
     expect(permissionCardsHtml(initialState)).toBe('<div class="perm-cards" id="perm-cards"></div>');
+  });
+});
+
+describe("排队中的消息（待发队列）与「新开会话」提示", () => {
+  const queued = { submissionId: "11", roomKey: "dm:a", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
+  const real: RoomMessage = { convId: "c1", entryId: "5", roomKey: "dm:a", speaker: { kind: "boss" }, text: "在吗", bossDirected: false, roomMessageId: "rm_1" };
+
+  it("还没落盘的排队消息：独立占位气泡（灰底 + 排队标识 + 撤回），不进 toolbar", () => {
+    const html = messagesHtml([], "老板", [], [queued]);
+    expect(html).toContain('class="msg boss queued"');
+    expect(html).toContain('data-room-message="rm_1"');
+    expect(html).toContain("排队中：alice");
+    expect(html).toContain('data-action="unqueue"');
+    expect(html).toContain("在吗");
+    expect(html).not.toContain('data-action="pin"'); // 还没落盘：没有气泡工具栏
+  });
+
+  it("已有真气泡（群里只有忙的那位还在排）：排队标识贴上去，不出两个气泡", () => {
+    const html = messagesHtml([real], "老板", [], [{ ...queued, memberId: "bob" }]);
+    expect(html.match(/class="msg boss/g)).toHaveLength(1); // 只有一个气泡
+    expect(html).toContain("排队中：bob");
+    expect(html).toContain('data-action="unqueue"');
+    expect(html).toContain('data-action="pin"'); // 真气泡照常有工具栏
+  });
+
+  it("同一次多投递：一条占位气泡、列出全部等待成员；不同消息按投递顺序排列", () => {
+    const html = messagesHtml([], "老板", [], [queued, { ...queued, submissionId: "12", memberId: "bob" }, { ...queued, submissionId: "13", roomMessageId: "rm_2", text: "第二句" }]);
+    expect(html.match(/class="msg boss queued/g)).toHaveLength(2);
+    expect(html).toContain("排队中：alice、bob");
+    expect(html.indexOf("在吗")).toBeLessThan(html.indexOf("第二句"));
+  });
+
+  it("chatHtml：透传排队态与「新开会话」就绪态（提示 + 按钮高亮）；成员下拉框已移除", () => {
+    const base = { ...initialState, configured: true, projects: [{ id: "yt", alias: "油管", members: [{ id: "alice" }] }], roomKey: "group:yt" };
+    const idle = chatHtml(base);
+    expect(idle).toContain("还没有消息");
+    expect(idle).not.toContain("fresh-hint");
+    expect(idle).not.toContain("member-select");
+
+    const armed = chatHtml({ ...base, freshSession: true, queued: [queued] });
+    expect(armed).toContain('class="btn-new-session armed"');
+    expect(armed).toContain("下一条消息将开启新会话");
+    expect(armed).toContain("排队中：alice");
+  });
+
+  it("freshSessionHint：私聊 / 群聊文案区分；未就绪返回空串", () => {
+    const dm = { ...initialState, roomKey: "dm:alice" };
+    expect(freshSessionHint(dm)).toBe("");
+    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("当前会话将结束");
+    expect(freshSessionHint({ ...initialState, roomKey: "group:yt", freshSession: true })).toContain("@ 到的成员各开一条");
   });
 });
 

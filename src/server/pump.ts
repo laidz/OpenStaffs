@@ -5,6 +5,7 @@ import { bossNamesFor } from "../domain/config.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
+import { Outbox } from "../app/outbox.ts";
 import { activeMemberSessions, type SessionDefaults } from "../app/conversations.ts";
 import { normalizeChatMessage, parseRoomKey, type MemberTranscript } from "../app/rooms.ts";
 import type { SseHub } from "./sse.ts";
@@ -17,6 +18,8 @@ type Deps = {
   hub: SseHub;
   /** 与 HTTP 发送共享的 per-key 队列：同成员的老板消息与 @触发按顺序进入。缺省自建。 */
   queue?: KeyedQueue;
+  /** 与 HTTP 端点共享的待发表：输入「出队」时据此广播 room.dequeued。缺省自建（则只有自建队列能看到）。 */
+  outbox?: Outbox;
   /** 触发投递时的会话默认模型（缺省 = 员工自配/无兜底）。 */
   getDefaults?: () => SessionDefaults | undefined;
 };
@@ -31,12 +34,14 @@ export class Pump {
   #pending = new Map<string, Pending>();
   readonly #deps: Deps;
   readonly #queue: KeyedQueue;
+  readonly #outbox: Outbox;
   readonly #getDefaults: () => SessionDefaults | undefined;
 
   // 不用参数属性：Node 的 strip-only TS 模式（npm start = node src/server/main.ts）不支持，会在加载时抛 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX。
   constructor(deps: Deps) {
     this.#deps = deps;
     this.#queue = deps.queue ?? new KeyedQueue();
+    this.#outbox = deps.outbox ?? new Outbox();
     this.#getDefaults = deps.getDefaults ?? (() => undefined);
   }
 
@@ -142,6 +147,20 @@ export class Pump {
           // kind：失败类别（如 model/tool），原样透传给前端（暂不消费）。
           hub.broadcast({ type: "room.failed", roomKey: ref.roomKey, convId, memberId: ref.memberId, message: event.message, kind: event.kind });
           return;
+        // 输入的受理状态变化：只关心「从待发表出队」——投递开始（placed/done）或撤回、中断（unanswered）。
+        // 受理瞬间的 queued 是「进队」，不算出队。
+        case "submission": {
+          if (event.status === "queued") return;
+          const item = this.#outbox.take(event.id);
+          if (item === undefined) return;
+          hub.broadcast({
+            type: "room.dequeued",
+            roomKey: item.roomKey,
+            submissionId: item.submissionId,
+            reason: event.status === "unanswered" ? "aborted" : "delivered",
+          });
+          return;
+        }
       }
     } catch {
       // 事件处理失败绝不能外抛（见上：抛错会被 Pi 静默终结订阅）；广播失败不影响会话运行。

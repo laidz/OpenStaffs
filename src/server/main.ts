@@ -5,6 +5,7 @@ import { DEFAULT_PORT, readConfig } from "../domain/config.ts";
 import { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView } from "../app/permission-flow.ts";
 import { KeyedQueue } from "../app/send.ts";
+import { Outbox } from "../app/outbox.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
 import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
 import { createConfiguredModels } from "./models.ts";
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
   const hub = new SseHub();
   // 与 HTTP 发送共享：同成员的老板消息与群回复 @触发按同一队列串行进入。
   const queue = new KeyedQueue();
+  // 与 HTTP 端点共享：排队中的老板消息（前端展示「排队中」与单条撤回）。
+  const outbox = new Outbox();
   const permissionRequests = new PermissionRequestStore(ws);
   let pump: Pump | undefined;
 
@@ -54,6 +57,7 @@ async function main(): Promise<void> {
         harness,
         hub,
         queue,
+        outbox,
         getDefaults: () => {
           const current = getConfig();
           return current === undefined ? undefined : { model: current.model };
@@ -74,6 +78,7 @@ async function main(): Promise<void> {
     getConfig,
     getHarness: () => harness,
     queue,
+    outbox,
     publicDir: path.join(here, "..", "..", "public"),
     pump,
     hub,
