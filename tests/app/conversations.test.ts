@@ -215,6 +215,40 @@ describe("应用用例", () => {
     expect(dm).not.toContain("任务：做 yt 视频。");
   });
 
+  it("instructionsFor：框架环境段在最前；群聊再带项目与成员；私聊不带项目", () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    const ws = createWorkspace(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "公司总纲：不得违法。");
+    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "- alice\n- bob\n");
+    fs.writeFileSync(path.join(root, "projects", "yt", "project.json"), JSON.stringify({ alias: "演示项目" }));
+    const speaker = loadEmployee(ws, "alice");
+
+    const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+    expect(group).toContain("OpenStaffs");
+    expect(group).toContain("老板");
+    expect(group).toContain("演示项目");
+    expect(group).toContain("bob");
+    expect(group.indexOf("OpenStaffs")).toBeLessThan(group.indexOf("公司总纲"));
+
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm).toContain("OpenStaffs");
+    expect(dm).not.toContain("演示项目");
+  });
+
+  it("instructionsFor：办公目录覆盖的环境模板生效且置顶", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const override = path.join(root, ".openstaffs", "prompts", "dm.md");
+    fs.mkdirSync(path.dirname(override), { recursive: true });
+    fs.writeFileSync(override, "自定义环境段：{{agent_id}}");
+    const speaker = loadEmployee(ws, "alice");
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm.startsWith("自定义环境段：alice")).toBe(true);
+    expect(dm).toContain("你是 alice。");
+  });
+
   it("员工未配模型时用 defaults 兜底可对话；无 defaults 则失败（不静默）", async () => {
     const dir = path.join(root, "agents", "carol");
     fs.mkdirSync(dir, { recursive: true });

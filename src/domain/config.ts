@@ -45,6 +45,27 @@ export function readConfig(ws: Workspace): WorkspaceConfig | undefined {
   }
 }
 
+/** 老板显示名默认值。 */
+export const DEFAULT_BOSS_NAME = "老板";
+
+/** 读老板显示名（config.json 的 bossName）；缺失/坏 JSON/空串 → 默认。 */
+export function readBossName(ws: Workspace): string {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(configFile(ws), "utf8");
+  } catch {
+    return DEFAULT_BOSS_NAME;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { bossName?: unknown };
+    return typeof parsed.bossName === "string" && parsed.bossName.trim() !== ""
+      ? parsed.bossName.trim()
+      : DEFAULT_BOSS_NAME;
+  } catch {
+    return DEFAULT_BOSS_NAME;
+  }
+}
+
 export type ModelRefLike = { provider: string; modelId: string };
 
 /** 员工模型兜底：员工 provider+modelId 成对非空则用员工的，否则整体用全局；thinkingLevel 独立保留。 */

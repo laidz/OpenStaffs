@@ -6,6 +6,8 @@ import { parseMembers, projectsOf, type AccessContext } from "../domain/access-c
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { resolveEmployeeModel, type ModelRefLike } from "../domain/config.ts";
 import { listSkills, renderSkills } from "../domain/skills.ts";
+import { renderEnvironment } from "../domain/prompt.ts";
+import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
 import type { MemberTranscript } from "./rooms.ts";
 
@@ -50,9 +52,22 @@ function readTextOrEmpty(file: string): string {
   }
 }
 
-/** 会话快照（仅 startSession/新开会话时渲染一次）：根总纲 → 项目规范（群聊）→ 员工 → 技能。 */
+/** 系统提示词变量上下文（供 prompt-vars 取值）；私聊不带 projectId。 */
+export function promptContextFor(ws: Workspace, relation: Relation, speaker: Employee): PromptVarContext {
+  return {
+    ws,
+    kind: relation.kind,
+    selfId: speaker.id,
+    ...(relation.kind === "group" ? { projectId: relation.project } : {}),
+    cwd: relationCwd(ws, relation),
+  };
+}
+
+/** 会话快照（仅 startSession/新开会话时渲染一次）：框架环境段 → 根总纲 → 项目规范（群聊）→ 员工 → 技能。 */
 export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
   const parts: string[] = [];
+  const environment = renderEnvironment(promptContextFor(ws, relation, speaker));
+  if (environment !== "") parts.push(environment);
   const rootAgents = readTextOrEmpty(path.join(ws.root, "AGENTS.md"));
   if (rootAgents !== "") parts.push(rootAgents);
   if (relation.kind === "group") {

@@ -29,13 +29,15 @@
   "provider": "opencode-go",
   "apiKey": "sk-…",
   "modelId": "deepseek-v4.1-flash",
-  "port": 4319
+  "port": 4319,
+  "bossName": "老板"
 }
 ```
 
 - `provider` / `apiKey` / `modelId` 三项必填；任一缺失、为空或 JSON 损坏 = **未配置模式**：服务照常启动，页面显示引导页，除 `/api/status` 外所有 API 返回 409。
 - `provider` 可选：`opencode-go`、`anthropic`、`openai`、`deepseek`、`google`、`openrouter`。写错会在启动时直接报错退出。
 - `port` 可选，默认 `4319`；**优先级：启动参数 / `OPENSTAFFS_PORT` > 本文件的 `port` > 4319**。
+- `bossName` 可选：老板的展示名（缺省「老板」），仅用于系统提示词里的 `{{boss_name}}` 变量。
 - 配置是进程级：改完要重启服务（Ctrl+C 后重新 `npm start`）。不重启会出现「部分生效」的假象——`/api/status` 与新会话的 `modelId` 是按请求重读文件的，但 provider 工厂与凭据仍是启动时那份；判断配置是否生效，请以重启后为准。员工 / 项目目录是运行时读取，改完刷新页面即生效。
 - 项目目录**必须显式指定**（`npm start -- <目录>` 或 `OPENSTAFFS_ROOT`），且不能是框架目录本身。
 - 建议 `chmod 600 .openstaffs/config.json`；项目目录里的 `.openstaffs/`、`agents/`、`projects/` 均已随框架仓库的 `.gitignore` 忽略；密钥只存在本机。若想版本化员工数据：在项目目录里单独 `git init`。
@@ -137,6 +139,27 @@ projects/demo/
    └─ weekly-report/
       └─ SKILL.md    # name / description 写法与员工技能相同
 ```
+
+## 系统提示词（框架环境段）
+
+每个会话创建时，框架会在 `instructions` **最前**注入一段「环境段」（私聊 / 群聊各一套模板），让员工知道自己的身份、当前会话与工作目录（群聊再带上成员）。
+
+- **模板**：框架内置 `src/prompts/dm.md`（私聊）、`src/prompts/group.md`（群聊）；可在**项目目录**里用 `.openstaffs/prompts/dm.md` / `group.md` 覆盖（覆盖优先）。模板读不到 / 为空 → 不注入环境段。
+- **变量**：模板里写 `{{变量}}`，支持多级路径（`{{members.0.name}}`、`{{members[0].name}}`）；未知变量 / 越界下标 → 空串。非标量渲染：数组用「、」连接，对象取 `name`（缺省 `id`）。
+- **变量一览**（集中在 `src/domain/prompt-vars.ts`；加变量 = 加一个导出函数 + 在注册表 `promptVariables` 登记一行）：
+
+  | 变量 | 含义 |
+  | --- | --- |
+  | `agent_name` | 员工展示名（alias，缺省 = id） |
+  | `agent_id` | 员工 id（目录名） |
+  | `boss_name` | 老板展示名（`config.json` 的 `bossName`，缺省「老板」） |
+  | `workdir` | 会话工作目录（私聊 = 员工目录；群聊 = 项目目录） |
+  | `project_name` | 项目展示名（群聊；私聊为空） |
+  | `project_id` | 项目 id（群聊；私聊为空） |
+  | `members` | 群成员数组（`{id,name}`；直出用「、」连接） |
+  | `member_count` | 群成员数 |
+
+- 环境段同样在**会话创建时固化**：改模板后要「新开会话」才生效。
 
 ## 使用
 

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
-import { DEFAULT_PORT, configFile, readConfig, resolveEmployeeModel } from "../../src/domain/config.ts";
+import { DEFAULT_PORT, configFile, readBossName, readConfig, resolveEmployeeModel } from "../../src/domain/config.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-config-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -30,6 +30,18 @@ describe("全局配置", () => {
     expect(readConfig(ws)?.port).toBe(DEFAULT_PORT);
     fs.writeFileSync(configFile(ws), JSON.stringify({ provider: "opencode-go", apiKey: "k", modelId: "m", port: 5000 }));
     expect(readConfig(ws)?.port).toBe(5000);
+  });
+
+  it("readBossName：读 config.json 的 bossName；缺失/坏 JSON/空串 → 老板", () => {
+    const ws = createWorkspace(root);
+    expect(readBossName(ws)).toBe("老板"); // 文件缺失
+    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.writeFileSync(configFile(ws), "{坏");
+    expect(readBossName(ws)).toBe("老板");
+    fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "  " }));
+    expect(readBossName(ws)).toBe("老板");
+    fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "张总" }));
+    expect(readBossName(ws)).toBe("张总");
   });
 
   it("员工模型兜底：provider+modelId 成对填写才生效，否则整体用全局", () => {
