@@ -225,4 +225,8 @@
 - **项目 / 部门支持多主管**：`head`（部门）/ owner（项目）由**单个**改为**可多个**（数组）。
   改动：修订 D4 / D7（负责人单选 → 多选）。
 
+- **合并 `.openstaffs/` 与 `openstaffs/`**：两个名字过于近似、易混。合并为**单一 `openstaffs/`**；机器私有内容（数据库 / 运行状态等）收进 **`openstaffs/.data/`**。
+  影响面：`src/domain/paths.ts`（`stateDir` 与 `spaceDir` 合一）、启动探测与首次配置引导页、`.gitignore`、`README.md`、两份 `SKILL.md`、`docs/产品规划.md`。
+  待定：**含密钥的 `config.json` 放哪**——`openstaffs/.data/config.json`（整个 `.data/` 被 gitignore，最安全）**还是** `openstaffs/config.json`（可见、便于编辑，但需单独忽略该文件）。倾向前者。
+
 *（更多想法待续。）*
