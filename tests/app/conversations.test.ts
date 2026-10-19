@@ -29,7 +29,7 @@ function harnessWithFaux() {
   faux.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("ok")]);
   const models = createModels();
   models.setProvider(faux.provider);
-  return createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+  return createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
 }
 
 describe("应用用例", () => {
@@ -167,8 +167,8 @@ describe("应用用例", () => {
     await harness.open();
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
-      const aliceFile = path.join(root, ".openstaffs", "chains", "group-yt", "alice.md");
-      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
+      const aliceFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "alice.md");
+      const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
       expect(fs.existsSync(aliceFile)).toBe(true);
       expect(fs.existsSync(bobFile)).toBe(false);
 
@@ -197,8 +197,8 @@ describe("应用用例", () => {
       const b1 = await openGroup(ws, harness, "yt", "bob");
       const a2 = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
       expect(a2).not.toBe(a1);
-      const aliceFile = path.join(root, ".openstaffs", "chains", "group-yt", "alice.md");
-      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
+      const aliceFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "alice.md");
+      const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
       expect(readChain(aliceFile)).toHaveLength(2);
       expect(readChain(aliceFile)[0]!.ended).not.toBeNull();
       expect(readChain(aliceFile)[1]!.previous).toBe(a1);
@@ -249,9 +249,9 @@ describe("应用用例", () => {
     const extCollide = path.join(extDir, "collide", "SKILL.md");
     fs.mkdirSync(path.dirname(extCollide), { recursive: true });
     fs.writeFileSync(extCollide, "---\nname: 撞名\ndescription: 来自外部撞名\n---\n");
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(
-      path.join(root, ".openstaffs", "config.json"),
+      path.join(root, "openstaffs/.data", "config.json"),
       JSON.stringify({ skillPaths: ["ext-skills"] }), // 相对办公空间根
     );
 
@@ -378,7 +378,7 @@ describe("应用用例", () => {
       const a = await openGroup(ws, harness, "yt", "alice");
       const b = await openGroup(ws, harness, "yt", "bob");
       // carol 的链写坏：活跃行指向不存在的会话
-      const carolFile = path.join(root, ".openstaffs", "chains", "group-yt", "carol.md");
+      const carolFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "carol.md");
       fs.mkdirSync(path.dirname(carolFile), { recursive: true });
       fs.writeFileSync(
         carolFile,
@@ -402,7 +402,7 @@ describe("应用用例", () => {
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
       // bob 的链被人为写坏：活跃行指向一个不存在的会话
-      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
+      const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
       fs.mkdirSync(path.dirname(bobFile), { recursive: true });
       fs.writeFileSync(
         bobFile,
@@ -457,7 +457,7 @@ describe("应用用例", () => {
     ]);
     const models = createModels();
     models.setProvider(faux.provider);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-snapshot.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-snapshot.sqlite"), models });
     await harness.open();
     try {
       const ws = createWorkspace(root);
@@ -484,7 +484,7 @@ describe("应用用例", () => {
   it("固化跨重启仍生效：重启后 attach 复读同一会话，instructions 仍在 system", async () => {
     seedOffice(root, { agents: [{ id: "dave", model: "faux/faux-model", prompt: "你是 dave。" }] });
     const daveFile = path.join(root, "agents", "dave.agent.config.json");
-    const sqlitePath = path.join(root, ".openstaffs", "state-restart.sqlite");
+    const sqlitePath = path.join(root, "openstaffs/.data", "state-restart.sqlite");
     const ws = createWorkspace(root);
 
     const openingFaux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
@@ -592,7 +592,7 @@ describe("应用用例", () => {
 
       // 链指向不存在的会话：只跳过该成员，好会话照常返回
       const aliceGroupConv = await openGroup(ws, harness, "yt", "alice");
-      const ghostFile = path.join(root, ".openstaffs", "chains", "group-yt", "ghost.md");
+      const ghostFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "ghost.md");
       fs.mkdirSync(path.dirname(ghostFile), { recursive: true });
       fs.writeFileSync(
         ghostFile,

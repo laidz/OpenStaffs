@@ -345,7 +345,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             return;
           }
           if (config === undefined) {
-            json(res, 409, { error: "尚未配置：请编辑 .openstaffs/config.json 后重启服务" });
+            json(res, 409, { error: "尚未配置：请编辑 openstaffs/.data/config.json 后重启服务" });
             return;
           }
           if (segments[1] === "events" && method === "GET") {

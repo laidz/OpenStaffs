@@ -17,28 +17,29 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 <办公空间>/                       # 老板启动时指定的运行目录（与框架代码分离）
 ├─ agents/                       # 组织树：文件夹 = 部门（可任意嵌套），`<名字>.agent.config.json` = 人
 │  ├─ department.config.json     # 根部门声明（可选：alias / head）
+│  ├─ staff0.agent.config.json   # 0 号员工「首席管家」（首次启动自动创建；权限 = 空间根）
 │  ├─ <名字>.agent.config.json   # 人（根部门直属；id = 文件名主干，全局唯一）
 │  └─ <部门>/                     # 子部门（可再嵌套，任意深度）
 │     ├─ department.config.json  # 部门声明（可选：alias / head）
 │     └─ <名字>.agent.config.json
 ├─ projects/<项目 id>.project.config.json   # 项目 = 群聊（**扁平文件**：owner / members / 能力 / 权限）
 ├─ work/<名字>/                  # 各人的工作目录（会话 cwd、会话链、可选 MEMORY.md）
-├─ openstaffs/                   # 老板的能力与附属（可见、可版本化、随空间整包迁移）
-│  ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions）
-│  ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
-│  └─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
-└─ .openstaffs/                  # 机器私有（含密钥与运行状态；老板维护，你只读）
-   ├─ config.json                # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
-   ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护）
-   ├─ state.json                 # 老板的 pin 标记（机器维护，不要手改）
-   ├─ permission-requests.json   # 待处理授权请求（机器维护，处理完即删）
-   ├─ messages.sqlite            # 消息真相库：房间消息流水（机器维护，不要手改）
-   └─ state.sqlite               # 基座会话库：某条会话的原文与模型上下文（机器维护，不要手改）
+└─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
+   ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；新建空间时物化）
+   ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
+   ├─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
+   └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
+      ├─ config.json             # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
+      ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护）
+      ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
+      ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
+      ├─ messages.sqlite         # 消息真相库：房间消息流水（机器维护，不要手改）
+      └─ state.sqlite            # 基座会话库：某条会话的原文与模型上下文（机器维护，不要手改）
 ```
 
-> **搬到哪儿**：根下只有门面 `agents/`、`projects/`、`work/`、`openstaffs/` 四项。`AGENTS.md` / `profile.md` 作为能力载体已**退出运行时**（不再被读取）；机器私有的 `.openstaffs/` 计划并入 `openstaffs/.data/`（随空间整包迁移），**P4 落地后**才改落点——**现状仍按上面的 `.openstaffs/` 读**。
+> **搬到哪儿**：根下只有门面 `agents/`、`projects/`、`work/`、`openstaffs/` 四项。`AGENTS.md` / `profile.md` 作为能力载体已**退出运行时**（不再被读取）。
 
-> **消息真相：自有库 `stateDir/messages.sqlite`**（`node:sqlite`，一条投递 = 一行、房间视图键为 `store:<seq>`）。
+> **消息真相：自有库 `openstaffs/.data/messages.sqlite`**（`node:sqlite`，一条投递 = 一行、房间视图键为 `store:<seq>`）。
 > 房间视图 / 历史 / pin 校验 / `room_history` 工具**全部查该库**；基座 `state.sqlite` 只用于「某条会话的原文」视图与模型上下文，
 > **不再是消息真相**（一处发言只落一行，不需要读侧合并 / 去重）。
 
@@ -55,7 +56,14 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 > 指根一律说「办公空间」；中间层一律说「项目（群聊）」；最上层的内置技能叫「系统内置技能」。别名只用于口语，文档正文一律用主名。
 
-## 全局配置 `.openstaffs/config.json`
+## 空间初始化与 0 号员工
+
+- **目录已合并**：机器私有不再是独立隐藏目录，统一收在 `openstaffs/.data/`（含全局配置、pin 状态、授权请求、基座会话库、消息自有库）。`openstaffs/` 的其余内容（`space.config.json`、`skills/`、`mcps.json`）属空间资产，可版本化、随空间整包迁移。
+- **新建空间**：启动时若没有 `openstaffs/space.config.json`，框架会把**内置空间 prompt** 物化进去（此后运行时无关，可自由改写）。判断只看文件是否存在——已存在（含空文件 / 坏 JSON）一律不覆盖。
+- **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根（整个办公空间）有写权限**（「空间级附属 = 老板地盘」的有意例外；配置里写作相对路径 `..`——P3 的权限路径相对配置文件所在目录 `agents/` 解析），直属老板；未配 `model` 时用全局默认。
+- **不做迁移**：旧版把机器私有放在空间根下的隐藏目录，那套位置**不再读取**（破坏性更新）；老板需要的话自行搬迁数据。
+
+## 全局配置 `openstaffs/.data/config.json`
 
 ```json
 {
@@ -166,7 +174,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `prompt` | | 群级任务规范（群聊会话注入） |
 | `skills` / `mcp` / `permissions` | | 该群的能力与权限（技能名 / server 名 / 按工具路径，见「统一配置」） |
 
-- 群聊里每名成员各自一条会话链、相互不可见；链落 `.openstaffs/chains/group-<项目>/<人>.md`（机器维护）。要传递信息，写进各自工作目录的文件或发消息（见 openstaffs 技能）。
+- 群聊里每名成员各自一条会话链、相互不可见；链落 `openstaffs/.data/chains/group-<项目>/<人>.md`（机器维护）。要传递信息，写进各自工作目录的文件或发消息（见 openstaffs 技能）。
 - `members` 里的 id 必须是某个人的 id（`<名字>.agent.config.json` 的文件名主干）；写错 / 写不存在的人 → 群聊发送会报「员工不存在」。
 - 群成员回复开头的 `@成员 id` 会触发对方开工（与老板发送同规则）；没写 @ 开头的群回复在显示与待办口径上补当前称谓（缺省 `@老板`）、视为发给老板。
 - 项目**没有共享工作目录**：每个人的会话 cwd 都是自己的 `work/<名字>/`。
@@ -182,7 +190,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
   - 思考强度按模型能力判定（pi-ai `getSupportedThinkingLevels`，由 `reasoning` + `thinkingLevelMap` 推出）：模型不支持的档（非思考模型只支持 `off`；`xhigh` / `max` 需显式映射）、以及不属于七档的非法值，一律展示 `null`——不回落成别的档，也不把无效值原样显示。模型目录查不到时无法判定，按原值展示。
   - 上下文用量是**已提交上下文**的估算：新会话在首轮回复前可能显示 0，首轮后按模型回报更新；窗口占比按模型 `contextWindow` 计（实际压缩还会预留输出空间）。
 - **排队中的消息可见、可单条撤回**：员工正在跑时，老板发的消息先落在**待发队列**（消息区里显示为灰／半透明的「排队中」气泡，标注等待的成员 + 「撤回」按钮），投递开始后原地变成正常气泡。
-  - 消息的**真相在自有库**（`.openstaffs/messages.sqlite`）：老板发送即落库并广播（键 `store:<seq>`），刷新 / 重启后历史都在；「排队中」只是 UI 状态，进程内展示。
+  - 消息的**真相在自有库**（`openstaffs/.data/messages.sqlite`）：老板发送即落库并广播（键 `store:<seq>`），刷新 / 重启后历史都在；「排队中」只是 UI 状态，进程内展示。
   - **撤回**（点「撤回」）= 撤掉这条消息里**还没开始**的投递，不投递给员工；已经开始投递的撤不回（撤不回时会提示「撤不回」），要停住正在跑的那是**「中断」**（房间级，同时停掉房间里所有在跑的成员）。
   - 同一次发送发给多个成员时按「消息」粒度合并成一条气泡：已经有成员收到（真气泡已出）就只在这条气泡上挂「排队中：<还没拿到的成员>」。
   - 排队态是**进程内**的展示：重启服务后仍在 Pi 待办里的输入照常投递，只是界面不再显示「排队中」。
@@ -245,11 +253,11 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 
 - **server 名**就是 `mcpServers` 的 key，直接用于工具名、扩展名与凭据引用；只允许字母、数字、`_`、`-`（不能含点号或空白）。名字不合法会在启动日志里点名报错并跳过。
 - 装配：按名解析后**累加**（空间 → 部门链 → 项目 → 员工）；写了未定义的名字会**跳过**（不影响建会话）。旧的多层 `mcp.json`（系统 `src/mcp.json` / 空间 / 项目 / 员工）**已全部退役**。
-- 凭据：**不写明文**。密钥放 `.openstaffs/config.json` 的 `mcp.<server>.<key>`，`mcps.json` 只写 `${config.mcp.<server>.<key>}`。缺凭据时该 server 报错并跳过。**密钥优先放 `env`**：写进 `args` 会出现在进程参数里（`ps` 可见）。
+- 凭据：**不写明文**。密钥放 `openstaffs/.data/config.json` 的 `mcp.<server>.<key>`，`mcps.json` 只写 `${config.mcp.<server>.<key>}`。缺凭据时该 server 报错并跳过。**密钥优先放 `env`**：写进 `args` 会出现在进程参数里（`ps` 可见）。
 - 生效：启动时连接并注册工具；新增 / 改 server 或工具要**重启**。某个 server 是否进入你的会话随会话装配——要**新开会话**。
 - 工具名：`mcp__<server>__<tool>`。工具总数超过 20 时全部延迟加载，先用 `tool_search` 搜索再调用。
 - 生命周期：启动并行连接（`initialize` + `tools/list` 各受 10s 连接超时约束）；30s 心跳，工具调用在途时跳过心跳；连续 2 次心跳失败才重连；崩溃按 1s、2s、4s… 退避重连，最多 5 次；服务退出时清理子进程。
-- **员工不能自己挂 server**：需要新 server 请老板在 `openstaffs/mcps.json` 里定义，再在相应层的 `mcp` 字段里按名引用。带密钥的 server 仍需老板把凭据加进 `.openstaffs/config.json`。
+- **员工不能自己挂 server**：需要新 server 请老板在 `openstaffs/mcps.json` 里定义，再在相应层的 `mcp` 字段里按名引用。带密钥的 server 仍需老板把凭据加进 `openstaffs/.data/config.json`。
 - 排查：看服务端日志里的 `[mcp]` 行；坏 JSON、缺字段、缺凭据、连接失败都会点名具体文件 / server / 凭据键。
 
 ## 权限：按工具 → 路径
@@ -322,7 +330,7 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 | 想清空上下文 | 别删目录：用「新开会话」或 `new_session` 工具；旧会话在「历史」里可回看 |
 | 员工复读自己的消息（「收到（上面是我的原消息回显）」这类） | 旧版本 bug（员工主动发言曾以「用户消息」形态落盘）：升级后新发生的已杜绝；**旧会话里的历史条目仍会残留**这类形态——对该员工「新开会话」即净 |
 | 点了授权弹框但员工没反应 | 通知消息投递失败（看服务端日志）；或该员工期间新开过会话——让他再尝试写入即可 |
-| 授权弹框重启后还在 | 属预期：待处理请求落盘于 `.openstaffs/permission-requests.json`，处理完即删 |
+| 授权弹框重启后还在 | 属预期：待处理请求落盘于 `openstaffs/.data/permission-requests.json`，处理完即删 |
 
 ## 关于这份参考
 

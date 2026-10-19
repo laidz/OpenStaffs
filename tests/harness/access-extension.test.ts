@@ -36,7 +36,7 @@ describe("访问控制钩子", () => {
     ]);
     const models = createModels();
     models.setProvider(faux.provider);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const convId = await harness.startSession(spec());
@@ -58,7 +58,7 @@ describe("访问控制钩子", () => {
     ]);
     const models = createModels();
     models.setProvider(faux.provider);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const convId = await harness.startSession(spec());

@@ -7,18 +7,18 @@
 - **100% 本地**：服务与数据都在本机；对话内容只会发往你自己配置的模型供应商，密钥不出本机。
 - **纯 Web**：浏览器打开 `http://localhost:4319` 即可使用，无需安装桌面应用。
 
-> **四层命名（口径统一）**：**系统**（框架本体）/ **空间**（一个办公空间 = 你启动时指定的运行目录）/ **项目**（群聊）/ **员工**。指目录一律说「办公空间」；`openstaffs/` 放你的能力与附属（`space.config.json`、技能、`mcps.json`），`.openstaffs/` 是机器私有（配置与运行状态）。
+> **四层命名（口径统一）**：**系统**（框架本体）/ **空间**（一个办公空间 = 你启动时指定的运行目录）/ **项目**（群聊）/ **员工**。指目录一律说「办公空间」；`openstaffs/` 放空间声明与能力 / 附属（`space.config.json`、技能、`mcps.json`），机器私有（配置与运行状态）在其下的 `openstaffs/.data/`。
 
 ## 快速开始
 
 要求：Node ≥ 22.19（服务端直接用 Node 运行 TypeScript，无需编译）。
 
 1. `npm install`
-2. 准备一个**办公空间目录**（运行数据与配置都存这里：`agents/` 人与部门、`projects/` 群聊、`work/` 各人的工作目录、`openstaffs/` 你的技能与 MCP、`.openstaffs/` 配置，与框架代码相互独立）：
+2. 准备一个**办公空间目录**（运行数据与配置都存这里：`agents/` 人与部门、`projects/` 群聊、`work/` 各人的工作目录、`openstaffs/` 空间声明与技能 / MCP（机器私有的 `openstaffs/.data/` 放配置与运行状态），与框架代码相互独立）：
    ```bash
    mkdir -p ~/MyOffice
    ```
-3. 在办公空间目录里创建 `.openstaffs/config.json`（见下节；也可以先跳过——启动后页面会显示引导页）。
+3. （可选）在办公空间目录里创建 `openstaffs/.data/config.json`（见下节；也可以先跳过——首次启动会自动初始化空间，页面会显示引导页）。
 4. 启动——**必须指定办公空间目录**，端口可选：
    ```bash
    npm start -- ~/MyOffice
@@ -27,7 +27,7 @@
    ```
 5. 浏览器打开 `http://localhost:4319`（或你指定的端口）。
 
-> 办公数据与框架代码强制分离：不指定目录会报错退出；把办公空间目录指向框架目录本身也会被拒绝。建议在办公空间目录里单独 `git init`——人与部门配置随之可版本化、可备份、可整包迁移。（级别命名：系统 / 空间 / 项目 / 员工——指目录一律说「办公空间」。）
+> 办公数据与框架代码强制分离：不指定目录会报错退出；把办公空间目录指向框架目录本身也会被拒绝。建议在办公空间目录里单独 `git init`——人与部门配置随之可版本化、可备份、可整包迁移；**记得在空间的 `.gitignore` 里加上 `openstaffs/.data/`**——那里是 API Key 等机器私有明文，别让 `git add -A` 把密钥提交进版本库。（级别命名：系统 / 空间 / 项目 / 员工——指目录一律说「办公空间」。）
 
 （开发自用：`npm test`、`npm run typecheck`、`npm run build:web`。）
 
@@ -35,7 +35,7 @@
 
 ### 1. 模型（必需）
 
-在办公空间目录下创建 `.openstaffs/config.json`：
+在办公空间目录下创建 `openstaffs/.data/config.json`：
 
 ```json
 {
@@ -55,7 +55,7 @@
 - `skillPaths`：可选，外部技能目录数组（你的全局技能库）。三种写法：`~/` 开头（或裸 `~`）= 家目录、绝对路径 = 原样、其余 = 相对办公空间目录。算**空间级**技能（所有会话可用），改动**新开会话**生效。**只指向你自己信任的目录**——这里的技能会进入**所有**员工会话的制度提示词（`name` / `description` 注入，正文由员工按需 `read`）。
 - `mcp`：可选，MCP server 的凭据（`mcp.<server>.<key>`）。定义文件 `openstaffs/mcps.json` 里只写 `${config.mcp.<server>.<key>}` 引用，不写明文。
 - 可只配一家，也可多配几家、按人分配不同模型。
-- 配置是进程级的：**改完重启服务才生效**（例外：`bossName` 直读，刷新页面 / 新开会话即生效；`skillPaths`、`model`、`thinkingLevel` 新开会话生效）。建议 `chmod 600 .openstaffs/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
+- 配置是进程级的：**改完重启服务才生效**（例外：`bossName` 直读，刷新页面 / 新开会话即生效；`skillPaths`、`model`、`thinkingLevel` 新开会话生效）。建议 `chmod 600 openstaffs/.data/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
 
 ### 2. 空间能力（可选）
 
@@ -133,7 +133,7 @@ EOF
 
 - server 名就是 `mcpServers` 的 key，直接用于工具名、扩展名与凭据引用；只允许字母、数字、`_`、`-`（不能含点号或空白）。
 - 按名引用后**累加**（写了未定义的名字会被跳过，不影响会话）；旧的多层 `mcp.json`（系统 `src/mcp.json` / 空间 / 项目 / 员工）**已全部退役**。
-- 凭据优先放 `env`；写进 `args` 会出现在进程参数里（`ps` 可见）。凭据由你写进 `.openstaffs/config.json` 的 `mcp`。
+- 凭据优先放 `env`；写进 `args` 会出现在进程参数里（`ps` 可见）。凭据由你写进 `openstaffs/.data/config.json` 的 `mcp`。
 - **新增 / 修改 server 需要重启服务**；server 只进入之后**新建**的会话。
 - 员工不能自己定义 server：需要新 server 请改 `openstaffs/mcps.json`，再在相应层 config 的 `mcp` 里按名引用。
 - 工具名形如 `mcp__<server>__<tool>`；工具太多时员工先用 `tool_search` 搜索。

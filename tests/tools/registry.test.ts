@@ -32,7 +32,7 @@ function fauxHarness(count = 4) {
   faux.setResponses(Array.from({ length: count }, (_, i) => fauxAssistantMessage(`答${i}`)));
   const models = createModels();
   models.setProvider(faux.provider);
-  return createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+  return createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
 }
 
 function tool(name: string) {
@@ -147,7 +147,7 @@ describe("room_history", () => {
     }
   });
 
-  it("`.openstaffs` 尚未创建（stateDir 不存在）→ 返回「（暂无消息）」，不抛「unable to open database file」", async () => {
+  it("`openstaffs/.data` 尚未创建（stateDir 不存在）→ 返回「（暂无消息）」，不抛「unable to open database file」", async () => {
     const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-tools-nostate-"));
     try {
       expect(fs.existsSync(stateDir(createWorkspace(freshRoot)))).toBe(false);
@@ -406,8 +406,8 @@ describe("request_permission", () => {
 
   it("重复申请：同路径集合不新建，返回提示；称谓进入文案", async () => {
     seedEmployee("alice");
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "掌柜" }));
     const ws = createWorkspace(root);
     const { ctx, store, notify } = ctxWithStore(ws, "alice", dm("alice"));
     const first = await tool("request_permission").run({ paths: ["a", "b"], reason: "r" }, ctx);
@@ -429,8 +429,8 @@ describe("注册表", () => {
 describe("称谓消费", () => {
   it("自定义 bossName：send_message 返回与 room_history 输出用真称谓", async () => {
     seedEmployee("alice");
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "掌柜" }));
     const ws = createWorkspace(root);
     const harness = fauxHarness();
     await harness.open();

@@ -32,10 +32,10 @@ describe("提示词变量", () => {
   it("boss_name 读 config.json 的 bossName；缺失/坏 JSON/空串 → 老板", () => {
     seedOffice(root, { agents: [{ id: "alice" }] });
     expect(bossName(dmCtx("alice"))).toBe("老板");
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "张总" }));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "张总" }));
     expect(bossName(dmCtx("alice"))).toBe("张总");
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "  " }));
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "  " }));
     expect(bossName(dmCtx("alice"))).toBe("老板");
   });
 

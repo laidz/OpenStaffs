@@ -36,6 +36,14 @@ describe("渲染", () => {
     expect(html).toContain("agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json");
     expect(html).not.toContain("agents/&lt;员工&gt;/config.json");
   });
+
+  it("引导页指向 openstaffs/.data/config.json（不再是 .openstaffs）", () => {
+    const html = setupPage("/office", 4319);
+    expect(html).toContain("/office/openstaffs/.data/config.json");
+    expect(html).toContain("openstaffs/space.config.json");
+    expect(html).toContain("agents/staff0.agent.config.json");
+    expect(html).not.toContain(".openstaffs");
+  });
 });
 
 describe("会话信息条", () => {

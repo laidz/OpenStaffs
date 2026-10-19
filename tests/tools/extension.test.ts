@@ -40,7 +40,7 @@ describe("OpenStaffs 工具扩展", () => {
     const ws = createWorkspace(root);
     let harness: ReturnType<typeof createPiHarness>;
     const ext = createOpenStaffsToolsExtension({ ws, getHarness: () => harness });
-    harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models: fauxModels(), extensions: [ext] });
+    harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models: fauxModels(), extensions: [ext] });
     await harness.open();
     try {
       const spec: ConversationSpec = {
@@ -75,7 +75,7 @@ describe("OpenStaffs 工具扩展", () => {
       getHarness: () => harness,
       permissions: { store, notify: () => {} },
     });
-    harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models: fauxModels(), extensions: [ext] });
+    harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models: fauxModels(), extensions: [ext] });
     await harness.open();
     try {
       const spec: ConversationSpec = {

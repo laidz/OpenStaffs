@@ -205,7 +205,7 @@ describe("MCP 管理器", () => {
   });
 
   it("凭据进入 command 导致 spawn 失败时，不把凭据写进日志或 errors", async () => {
-    writeJson(path.join(root, ".openstaffs", "config.json"), {
+    writeJson(path.join(root, "openstaffs/.data", "config.json"), {
       mcp: { leaky: { cmd: "SUPER_SECRET_COMMAND_VALUE" } },
     });
     const logs: string[] = [];

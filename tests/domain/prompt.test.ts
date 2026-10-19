@@ -62,9 +62,9 @@ describe("模板文件定位", () => {
     expect(fs.existsSync(group)).toBe(true);
   });
 
-  it("空间不可覆盖：磁盘上存在 .openstaffs/prompts/dm.md 也不影响输出", () => {
+  it("空间不可覆盖：磁盘上存在 openstaffs/.data/prompts/dm.md 也不影响输出", () => {
     seedOffice(root, { agents: [{ id: "alice" }] });
-    const override = path.join(root, ".openstaffs", "prompts", "dm.md");
+    const override = path.join(root, "openstaffs/.data", "prompts", "dm.md");
     fs.mkdirSync(path.dirname(override), { recursive: true });
     fs.writeFileSync(override, "覆盖段：不该出现");
     expect(promptTemplatePath("dm").endsWith(path.join("src", "prompts", "dm.md"))).toBe(true);
@@ -88,8 +88,8 @@ describe("环境段渲染", () => {
       agents: [{ id: "alice" }],
       projects: [{ id: "demo", members: ["alice"] }],
     });
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "掌柜" }));
     const out = renderEnvironment(groupCtx("demo", "alice"));
     expect(out).toContain("「掌柜」");
     expect(out).toContain("把 `@掌柜` 写在最前面");

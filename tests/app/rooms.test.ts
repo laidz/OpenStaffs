@@ -24,7 +24,7 @@ const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-rooms-"));
 fs.mkdirSync(path.join(wsRoot, "agents"), { recursive: true });
 fs.writeFileSync(path.join(wsRoot, "agents", "alice.agent.config.json"), JSON.stringify({ prompt: "你是 alice。", alias: "Alice" }));
 const ws = createWorkspace(wsRoot);
-afterEach(() => fs.rmSync(path.join(wsRoot, ".openstaffs"), { recursive: true, force: true }));
+afterEach(() => fs.rmSync(path.join(wsRoot, "openstaffs/.data"), { recursive: true, force: true }));
 
 describe("房间合并视图", () => {
   it("roomKeyOf / parseRoomKey 往返与非法键", () => {

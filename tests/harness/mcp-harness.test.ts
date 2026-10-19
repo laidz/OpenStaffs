@@ -49,7 +49,7 @@ describe("MCP 端到端", () => {
 
     const harness = createPiHarness({
       root,
-      sqlitePath: path.join(root, ".openstaffs", "state.sqlite"),
+      sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"),
       models: fauxModels(),
       mcpExtensions: manager.extensions(),
       toolSearch: manager.needsToolSearch(),

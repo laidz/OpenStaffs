@@ -20,7 +20,7 @@
 - **P4 边界**：只做「路径搬迁 + 启动探测/引导 + Staff0 自动创建 + `.gitignore`」。**不做**：部门树与负责人（P2）、统一 config 解析器与按工具权限（P3）、`.agent.config.json` 全面取代多文件 / `prompt` 渲染 / `work/<id>/MEMORY.md`（P5）。
 - **口径**：指目录一律「办公空间」；机器私有目录一律写 `openstaffs/.data/`，全文不得再有 `.openstaffs/`。
 - **TDD**：每任务**先写失败测试** → 跑失败 → 实现 → 跑通过 → 提交。提交信息用**简体中文祈使句**。
-- **分支约定（仓库 `AGENTS.md`）**：按 spec §10 顺序 **P2 → P3 → P4 → P5**，P4 **在 P3 之后续做**：**沿用同一本地开发分支 `feat/message-store`**（P1/P2/P3 所在分支），**不新开分支**；完成后 `merge --squash` 收敛为一条提交合回 master。**开发分支不 push 到远程**。
+- **分支约定（仓库 `AGENTS.md`）**：按 spec §10 顺序 **P2 → P3 → P4 → P5**，P4 **在 P3 之后续做**：P1/P2/P3 均已在各自本地分支上完成并 `merge --squash` 合回 `master` 后**删除**（`feat/message-store` / `feat/unified-config` 均已不存在）。P4 **新建本地开发分支 `feat/space-dir-merge`**（自 P3 合并后的 `master`）；完成后 `merge --squash` 收敛为一条提交合回 master 并删除该分支。**开发分支不 push 到远程**。
 - **文档同步是硬要求**：运维真相源 `src/skills/openstaffs-ops/SKILL.md` **必须**更新；`src/skills/openstaffs/SKILL.md`、`README.md`、`docs/产品规划.md`、仓库 `AGENTS.md` 按需同步（见 Task 6）。
 
 ## Review Focus
@@ -51,10 +51,10 @@
 - `src/server/main.ts` — sqlitePath 改走 `stateDir`；启动调用 `ensureSpace`；未配置 / 端口报错文案改路径。
 - `web/render.ts` — 引导页路径与说明改 `openstaffs/.data/`。
 - `src/server/http.ts` — 409「尚未配置」文案改路径。
-- `src/domain/mcp.ts`、`src/domain/permission-requests.ts` — 报错 / 注释里的 `.openstaffs` 改路径。
+- `src/domain/mcp.ts`、`src/domain/permission-requests.ts`、`src/tools/registry.ts` — 报错 / 注释里的 `.openstaffs` 改路径。
 - `tests/domain/paths.test.ts` — 新增 `stateDir` / `messagesDbFile` 断言。
 - `tests/web/render.test.ts` — 引导页路径断言。
-- **回归清扫（Task 1）**：`tests/domain/config.test.ts`、`tests/domain/prompt-vars.test.ts`、`tests/domain/prompt.test.ts`、`tests/domain/mcp.test.ts`、`tests/domain/permission-requests.test.ts`、`tests/harness/pi-durable.test.ts`、`tests/harness/access-extension.test.ts`、`tests/harness/mcp-harness.test.ts`、`tests/harness/mcp-manager.test.ts`、`tests/app/conversations.test.ts`、`tests/server/sse.test.ts`、`tests/server/http.test.ts`、`tests/server/pump-trigger.test.ts`、`tests/tools/registry.test.ts`、`tests/tools/extension.test.ts` — 所有 `.openstaffs` 夹具改 `openstaffs/.data`。
+- **回归清扫（Task 1）**：以 `grep -rl '\.openstaffs' tests` 的实际命中为准（P3 后为 18 个测试文件：`tests/domain/{config,prompt-vars,prompt,mcp,permission-requests}.test.ts`、`tests/harness/{pi-durable,access-extension,mcp-harness,mcp-manager}.test.ts`、`tests/app/{conversations,rooms}.test.ts`、`tests/server/{sse,http,pump-trigger,pump,main-bad-store}.test.ts`、`tests/tools/{registry,extension}.test.ts`）—— 所有 `.openstaffs` 夹具改 `openstaffs/.data`。
 - **文档（Task 6）**：`src/skills/openstaffs-ops/SKILL.md`（必改）、`src/skills/openstaffs/SKILL.md`、`README.md`、`docs/产品规划.md`、`AGENTS.md`。
 
 **删除**
@@ -84,7 +84,7 @@
 - Modify: `src/server/main.ts`（仅 `sqlitePath` 一行）
 - Modify: `.gitignore`
 - Modify: `tests/domain/paths.test.ts`
-- Modify（机械清扫 `.openstaffs` → `openstaffs/.data`）：`tests/domain/config.test.ts`、`tests/domain/prompt-vars.test.ts`、`tests/domain/prompt.test.ts`、`tests/domain/mcp.test.ts`、`tests/domain/permission-requests.test.ts`、`tests/harness/pi-durable.test.ts`、`tests/harness/access-extension.test.ts`、`tests/harness/mcp-harness.test.ts`、`tests/harness/mcp-manager.test.ts`、`tests/app/conversations.test.ts`、`tests/server/sse.test.ts`、`tests/server/http.test.ts`、`tests/server/pump-trigger.test.ts`、`tests/tools/registry.test.ts`、`tests/tools/extension.test.ts`
+- Modify（机械清扫 `.openstaffs` → `openstaffs/.data`；**以 `grep -rl '\.openstaffs' tests` 的实际命中为准**，P3 落地后的命中集为）：`tests/domain/config.test.ts`、`tests/domain/prompt-vars.test.ts`、`tests/domain/prompt.test.ts`、`tests/domain/mcp.test.ts`、`tests/domain/permission-requests.test.ts`、`tests/harness/pi-durable.test.ts`、`tests/harness/access-extension.test.ts`、`tests/harness/mcp-harness.test.ts`、`tests/harness/mcp-manager.test.ts`、`tests/app/conversations.test.ts`、`tests/app/rooms.test.ts`、`tests/server/sse.test.ts`、`tests/server/http.test.ts`、`tests/server/pump-trigger.test.ts`、`tests/server/pump.test.ts`、`tests/server/main-bad-store.test.ts`、`tests/tools/registry.test.ts`、`tests/tools/extension.test.ts`
 
 **Interfaces:**
 - Consumes: 无
@@ -104,55 +104,43 @@
   });
 ```
 
-顶部 import 补 `spaceDir`、`spaceSkillsDir`、`stateDir`，并按 B1 裁定保留 `employeeDir`（P2 将其保留为薄适配层）：
+顶部 import 补 `spaceDir`、`spaceSkillsDir`、`stateDir`（`messagesDbFile` 在 Step 5 再补），并按 B1 裁定保留 `employeeDir`（P2 将其保留为薄适配层）；`workDir` 与 `conversationIdsFile` 已被 P2/P3 用例引用，**保留**：
 
 ```ts
 import {
   agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile,
-  spaceDir, spaceSkillsDir, stateDir,
+  messagesDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
 } from "../../src/domain/paths.ts";
 ```
 
-> **注意（跨计划裁定 N1）**：**不要**把 `membersFile` / `projectDir` 加进 import —— 二者已随 **P3（项目扁平化）退场**，届时会被删除；`employeeDir` 按 B1 由 P2 **保留**，故可加。
+> **注意（跨计划裁定 N1）**：**不要**把 `membersFile` / `projectDir` 加进 import —— 二者已随 **P3（项目扁平化）退场**并**已删除**；`employeeDir` 按 B1 由 P2 **保留**，故可加。
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/domain/paths.test.ts`
 Expected: FAIL —— `stateDir(ws)` 仍是 `/tmp/company/.openstaffs`。
 
-- [ ] **Step 3: 实现 `src/domain/paths.ts`**
+- [ ] **Step 3: 实现 `src/domain/paths.ts`（**最小改动，不重写整个文件**）**
 
-把文件顶部的 `stateDir` 与底部的 `SPACE_DIR_NAME` 改为下面这一版（常量上移；`stateDir` 复用 `SPACE_DIR_NAME`）：
+> **P3 落地后的事实**：`src/domain/paths.ts` 已不止 `stateDir` / `SPACE_DIR_NAME`——它还导出 `agentsDir` / `projectsDir` / `employeeDir` / `conversationIdsFile` / `groupConversationIdsFile` / `spaceDir` / `spaceSkillsDir` / `messagesDbFile` / `WORK_DIR_NAME` / `workDir`。**只改两处，保留其余全部导出与注释。**
+
+1. 在现有 `export const SPACE_DIR_NAME = "openstaffs";` 之前新增一个常量：
 
 ```ts
-import path from "node:path";
-
-export type Workspace = { readonly root: string };
-
-/** 空间级附属目录名：老板的能力与附属（space.config.json / skills/ / mcps.json）；可见、可版本化、随空间整包迁移。 */
-export const SPACE_DIR_NAME = "openstaffs";
-
 /** 机器私有子目录名（`openstaffs/.data/`）：密钥配置、数据库、运行状态（D19；gitignore）。 */
 export const STATE_DIR_NAME = ".data";
+```
 
-export function createWorkspace(root: string): Workspace {
-  return { root: path.resolve(root) };
-}
+2. 把现有 `stateDir` 改为复用两个常量（函数体只换这一行）：
 
+```ts
 /** 机器私有目录：`openstaffs/.data/`（配置 / 状态 / 库都落这里；D19）。 */
 export function stateDir(ws: Workspace): string {
   return path.join(ws.root, SPACE_DIR_NAME, STATE_DIR_NAME);
 }
 ```
 
-删掉文件底部原来的：
-
-```ts
-/** 空间级附属目录名：老板的能力与附属（skills/、mcp.json）；可见、可版本化、随空间整包迁移。 */
-export const SPACE_DIR_NAME = "openstaffs";
-```
-
-（`spaceDir` / `spaceSkillsDir` 保持原样不动。）**注意：`messagesDbFile` 不动——继续 `path.join(stateDir(ws), "messages.sqlite")`。**
+**注意**：`spaceDir` / `spaceSkillsDir` / `employeeDir` / `workDir` 等**保持原样不动**；`messagesDbFile` **不动**——继续 `path.join(stateDir(ws), "messages.sqlite")`（P1 硬约束）。
 
 - [ ] **Step 4: 跑路径测试确认通过**
 
@@ -173,7 +161,7 @@ Expected: PASS。
 Run: `npx vitest run tests/domain/paths.test.ts`
 Expected: PASS。
 
-> 若此时 P1 尚未合入（`messagesDbFile` 未导出），**跳过本步**并在 P1 落地后补上；Step 3 的实现已保证搬迁一旦完成即成立。
+> **P1 已合入**（`messagesDbFile` 已在 `src/domain/paths.ts` 导出），本步**必做**，不留 TODO。
 
 - [ ] **Step 6: 跑全量测试，确认回归面**
 
@@ -200,18 +188,20 @@ Expected: **大量失败**——所有把夹具写在 `<root>/.openstaffs/...` �
 import { createWorkspace, stateDir } from "../domain/paths.ts";
 ```
 
+> **P3 落地后的事实**：`src/server/main.ts` **已经** `import { createWorkspace, messagesDbFile, stateDir } from "../domain/paths.ts";`（第 4 行），**无需再补 import**；本步只改 `sqlitePath` 这一行。
+
 - [ ] **Step 8: 清扫测试夹具（机械替换）**
 
 ```bash
-# 1) path.join(root, ".openstaffs", …) → path.join(root, "openstaffs", ".data", …)
-grep -rl 'root, "\.openstaffs"' tests | xargs sed -i '' 's#root, "\.openstaffs"#root, "openstaffs", ".data"#g'
-# 2) 模板串 path.join(root, `.openstaffs/…`) → path.join(root, `openstaffs/.data/…`)
-grep -rl 'root, `\.openstaffs/' tests | xargs sed -i '' 's#root, `\.openstaffs/#root, `openstaffs/.data/#g'
-# 3) 残留检查（生产代码与测试都不该有 .openstaffs 路径）
-grep -rn '\.openstaffs' tests src web || echo "OK: 无残留路径"
+# 统一把测试里的 `.openstaffs` 词元替换为 `openstaffs/.data`
+# （覆盖 path.join 的各变量名（root / wsRoot / office…）、模板串、注释与用例标题；
+#   `path.join(root, "openstaffs/.data", "x")` 在 POSIX 下与两段写法等价）
+grep -rl '\.openstaffs' tests | xargs sed -i '' 's#\.openstaffs#openstaffs/.data#g'
+# 残留检查（只查 tests；src/web 的文案与注释归 Task 5，src/skills 与 README/AGENTS 归 Task 6）
+grep -rn '\.openstaffs' tests || echo "OK: tests 无 .openstaffs 残留"
 ```
 
-Expected: 第 3 条**无输出**（`src/domain/mcp.ts`、`src/server/http.ts`、`src/server/main.ts` 的用户文案、`web/render.ts` 的引导页属 Task 5，此处**允许**仍有 `.openstaffs` 字符串；见 Step 10 的口径）。
+Expected: 残留检查**无输出**（`src/` 下的文案与注释仍可能有 `.openstaffs`，那是 Task 5 的范围，此处不管）。
 
 - [ ] **Step 9: 跑全量测试确认通过**
 
@@ -287,12 +277,18 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-test("staff0Config：spec §4 统一字段；权限 = 写空间根 ./；无 model（用全局默认）", () => {
+test("staff0Config：spec §4 统一字段；权限 = 空间根（`..`，相对 agents/）；无 model（用全局默认）", () => {
   const config = staff0Config();
   expect(STAFF0_ID).toBe("staff0");
   expect(config.alias).not.toBe("");
-  expect(config.permissions).toEqual({ write: ["./"], read: ["./"], bash: ["./"] });
+  // P3 的 permissions 路径相对**配置文件所在目录**解析（staff0 = `agents/`）→ 空间根 = `..`（裁定 R-P4-1）
+  expect(config.permissions).toEqual({ write: [".."], read: [".."], bash: [".."] });
   expect(config).not.toHaveProperty("model");
+});
+
+test("staff0 的权限路径解析出来就是空间根（spec §8「写空间根 ./」= 整个空间，而非 agents/）", () => {
+  const [first] = staff0Config().permissions.write;
+  expect(path.resolve(path.join(root, "agents"), first!)).toBe(root);
 });
 
 test("staff0File：落点在 agents/staff0.agent.config.json（根下、无部门）", () => {
@@ -326,7 +322,7 @@ import { agentsDir, type Workspace } from "./paths.ts";
 /** 0 号员工 id（空间管家；根下、无部门；spec §8）。 */
 export const STAFF0_ID = "staff0";
 
-/** Staff0 定义：spec §4 统一字段（员工层）。权限 = 写空间根 `./`（§8）——「空间级附属 = 老板地盘」的有意例外。 */
+/** Staff0 定义：spec §4 统一字段（员工层）。权限 = 空间根（§8）——「空间级附属 = 老板地盘」的有意例外。 */
 export type Staff0Config = {
   alias: string;
   prompt: string;
@@ -335,18 +331,21 @@ export type Staff0Config = {
 
 /** 内置的管家 prompt（可被老板改写；不在框架更新时自动覆盖）。 */
 const STAFF0_PROMPT =
-  "你是本办公空间的 0 号员工（首席管家）。你对空间根 `./` 有写权限，负责空间级事务；协作、产物与记忆的通用约定见空间总纲。";
+  "你是本办公空间的 0 号员工（首席管家）。你对空间根（整个办公空间）有写权限，负责空间级事务；协作、产物与记忆的通用约定见空间总纲。";
 
 export function staff0File(ws: Workspace): string {
   return path.join(agentsDir(ws), `${STAFF0_ID}.agent.config.json`);
 }
 
-/** Staff0 的初始定义（无 `model` → 运行时用全局默认模型兜底）。 */
+/**
+ * Staff0 的初始定义（无 `model` → 运行时用全局默认模型兜底）。
+ * 权限路径相对**配置文件所在目录**（`agents/`）解析 → 空间根 = `..`（裁定 R-P4-1；不用绝对路径，保持配置可整包迁移）。
+ */
 export function staff0Config(): Staff0Config {
   return {
     alias: "首席管家",
     prompt: STAFF0_PROMPT,
-    permissions: { write: ["./"], read: ["./"], bash: ["./"] },
+    permissions: { write: [".."], read: [".."], bash: [".."] },
   };
 }
 
@@ -659,6 +658,7 @@ git commit -m "feat(server): 启动装配 ensureSpace——新建空间探测 + 
 - Modify: `src/server/main.ts`（未配置 / 端口报错文案）
 - Modify: `src/domain/mcp.ts`（缺凭据文案）
 - Modify: `src/domain/permission-requests.ts`（注释）
+- Modify: `src/tools/registry.ts`（`room_history` 的注释里提到 `.openstaffs`，P3 遗留；改口径）
 - Test: `tests/web/render.test.ts`
 
 **Interfaces:**
@@ -684,28 +684,22 @@ git commit -m "feat(server): 启动装配 ensureSpace——新建空间探测 + 
 Run: `npx vitest run tests/web/render.test.ts -t "引导页"`
 Expected: FAIL —— 引导页仍写 `.openstaffs/config.json`。
 
-- [ ] **Step 3: 改 `web/render.ts` 的 `setupPage`**
+- [ ] **Step 3: 改 `web/render.ts` 的 `setupPage`（**最小改动**，只动两处；其余段落保持原样）**
+
+现有 `setupPage` 里改这两行：
 
 ```ts
-export function setupPage(root: string, port: number): string {
-  return `
-    <main class="setup">
-      <h1>OpenStaffs · 首次配置</h1>
       <p>请创建/编辑下面这个文件（若目录不存在请先创建 <code>openstaffs/.data/</code>），填入供应商密钥与默认模型（可配多个供应商）：</p>
       <pre>${escapeHtml(root)}/openstaffs/.data/config.json</pre>
-      <pre>{
-  "providers": {
-    "opencode-go": { "apiKey": "你的密钥" }
-  },
-  "model": "opencode-go/deepseek-v4.1-flash",
-  "port": ${port}
-}</pre>
-      <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在自己的 <code>.agent.config.json</code> 里用 <code>model</code> 覆盖成别的供应商与模型。</p>
-      <p>保存配置后：Ctrl+C 停止服务 → 重新 <code>npm start</code> → 刷新本页。</p>
-      <p class="hint">首次启动已自动初始化空间：<code>openstaffs/space.config.json</code>（空间总纲）与 <code>agents/staff0.agent.config.json</code>（0 号员工）。员工与项目不需要在这里配置（详见 README.md）。</p>
-    </main>`;
-}
 ```
+
+并把结尾的提示段（原 `<p class="hint">员工与项目不需要在这里配置：…</p>`）替换为：
+
+```ts
+      <p class="hint">首次启动已自动初始化空间：<code>openstaffs/space.config.json</code>（空间总纲）与 <code>agents/staff0.agent.config.json</code>（0 号员工）。员工与项目不需要在这里配置（详见 README.md）。</p>
+```
+
+> **不要**改「可选 provider … 员工可在自己的 `agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json` 里用 `model` 覆盖…」那一长段——`tests/web/render.test.ts:36` 依赖它里面的 `agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json` 断言（保留可减少无谓改动）。
 
 - [ ] **Step 4: 改用户可见文案（逐处精确替换）**
 
@@ -737,6 +731,12 @@ export function setupPage(root: string, port: number): string {
 /** 一条待处理的授权申请（落盘于 openstaffs/.data/permission-requests.json）。 */
 ```
 
+`src/tools/registry.ts`（`room_history` 的注释，P3 遗留的 `.openstaffs`）：
+
+```ts
+    // `openstaffs/.data` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
+```
+
 - [ ] **Step 5: 跑测试确认通过 + 残留检查**
 
 Run: `npx vitest run tests/web/render.test.ts && npm run typecheck`
@@ -746,12 +746,12 @@ Expected: PASS。
 grep -rn '\.openstaffs' src web || echo "OK: 生产代码无 .openstaffs 残留"
 ```
 
-Expected: **无输出**（仅 `docs/`、`src/skills/*.md` 允许残留，由 Task 6 处理）。
+Expected: **无输出**（仅 `README.md` / `AGENTS.md` / `src/skills/*.md` 允许残留，由 Task 6 处理）。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add web/render.ts src/server/http.ts src/server/main.ts src/domain/mcp.ts src/domain/permission-requests.ts tests/web/render.test.ts
+git add web/render.ts src/server/http.ts src/server/main.ts src/domain/mcp.ts src/domain/permission-requests.ts src/tools/registry.ts tests/web/render.test.ts
 git commit -m "refactor(ui): 引导页与报错文案改指 openstaffs/.data/"
 ```
 
@@ -772,44 +772,42 @@ git commit -m "refactor(ui): 引导页与报错文案改指 openstaffs/.data/"
 
 - [ ] **Step 1: `src/skills/openstaffs-ops/SKILL.md`——目录树与全景**
 
-把「办公空间全景」里的这一段：
+> **P3 落地后的事实**：该文件的「办公空间全景」已经按 P3 形态写全（含 `agents/` 部门树、`projects/<项目 id>.project.config.json`、`work/<名字>/`、`openstaffs/{space.config.json,skills,mcps.json}`，以及 `.openstaffs/` 一节）。**不要再套用旧的「两行片段」**；只做两步：把机器私有目录并入 `openstaffs/.data/`，并补 Staff0。
+
+(a) 在 `agents/` 目录树块里补一行 staff0（在 `│  ├─ <名字>.agent.config.json   # 人（根部门直属…）` 一带补）：
 
 ```
-├─ openstaffs/                   # 老板的能力与附属（可见、可版本化、随空间整包迁移）
-│  ├─ skills/<技能名>/SKILL.md   # 空间级技能：全部会话可见（同名时员工 / 项目技能更优先）
-│  └─ mcp.json                   # 空间级 MCP server（见「MCP（外部工具）」）
-└─ .openstaffs/                  # 机器私有（含密钥与运行状态；老板维护，你只读）
-   ├─ config.json                # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
-   ├─ state.json                 # 老板的 pin 标记（机器维护，不要手改）
-   ├─ permission-requests.json   # 待处理授权请求（机器维护，处理完即删）
-   └─ state.sqlite               # 对话库（机器维护，不要手改）
+│  ├─ staff0.agent.config.json   # 0 号员工「首席管家」（首次启动自动创建；权限 = 空间根）
 ```
 
-替换为：
+(b) 把结尾的 `openstaffs/` 与 `.openstaffs/` 两节改为合并形态：
 
 ```
-├─ agents/staff0.agent.config.json  # 0 号员工「首席管家」（首次启动自动创建；写空间根 ./）
-└─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
-   ├─ space.config.json          # 空间声明：空间 prompt（新建空间时由框架物化，此后运行时无关）
-   ├─ skills/<技能名>/SKILL.md   # 空间级技能：全部会话可见（同名时员工 / 项目技能更优先）
-   ├─ mcp.json                   # 空间级 MCP server（见「MCP（外部工具）」）
-   └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
-      ├─ config.json             # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
-      ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
-      ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
-      ├─ state.sqlite            # 基座会话库（机器维护，不要手改）
-      └─ messages.sqlite         # 消息自有库（机器维护，不要手改）
+├─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
+│  ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；新建空间时物化）
+│  ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
+│  ├─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
+│  └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
+│     ├─ config.json             # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
+│     ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护）
+│     ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
+│     ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
+│     ├─ messages.sqlite         # 消息真相库：房间消息流水（机器维护，不要手改）
+│     └─ state.sqlite            # 基座会话库：某条会话的原文与模型上下文（机器维护，不要手改）
 ```
+
+(c) 删除下方引注里「机器私有的 `.openstaffs/` 计划并入 `openstaffs/.data/`…**P4 落地后**才改落点——**现状仍按上面的 `.openstaffs/` 读**」那段（已落地），保留「根下只有门面 `agents/`、`projects/`、`work/`、`openstaffs/` 四项」与 `AGENTS.md` / `profile.md` 已退出运行时的说明。
 
 - [ ] **Step 2: 同文件——全文路径口径替换**
 
 ```bash
-# 除目录树外，正文与表格里的路径一并改口径
-sed -i '' 's#\.openstaffs/config\.json#openstaffs/.data/config.json#g; s#\.openstaffs/permission-requests\.json#openstaffs/.data/permission-requests.json#g; s#`\.openstaffs/`#`openstaffs/.data/`#g; s#全局配置 `\.openstaffs/config\.json`#全局配置 `openstaffs/.data/config.json`#g' src/skills/openstaffs-ops/SKILL.md
+# 目录树已在 Step 1 手动并好；剩余正文 / 表格里的 `.openstaffs` 词元统一替换为 `openstaffs/.data`
+grep -rl '\.openstaffs' src/skills/openstaffs-ops/SKILL.md | xargs sed -i '' 's#\.openstaffs#openstaffs/.data#g'
 grep -n '\.openstaffs' src/skills/openstaffs-ops/SKILL.md || echo "OK: 运维手册无 .openstaffs 残留"
 ```
 
 Expected: `OK`。若仍有残留，逐条手改（尤其是「全局配置」小节标题与「常见故障对照」表）。
+> 说明：`s#\.openstaffs#openstaffs/.data#g` 不会误伤已经正确的 `openstaffs/.data`（后者不含 `.openstaffs` 子串）。
 
 - [ ] **Step 3: 同文件——补 Staff0 与空间声明**
 
@@ -820,32 +818,32 @@ Expected: `OK`。若仍有残留，逐条手改（尤其是「全局配置」小
 
 - **目录已合并**：机器私有不再是独立隐藏目录，统一收在 `openstaffs/.data/`（含全局配置、pin 状态、授权请求、基座会话库、消息自有库）。`openstaffs/` 的其余内容（`space.config.json`、`skills/`、`mcps.json`）属空间资产，可版本化、随空间整包迁移。
 - **新建空间**：启动时若没有 `openstaffs/space.config.json`，框架会把**内置空间 prompt** 物化进去（此后运行时无关，可自由改写）。判断只看文件是否存在——已存在（含空文件 / 坏 JSON）一律不覆盖。
-- **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根 `./` 有写权限**（「空间级附属 = 老板地盘」的有意例外），直属老板；未配 `model` 时用全局默认。
+- **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根（整个办公空间）有写权限**（「空间级附属 = 老板地盘」的有意例外；配置里写作相对路径 `..`——P3 的权限路径相对配置文件所在目录 `agents/` 解析），直属老板；未配 `model` 时用全局默认。
 - **不做迁移**：从旧目录 `.openstaffs/` 不再读取（破坏性更新）；老板需要的话自行搬迁数据。
 ```
 
 - [ ] **Step 4: `src/skills/openstaffs/SKILL.md`——凭据路径与 Staff0**
 
-第 82 行 `.openstaffs/config.json` → `openstaffs/.data/config.json`：
+把该文件里 `.openstaffs/config.json`（P3 落地后约在第 91 行）改为 `openstaffs/.data/config.json`（该行已按 P3 写作 `mcps.json`，**只改路径**）：
 
 ```md
-- **不要把密钥写进 `mcp.json`**：凭据统一由老板放进 `openstaffs/.data/config.json`，你写 `${config.mcp.<server>.<key>}` 引用；缺凭据时找老板补。密钥尽量放 `env`，写进 `args` 会出现在 `ps` 里。
+- **不要把密钥写进 `mcps.json`**：凭据统一由老板放进 `openstaffs/.data/config.json`，你写 `${config.mcp.<server>.<key>}` 引用；缺凭据时找老板补。密钥尽量放 `env`，写进 `args` 会出现在 `ps` 里。
 ```
 
 并在「@ 他人的节制」段落之后补一句（Staff0 属空间级事务）：
 
 ```md
-- **0 号员工（首席管家）**：空间里有一个管家（id `staff0`），写权限覆盖空间根 `./`，负责空间级事务；需要整体性调整（跨部门、空间级配置）时可找它。
+- **0 号员工（首席管家）**：空间里有一个管家（id `staff0`），写权限覆盖空间根（整个办公空间），负责空间级事务；需要整体性调整（跨部门、空间级配置）时可找它。
 ```
 
 - [ ] **Step 5: `README.md`——路径与初始化说明**
 
 ```bash
-sed -i '' 's#`\.openstaffs/`#`openstaffs/.data/`#g; s#\.openstaffs/config\.json#openstaffs/.data/config.json#g' README.md
+grep -rl '\.openstaffs' README.md | xargs sed -i '' 's#\.openstaffs#openstaffs/.data#g'
 grep -n '\.openstaffs' README.md || echo "OK: README 无 .openstaffs 残留"
 ```
 
-再手改「快速开始」第 2、3 步与「四层命名」注（`openstaffs/` 放**空间声明与技能 / MCP**；机器私有是 `openstaffs/.data/`），并把第 3 步改为：
+再手改「四层命名」注与「快速开始」第 2、3 步（`openstaffs/` 放**空间声明与技能 / MCP**；机器私有是 `openstaffs/.data/`），并把第 3 步改为：
 
 ```md
 3. （可选）在办公空间目录里创建 `openstaffs/.data/config.json`（见下节；也可以先跳过——首次启动会自动初始化空间，页面会显示引导页）。
@@ -853,11 +851,7 @@ grep -n '\.openstaffs' README.md || echo "OK: README 无 .openstaffs 残留"
 
 - [ ] **Step 6: `docs/产品规划.md`——命名与落点表**
 
-第 52 行的空间落点与第 57 行的两分说明改为：
-
-```md
-| 空间 | 办公空间、空间、办公室、运行实例 | `openstaffs/space.config.json`（内置 prompt 物化）/ `openstaffs/skills/` / `openstaffs/mcp.json` |
-```
+> P3 落地后，空间落点行**已正确**（`openstaffs/space.config.json` / `skills/` / `mcps.json`）。本步只需把「两分说明」那条里的 `.openstaffs/` 改为 `openstaffs/.data/`：
 
 ```md
 - 空间附属统一收在 `openstaffs/`（`space.config.json`、`skills/`、`mcps.json`；可版本化、随空间整包迁移）；机器私有（密钥配置与运行状态）收在其下的 `openstaffs/.data/`。
@@ -925,12 +919,21 @@ git commit -m "docs: 同步空间目录合并与 Staff0（运维/能力手册、
 - **N2**：Task 3 删除 `src/domain/space.ts` 内 `spaceConfigFile` 的重复实现，改为 `export { spaceConfigFile } from "../config/naming.ts"`（re-export P3 Task 1 定义）；Interfaces 与 `space.test.ts` 同步注明引用**同一实现**。
 - **P1 事实对齐**：跨阶段假设表的 P1 行确认 `messagesDbFile(ws) = path.join(stateDir(ws), "messages.sqlite")` 无误、保留迁移双断言，并补「库实例由 `main.ts` 唯一化注入，`ensureSpace` 不碰库、不另开实例」。
 
+**2026-10-19 P4 执行前对齐（对照 P3 实际落地 + 本次控制者裁定）**：
+
+- **分支（修订 N5 的字面写法）**：`feat/message-store`（P1 用）与 `feat/unified-config`（P3 用）**均已 squash 合回 master 并删除**，不存在；P4 **新建本地分支 `feat/space-dir-merge`**（自 P3 合并后的 `master`），完成后 squash 回 master 并删分支、不 push。见裁定 **R-P4-0**。
+- **Task 1 Step 3**：`paths.ts` 已被 P2/P3 扩写（含 `workDir` / `messagesDbFile` / `groupConversationIdsFile` 等）；改为**最小改动**（只加 `STATE_DIR_NAME`、只换 `stateDir` 函数体一行），不重写整个文件。
+- **Task 1 Step 1 / Step 5 / Step 7 / Step 8**：`paths.test.ts` 的现有 import 补齐到真实集合；`messagesDbFile` 断言标记为必做（P1 已合入）；`main.ts` 的 `stateDir` import 已在位（只改 `sqlitePath`）；测试夹具清扫改为统一的词元替换 `s#\.openstaffs#openstaffs/.data#g`（覆盖各变量名、模板串、注释与用例标题），并把命中清单更新为 P3 后的 18 个测试文件。
+- **Task 2（裁定 R-P4-1）**：P3 的 `permissions` 路径**相对配置文件所在目录**解析（`resolvePermissionTable(table, baseDir)`，员工配置 `baseDir = speaker.dir`）→ staff0 的 `./` 会解析成 `agents/`，**不是** spec §8 要求的「空间根（整个空间）」。故 staff0 的权限改为相对路径 **`..`**（`{ write: [".."], read: [".."], bash: [".."] }`），并补一条「解析后 = 空间根」的断言；不用绝对路径（保持配置可整包迁移）。
+- **Task 5**：补 `src/tools/registry.ts`（P3 遗留的 `.openstaffs` 注释）为改动目标。
+- **Task 6 Step 1/2/6**：`openstaffs-ops/SKILL.md` 的目录树已是 P3 形态（含 `mcps.json`、`chains/`、`messages.sqlite`）——改为「并入 `openstaffs/.data/` + 补 Staff0 + 删『P4 落地后』引注」；口径替换同样用词元替换；`docs/产品规划.md` 只改「两分说明」一条。
+
 ---
 
 ## 交付说明（写给执行者）
 
 - 本计划只交付**一个文件**：`docs/superpowers/plans/2026-10-19-space-dir-merge.md`；不含代码改动。
-- **执行前置**：P1/P2/P3 已完成（按 spec §10 顺序，P4 在 P3 之后续做）；**沿用同一本地开发分支 `feat/message-store`**，不新开分支、不 push 远程。
+- **执行前置**：P1/P2/P3 已完成（按 spec §10 顺序，P4 在 P3 之后续做）；**新建本地开发分支 `feat/space-dir-merge`**（自 P3 合并后的 `master`），不 push 远程；完成后 `merge --squash` 回 `master` 并删除该分支。
 - **执行顺序**：Task 1 → 2 → 3 → 4 → 5 → 6（严格串行；Task 2/3 独立但都在 Task 4 之前）。
 - **验收**：每任务独立跑测试、独立提交；Task 6 收尾做全量回归与端到端冒烟。
 - **Spec 歧义（执行时留意）**：

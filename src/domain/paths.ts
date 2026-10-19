@@ -6,8 +6,12 @@ export function createWorkspace(root: string): Workspace {
   return { root: path.resolve(root) };
 }
 
+/** 机器私有子目录名（`openstaffs/.data/`）：密钥配置、数据库、运行状态（D19；gitignore）。 */
+export const STATE_DIR_NAME = ".data";
+
+/** 机器私有目录：`openstaffs/.data/`（配置 / 状态 / 库都落这里；D19）。 */
 export function stateDir(ws: Workspace): string {
-  return path.join(ws.root, ".openstaffs");
+  return path.join(ws.root, SPACE_DIR_NAME, STATE_DIR_NAME);
 }
 
 export function agentsDir(ws: Workspace): string {

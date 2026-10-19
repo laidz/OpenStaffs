@@ -36,7 +36,7 @@ afterEach(() => {
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
-  fs.rmSync(path.join(root, ".openstaffs"), { recursive: true, force: true });
+  fs.rmSync(path.join(root, "openstaffs/.data"), { recursive: true, force: true });
 });
 
 function fakeRes(): { res: ServerResponse; writes: string[] } {
@@ -134,7 +134,7 @@ describe("SSE 全链路", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const ws = createWorkspace(root);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
 
     const hub = new SseHub();
@@ -224,7 +224,7 @@ describe("待发队列全链路（Pi submission 事件驱动）", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const ws = createWorkspace(root);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-outbox.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-outbox.sqlite"), models });
     await harness.open();
 
     const hub = new SseHub();
@@ -312,7 +312,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     faux.setResponses([fauxAssistantMessage("好的")]);
     const models = createModels();
     models.setProvider(faux.provider);
-    return createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", `state-${suffix}.sqlite`), models });
+    return createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", `state-${suffix}.sqlite`), models });
   }
 
   it("A3（R7）：pump.register 抛错不让已 admitted 的 POST 变 500，消息照常落盘", async () => {

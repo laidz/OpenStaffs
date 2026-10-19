@@ -58,7 +58,7 @@ async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000)
 describe("Pi Durable HarnessPort", () => {
   it("能开一条会话、发消息、拿回答、读回 transcript", async () => {
     const { models } = fauxModels([fauxAssistantMessage("你好，我是 alice。")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -79,7 +79,7 @@ describe("Pi Durable HarnessPort", () => {
     faux.setResponses([fauxAssistantMessage("ok")]);
     const models = createModels();
     models.setProvider(faux.provider);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-usage.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-usage.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -114,7 +114,7 @@ describe("Pi Durable HarnessPort", () => {
         return fauxAssistantMessage("ok");
       },
     ]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -124,7 +124,7 @@ describe("Pi Durable HarnessPort", () => {
       await harness.send(convId, "你好");
       expect(seenSystem).toContain("你是测试员工。");
 
-      const other = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state2.sqlite"), models });
+      const other = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state2.sqlite"), models });
       await other.open();
       try {
         expect(await other.attach(convId, access(cwd))).toBe(false);
@@ -141,7 +141,7 @@ describe("Pi Durable HarnessPort", () => {
       fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "hi" }), { stopReason: "toolUse" }),
       fauxAssistantMessage("完成"),
     ]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -161,7 +161,7 @@ describe("Pi Durable HarnessPort", () => {
 
   it("连续两次 send：消息不丢不重、按序", async () => {
     const { models } = fauxModels([fauxAssistantMessage("答一"), fauxAssistantMessage("答二")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -179,7 +179,7 @@ describe("Pi Durable HarnessPort", () => {
 
   it("send 在提交未完成时抛错，而非伪造员工发言", async () => {
     const { models } = fauxModels([fauxAssistantMessage("unused")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "nobody");
@@ -198,7 +198,7 @@ describe("Pi Durable HarnessPort", () => {
   });
   it("sessionInfo：私聊/群聊各归其位（startSession 与 attach 都登记）", async () => {
     const { models } = fauxModels([fauxAssistantMessage("ok")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-sinfo.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-sinfo.sqlite"), models });
     await harness.open();
     try {
       const dmCwd = path.join(root, "agents", "alice");
@@ -225,7 +225,7 @@ describe("Pi Durable HarnessPort", () => {
 describe("提交与推流", () => {
   it("submit 写入自定义 entry（kind/data），transcript 读回", async () => {
     const { models } = fauxModels([fauxAssistantMessage("收到")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-submit.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-submit.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -244,7 +244,7 @@ describe("提交与推流", () => {
 
   it("append：落一条被动消息（transcript 可见）且不触发模型回答", async () => {
     const { models } = fauxModels([fauxAssistantMessage("不该被用到")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-append.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-append.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -290,7 +290,7 @@ describe("提交与推流", () => {
         return fauxAssistantMessage("完成");
       },
     ]);
-    harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-echo.sqlite"), models });
+    harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-echo.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -313,7 +313,7 @@ describe("提交与推流", () => {
       ],
       { tokensPerSecond: 20, tokenSize: { min: 1, max: 1 } },
     );
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-abort.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-abort.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -346,7 +346,7 @@ describe("提交与推流", () => {
       tokensPerSecond: 20,
       tokenSize: { min: 1, max: 1 },
     });
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-watch.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-watch.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -391,7 +391,7 @@ describe("提交与推流", () => {
       },
       fauxAssistantMessage("第二轮完成"),
     ]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-queue.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-queue.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -440,7 +440,7 @@ describe("提交与推流", () => {
 
   it("同 requestId 重复提交不产生重复输入（Pi 去重语义）", async () => {
     const { models } = fauxModels([fauxAssistantMessage("一"), fauxAssistantMessage("二")]);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state-request.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-request.sqlite"), models });
     await harness.open();
     try {
       const cwd = path.join(root, "agents", "alice");
@@ -495,7 +495,7 @@ describe("提交与推流", () => {
     ]);
     const harness = createPiHarness({
       root,
-      sqlitePath: path.join(root, ".openstaffs", "state.sqlite"),
+      sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"),
       models,
       extensions: [probe],
       mcpExtensions: [hidden],

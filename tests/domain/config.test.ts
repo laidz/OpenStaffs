@@ -17,7 +17,7 @@ describe("全局配置", () => {
   it("缺失/坏 JSON/缺 providers/缺 model/model 非法 → undefined（未配置，不崩）", () => {
     const ws = createWorkspace(root);
     expect(readConfig(ws)).toBeUndefined();
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), "{坏");
     expect(readConfig(ws)).toBeUndefined();
     fs.writeFileSync(configFile(ws), JSON.stringify({ model: "opencode-go/m" }));
@@ -34,7 +34,7 @@ describe("全局配置", () => {
 
   it("读多供应商配置；providers 里的坏条目被跳过；port 缺省/非法一律回落 4319", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     const full = {
       providers: { "opencode-go": { apiKey: "k" }, anthropic: { apiKey: "  a  " } },
       model: "opencode-go/deepseek-v4.1-flash",
@@ -57,7 +57,7 @@ describe("全局配置", () => {
   it("readBossName：读 config.json 的 bossName；缺失/坏 JSON/空串 → 老板", () => {
     const ws = createWorkspace(root);
     expect(readBossName(ws)).toBe("老板"); // 文件缺失
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), "{坏");
     expect(readBossName(ws)).toBe("老板");
     fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "  " }));
@@ -79,7 +79,7 @@ describe("全局配置", () => {
 
   it("读取全局 thinkingLevel：非空字符串保留（不校验档位）；空串/非字符串忽略", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     const base = { providers, model: "opencode-go/m" };
     fs.writeFileSync(configFile(ws), JSON.stringify({ ...base, thinkingLevel: "banana" }));
     expect(readConfig(ws)?.thinkingLevel).toBe("banana"); // 配置端不拦非法档
@@ -121,7 +121,7 @@ describe("bossNamesFor（@提及双认）", () => {
   it("缺省 → [老板, boss]；自定义 → [当前称谓, 老板, boss] 去重保序", () => {
     const ws = createWorkspace(root);
     expect(bossNamesFor(ws)).toEqual(["老板", "boss"]);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "掌柜" }));
     expect(bossNamesFor(ws)).toEqual(["掌柜", "老板", "boss"]);
     fs.writeFileSync(configFile(ws), JSON.stringify({ bossName: "老板" }));
@@ -134,7 +134,7 @@ describe("bossNamesFor（@提及双认）", () => {
 describe("readSkillPaths（外部技能目录）", () => {
   it("三种写法：~ 开头按家目录、绝对路径原样、相对路径按办公空间根；顺序保留", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({
       skillPaths: ["~/global-skills", "/abs/skills", "vendor/skills"],
     }));
@@ -147,7 +147,7 @@ describe("readSkillPaths（外部技能目录）", () => {
 
   it("去重（同一目录两种写法算同一条，先出现者胜）", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({
       skillPaths: ["/abs/skills", "/abs/skills/", "/abs/./skills"],
     }));
@@ -156,7 +156,7 @@ describe("readSkillPaths（外部技能目录）", () => {
 
   it("坏条目跳过：非数组 / 混入 null、数字、空串 / 数组本身不是数组", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: [null, 42, "  ", "/ok"] }));
     expect(readSkillPaths(ws)).toEqual(["/ok"]);
     fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: "/not-an-array" }));
@@ -168,14 +168,14 @@ describe("readSkillPaths（外部技能目录）", () => {
   it("文件缺失 / 坏 JSON → []（不崩）", () => {
     const ws = createWorkspace(root);
     expect(readSkillPaths(ws)).toEqual([]);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), "{坏");
     expect(readSkillPaths(ws)).toEqual([]);
   });
 
   it("裸 ~ 与 ~/x 都解析到家目录；与绝对家目录写法互认为同一条", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: ["~", "~/g"] }));
     expect(readSkillPaths(ws)).toEqual([os.homedir(), path.join(os.homedir(), "g")]);
 
@@ -187,7 +187,7 @@ describe("readSkillPaths（外部技能目录）", () => {
 
   it("坏条目不影响后续条目的顺序", () => {
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
     fs.writeFileSync(configFile(ws), JSON.stringify({ skillPaths: [null, "/a", 7, "b", "  ", "/c"] }));
     expect(readSkillPaths(ws)).toEqual(["/a", path.join(root, "b"), "/c"]);
   });

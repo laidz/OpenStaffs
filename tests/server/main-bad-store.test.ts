@@ -14,7 +14,7 @@ afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
 describe("启动失败路径：坏消息库不再裸崩", () => {
   it("messages.sqlite 是非 SQLite 文件 → 打印「启动失败」后退出 1（含清晰原因）", () => {
     const office = path.join(base, "office");
-    const stateDir = path.join(office, ".openstaffs");
+    const stateDir = path.join(office, "openstaffs/.data");
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, "messages.sqlite"), "这不是一个 SQLite 数据库");
 

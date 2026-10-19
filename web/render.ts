@@ -13,8 +13,8 @@ export function setupPage(root: string, port: number): string {
   return `
     <main class="setup">
       <h1>OpenStaffs · 首次配置</h1>
-      <p>请创建/编辑下面这个文件（若目录不存在请先创建 <code>.openstaffs/</code>），填入供应商密钥与默认模型（可配多个供应商）：</p>
-      <pre>${escapeHtml(root)}/.openstaffs/config.json</pre>
+      <p>请创建/编辑下面这个文件（若目录不存在请先创建 <code>openstaffs/.data/</code>），填入供应商密钥与默认模型（可配多个供应商）：</p>
+      <pre>${escapeHtml(root)}/openstaffs/.data/config.json</pre>
       <pre>{
   "providers": {
     "opencode-go": { "apiKey": "你的密钥" }
@@ -24,7 +24,7 @@ export function setupPage(root: string, port: number): string {
 }</pre>
       <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在自己的 <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code> 里用 <code>model</code> 字段覆盖成别的供应商与模型。</p>
       <p>保存配置后：Ctrl+C 停止服务 → 重新 <code>npm start</code> → 刷新本页。</p>
-      <p class="hint">员工与项目不需要在这里配置：人 = <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code>（单文件，所在文件夹即部门）；项目 = <code>projects/&lt;项目&gt;.project.config.json</code>（群成员写在配置的 <code>members</code> 里，详见 README.md）。</p>
+      <p class="hint">首次启动已自动初始化空间：<code>openstaffs/space.config.json</code>（空间总纲）与 <code>agents/staff0.agent.config.json</code>（0 号员工）。员工与项目不需要在这里配置（详见 README.md）。</p>
     </main>`;
 }
 

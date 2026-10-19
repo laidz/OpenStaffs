@@ -1,7 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile, stateDir, workDir,
+  agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile,
+  messagesDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
 } from "../../src/domain/paths.ts";
 
 describe("路径", () => {
@@ -23,5 +24,16 @@ describe("路径", () => {
     expect(conversationIdsFile(ws, workDir(ws, "alice"))).toBe(
       path.join("/tmp/company", "work", "alice", "conversation_ids.md"),
     );
+  });
+
+  it("机器私有目录 = openstaffs/.data（D19：目录合并）", () => {
+    expect(stateDir(ws)).toBe(path.join("/tmp/company", "openstaffs", ".data"));
+    expect(spaceDir(ws)).toBe(path.join("/tmp/company", "openstaffs"));
+    expect(spaceSkillsDir(ws)).toBe(path.join("/tmp/company", "openstaffs", "skills"));
+  });
+
+  it("消息库随 stateDir 搬迁：落在 openstaffs/.data/messages.sqlite（不改拼接语义）", () => {
+    expect(messagesDbFile(ws)).toBe(path.join("/tmp/company", "openstaffs", ".data", "messages.sqlite"));
+    expect(messagesDbFile(ws)).toBe(path.join(stateDir(ws), "messages.sqlite"));
   });
 });

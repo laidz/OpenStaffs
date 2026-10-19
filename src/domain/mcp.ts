@@ -76,7 +76,7 @@ function interpolate(
     return resolved;
   });
   if (missing !== undefined) {
-    errors.push(`缺少凭据：\${config.mcp.${missing}}（请在 .openstaffs/config.json 的 mcp.${missing} 配置）`);
+    errors.push(`缺少凭据：\${config.mcp.${missing}}（请在 openstaffs/.data/config.json 的 mcp.${missing} 配置）`);
     return undefined;
   }
   return out;

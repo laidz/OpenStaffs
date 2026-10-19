@@ -86,7 +86,7 @@ describe("全局 mcps.json + 按名引用（D16）", () => {
 
   it("凭据占位符可出现在 command / args / env / cwd；其余 ${...} 原样保留", () => {
     const ws = createWorkspace(root);
-    writeJson(path.join(root, ".openstaffs", "config.json"), {
+    writeJson(path.join(root, "openstaffs/.data", "config.json"), {
       mcp: { github: { token: "ghp_secret", host: "example.test" } },
     });
     writeJson(mcpDefinitionsFile(ws), {

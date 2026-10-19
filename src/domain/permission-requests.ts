@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stateDir, type Workspace } from "./paths.ts";
 
-/** 一条待处理的授权申请（落盘于 .openstaffs/permission-requests.json）。 */
+/** 一条待处理的授权申请（落盘于 openstaffs/.data/permission-requests.json）。 */
 export type PermissionRequest = {
   id: string;         // "pr_" + uuid
   agentId: string;    // 发起者（= 授权受益者）

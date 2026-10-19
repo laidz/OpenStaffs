@@ -60,7 +60,7 @@ describe("群回复 @触发（pump 集成）", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const ws = createWorkspace(root);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
 
     const events: ServerEvent[] = [];
@@ -119,15 +119,15 @@ describe("群回复 @触发（pump 集成）", () => {
   it("称谓自定义：pump 广播的 fallback 文本用真称谓（读 config）", async () => {
     seedEmployee("alice");
     seedGroup("yt", ["alice"]);
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify({ bossName: "掌柜" }));
 
     const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
     faux.setResponses([fauxAssistantMessage("收到！")]);
     const models = createModels();
     models.setProvider(faux.provider);
     const ws = createWorkspace(root);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, ".openstaffs", "state.sqlite"), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
     await harness.open();
 
     const events: ServerEvent[] = [];

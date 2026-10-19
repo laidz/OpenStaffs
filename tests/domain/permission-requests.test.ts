@@ -11,8 +11,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-pre-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function seedConfig(content: string) {
-  fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".openstaffs", "permission-requests.json"), content);
+  fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+  fs.writeFileSync(path.join(root, "openstaffs/.data", "permission-requests.json"), content);
 }
 
 describe("授权请求存储", () => {

@@ -115,7 +115,7 @@ const roomHistory: ToolDef = {
     // 读自有消息库（P1）：房间历史不再读各成员 transcript。
     // 工具只有 ctx.ws，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）→ 自开一个实例、用完即关；
     // SQLite 同进程多连接安全（HTTP / pump 用的是 main.ts 的唯一实例）。
-    // `.openstaffs` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
+    // `openstaffs/.data` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
     // 建库即空表 → 应返回「（暂无消息）」而不是报错。
     fs.mkdirSync(stateDir(ctx.ws), { recursive: true });
     const store = openMessageStore(messagesDbFile(ctx.ws));

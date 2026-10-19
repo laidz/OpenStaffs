@@ -17,7 +17,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-pump-"));
   ws = createWorkspace(root);
   // openMessageStore 不建父目录（接线方保证 stateDir 存在），这里对齐 main.ts 的接线前提。
-  fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
   store = openMessageStore(messagesDbFile(ws));
 });
 

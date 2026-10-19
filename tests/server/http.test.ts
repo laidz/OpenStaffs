@@ -44,7 +44,7 @@ afterEach(() => {
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
-  fs.rmSync(path.join(root, ".openstaffs"), { recursive: true, force: true });
+  fs.rmSync(path.join(root, "openstaffs/.data"), { recursive: true, force: true });
 });
 
 function start(deps: Omit<ServerDeps, "store">): Promise<{ base: string; close: () => Promise<void> }> {
@@ -207,11 +207,11 @@ async function startWithFaux(
     ...(options.bossName === undefined ? {} : { bossName: options.bossName }),
     ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
   };
-  // 称谓解析（bossNamesFor/readBossName）读的是 .openstaffs/config.json 文件，内存 getConfig 只服务 defaults；
+  // 称谓解析（bossNamesFor/readBossName）读的是 openstaffs/.data/config.json 文件，内存 getConfig 只服务 defaults；
   // 故自定义称谓必须落盘才生效（与 pump-trigger 用例同一真相源约定）。
   if (options.bossName !== undefined) {
-    fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify(config));
+    fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openstaffs/.data", "config.json"), JSON.stringify(config));
   }
   const faux = fauxProvider({
     provider: "faux",
@@ -220,7 +220,7 @@ async function startWithFaux(
   faux.setResponses(Array.from({ length: 20 }, (_, i) => fauxAssistantMessage(`收到${i}`)));
   const models = createModels();
   models.setProvider(faux.provider);
-  const harness = createPiHarness({ root, sqlitePath: path.join(root, `.openstaffs/state-${Date.now()}-${Math.random()}.sqlite`), models });
+  const harness = createPiHarness({ root, sqlitePath: path.join(root, `openstaffs/.data/state-${Date.now()}-${Math.random()}.sqlite`), models });
   await harness.open();
   const ws = createWorkspace(root);
   const store = new PermissionRequestStore(ws);
@@ -649,7 +649,7 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
     }, fauxAssistantMessage("第二轮回复")]);
     const models = createModels();
     models.setProvider(faux.provider);
-    const harness = createPiHarness({ root, sqlitePath: path.join(root, `.openstaffs/state-queue-${Date.now()}.sqlite`), models });
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, `openstaffs/.data/state-queue-${Date.now()}.sqlite`), models });
     await harness.open();
     const ws = createWorkspace(root);
     const events: ServerEvent[] = [];
