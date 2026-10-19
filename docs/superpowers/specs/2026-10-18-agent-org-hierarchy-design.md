@@ -48,9 +48,9 @@
 | D8 | **主管不能写自己的配置** | "人不可写自己"的延伸；自己的定义只能由上级主管 / 老板写 |
 | D9 | **权限 = 按工具** | `permissions = { write, read, bash, … }`；每个工具的值 = **路径列表**（`["/"]` = 任意）|
 | D10 | **合并 = 累加，不做覆盖** | 所有能力 / 权限一律**累加**、**接受同值重复**，**无优先级 / 覆盖逻辑** |
-| D11 | **权限累加路线** | `项目工作目录` + `project.config.json` + `agent 工作目录` + `agent.config.json`（**是否含 space/部门：待确认**，§11）|
+| D11 | **权限累加路线（配置内）** | `project.config.json` + `agent 工作目录` + `agent.config.json`（**项目无工作目录**）；再加**运行时权限**（见 D13）|
 | D12 | **能力累加路线** | `space` + `department`（从上到下递归）+ `project` + `agent`；`skills`/`mcp` 归全局定义、**不撞名**；`prompt` 累加（换行分割）|
-| D13 | **运行时自动授权（非显性）** | agent 自己的工作区 + 项目会话的项目工作区 → **所有工具**由**运行时自动授予**，不写进 config |
+| D13 | **运行时权限（非显性，不落盘）** | ① agent 自己的工作目录（所有工具）；② **主管对管理子树的写权**；均由**运行时**授予，不写进 config |
 | D14 | **新建默认值** | agent：`write:[]`、`read:["./"]`、`bash:["./"]`；**新工具默认空**；新建项目同理 |
 | D15 | **`permissions` 写入 = attenuation** | 写 `permissions` 时**值 ⊆ 写者自身该工具权限集（含继承）**；逐级收窄、可传递 |
 | D16 | **MCP = 全局定义 + 按名引用** | server 统一在全局定义，各消费方按 **mcp 名**引用（与 skills 同构）；取代"内联定义" |
@@ -62,6 +62,9 @@
 | D22 | **项目成员名单放 config** | `project.config.json.members`（不用 `members.md`）|
 | D23 | **老板最高** | 全可写；`request_permission`（向老板申请）保留；**唯一例外**：Staff0 拿到空间管理权 |
 | D24 | **Staff0（0 号员工）** | `agents/staff0.agent.config.json`，**首次启动自动建**；权限 = 写空间根 `./` |
+| D25 | **项目无工作目录** | 项目**没有**工作目录概念；需要共享目录时，由**人或项目主管**用项目的 `prompt` + `permissions` 按需定义 |
+| D26 | **项目 = 扁平配置文件** | `projects/<名字>.project.config.json`（与 agent 同构的扁平文件）；无 `data/` |
+| D27 | **agent 工作目录默认发 `MEMORY.md`** | 工作目录**仅 agent 有**；默认给它一个 `MEMORY.md`，其余内容 agent 自由发挥 |
 
 ---
 
@@ -80,13 +83,10 @@
 │        ├─ department.config.json
 │        ├─ bob.agent.config.json
 │        └─ carol.agent.config.json
-├─ projects/                                # 协作：群聊
-│  └─ demo/
-│     ├─ project.config.json                # 群声明（owner / members / prompt / 能力 / 权限）
-│     ├─ data/                              # 共享工作区
-│     └─ conversation_ids/
-├─ work/                                    # 工作树（平铺）
-│  ├─ alice/                                # 工作产出 + memory.md
+├─ projects/                                # 协作：群聊（**扁平配置，无工作目录**）
+│  └─ seo.project.config.json               # 群声明（owner / members / prompt / 能力 / 权限）
+├─ work/                                    # 工作目录（**仅 agent 有**）
+│  ├─ alice/                                # 默认发 MEMORY.md，其余内容 agent 自由发挥
 │  └─ bob/  carol/  dave/  staff0/  …
 └─ openstaffs/                              # 空间附属 + 机器私有
    ├─ space.config.json                     # 空间声明（prompt / skills / mcp / permissions）
@@ -183,14 +183,15 @@
 
 | 类别 | 累加路线 |
 |---|---|
-| `permissions` | `项目工作目录` + `project.config.json` + `agent 工作目录` + `agent.config.json` |
+| `permissions`（落盘） | `project.config.json` + `agent 工作目录` + `agent.config.json` |
+| `permissions`（**运行时**，不落盘） | agent 自己的工作目录（所有工具）+ **主管对管理子树的写权**（D13）|
 | `skills` / `mcp` | `space` + `department`（从上到下递归）+ `project` + `agent` |
 | `prompt` | `space` + `department`（从上到下递归）+ `project` + `agent` |
 
 - `skills` / `mcp` 已归**全局定义**（按名引用）→ **不会撞名**，累加即可。
 - `prompt` **累加**即可（**做好换行分割**）。
 
-> ⚠️ **待确认**：`permissions` 的路线里**是否还含 `space` / `department`**（见表，当前只有"项目 + agent"）。
+> 已定：`space` / `department` **不进**配置权限路线（"默认不补"）；主管的管理写权改由**运行时**授予。
 
 ---
 
@@ -235,10 +236,10 @@
 
 ## 11. 待定 / 风险
 
-- **`permissions` 累加路线是否含 `space` / `department`**（§6、§7）——待确认。
-- **attenuation（授权不越权）的适用范围**（你没明白的那条，换个说法）：现在每个工具都是"路径列表"。当**主管写下属的 `permissions`** 时，"只能给子集"这条限制是**对每个工具分别生效**（下属的 `read` 必须 ⊆ 主管的 `read`、`bash` 必须 ⊆ 主管的 `bash`…），还是**只管 `write` 这一个工具**？
+- **attenuation（授权不越权）的适用范围**：主管写下属 `permissions` 时"只能给子集"，是**对每个工具分别生效**（下属 `read` ⊆ 主管 `read`、`bash` ⊆ 主管 `bash`…），还是**只管 `write`**？
 - **未来新工具的登记**：新工具默认权限**空**（已定）；但**工具清单从哪来**、`permissions` 的合法键由谁定义？
-- **`skills` / `mcp` 引用语法**（你没明白的那条）：引用只写"名字"（如 `"skills": ["code-review"]`），那**这个名字到哪个目录去找**？`openstaffs/skills/`、系统内置、还是外部 `skillPaths`？是否也允许写路径？
+- **`skills` / `mcp` 引用语法**：名字解析到哪个目录（`openstaffs/skills/` / 系统内置 / 外部 `skillPaths`）；是否允许直接写路径。
+- **组会话链的落点**：项目变扁平（无目录）后，原先 `projects/<id>/conversation_ids/<成员>.md`（各成员在群里的会话链）放哪。
 - **系统作用域声明**：框架内置 prompt 模板如何并入"统一配置"（是否引入 `src/` 下的声明文件）。
 - **`AGENTS.md` 移除的兼容**：Pi 祖先链自动加载消失，需确认"私活"场景 instructions 注入路径覆盖完整。
 - **迁移**：P4 需一次性迁移脚本；不做双读。
