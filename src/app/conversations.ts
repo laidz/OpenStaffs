@@ -1,18 +1,17 @@
 import fs from "node:fs";
 import { conversationIdsFile, groupConversationIdsFile, workDir, type Workspace } from "../domain/paths.ts";
-import { findPerson, loadOrg, loadPerson, type OrgPerson } from "../domain/org.ts";
+import { findPerson, loadOrg } from "../domain/org.ts";
 import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
-import { memoryOf, type Employee } from "../domain/employee.ts";
+import { ensureMemory, loadEmployee, type Employee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
-import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
-import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { Relation } from "../domain/types.ts";
 import { assembleCapabilities } from "../capabilities/assemble.ts";
+import { renderPromptChain } from "../capabilities/prompt.ts";
 import { scopesForOrg } from "../capabilities/scopes.ts";
-import { resolveSkillRefs } from "../capabilities/skills.ts";
+import { renderSkillCatalog } from "../capabilities/skills.ts";
 import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
 import { effectivePermissions } from "../permissions/effective.ts";
 import { runtimeGrantsFor } from "../permissions/runtime.ts";
@@ -42,7 +41,7 @@ function scopesFor(ws: Workspace, relation: Relation, speaker: Employee) {
 }
 
 /** 系统提示词变量上下文（供 prompt-vars 取值）；私聊不带 projectId。 */
-export function promptContextFor(ws: Workspace, relation: Relation, speaker: OrgPerson): PromptVarContext {
+export function promptContextFor(ws: Workspace, relation: Relation, speaker: Employee): PromptVarContext {
   return {
     ws,
     kind: relation.kind,
@@ -52,17 +51,14 @@ export function promptContextFor(ws: Workspace, relation: Relation, speaker: Org
   };
 }
 
-/** 会话快照（仅新开会话时渲染一次）：环境段 → 能力累加 prompt → 记忆 → 技能目录（恒含系统内置）。 */
+/** 会话快照（仅新开会话时渲染一次）：prompt 链（空间 → 部门 → 项目 → 员工）→ 记忆 → 技能目录（恒含系统内置）。 */
 export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
-  const capabilities = assembleCapabilities(scopesFor(ws, relation, speaker));
+  const scopes = scopesFor(ws, relation, speaker);
   const parts: string[] = [];
-  const environment = renderEnvironment(promptContextFor(ws, relation, speaker));
-  if (environment !== "") parts.push(environment);
-  if (capabilities.prompt !== "") parts.push(capabilities.prompt);
-  const memory = memoryOf(ws, speaker.id);
-  if (memory.trim() !== "") parts.push(memory);
-  const skillDirs = resolveSkillRefs(ws, capabilities.skills, readSkillPaths(ws)).resolved.map((skill) => skill.dir);
-  parts.push(renderSkills(listSkills([...skillDirs, FRAMEWORK_SKILLS_DIR])));
+  const chain = renderPromptChain(scopes, promptContextFor(ws, relation, speaker));
+  if (chain !== "") parts.push(chain);
+  if (speaker.memory !== "") parts.push(speaker.memory);
+  parts.push(renderSkillCatalog(ws, scopes, readSkillPaths(ws)));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
 
@@ -98,7 +94,7 @@ function ensureCwd(cwd: string): string {
 }
 
 function specFor(
-  ws: Workspace, relation: Relation, speaker: OrgPerson, defaults?: SessionDefaults, mcp?: McpSessionResolver,
+  ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): ConversationSpec {
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
@@ -124,7 +120,8 @@ async function ensure(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
-  const speaker = loadPerson(ws, speakerId);
+  const speaker = loadEmployee(ws, speakerId);
+  ensureMemory(ws, speakerId); // D27：会话建立时补建 work/<id>/MEMORY.md
   const file = chainFileFor(ws, relation, speakerId);
   const active = activeSession(file);
   if (active !== undefined && (await harness.attach(active.id, accessFor(ws, relation, speaker)))) {
@@ -152,7 +149,8 @@ export async function newSession(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
-  const speaker = loadPerson(ws, speakerId);
+  const speaker = loadEmployee(ws, speakerId);
+  ensureMemory(ws, speakerId); // D27：会话建立时补建 work/<id>/MEMORY.md
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
   return convId;

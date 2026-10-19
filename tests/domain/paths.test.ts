@@ -2,7 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile,
-  messagesDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
+  memoryFile, messagesDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
 } from "../../src/domain/paths.ts";
 
 describe("路径", () => {
@@ -35,5 +35,12 @@ describe("路径", () => {
   it("消息库随 stateDir 搬迁：落在 openstaffs/.data/messages.sqlite（不改拼接语义）", () => {
     expect(messagesDbFile(ws)).toBe(path.join("/tmp/company", "openstaffs", ".data", "messages.sqlite"));
     expect(messagesDbFile(ws)).toBe(path.join(stateDir(ws), "messages.sqlite"));
+  });
+});
+
+describe("记忆文件落点（D27）", () => {
+  it("memoryFile = <空间>/work/<id>/MEMORY.md", () => {
+    const ws = createWorkspace("/office");
+    expect(memoryFile(ws, "alice")).toBe(path.join("/office", "work", "alice", "MEMORY.md"));
   });
 });

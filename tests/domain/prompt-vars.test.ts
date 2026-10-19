@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import {
-  agentId, agentName, bossName, memberCount, members, projectId, projectName, promptVariables, workdir,
-  type PromptVarContext,
+  agentId, agentName, bossName, memberCount, members, projectId, projectName, promptVariables, sessionInfo, sessionKind,
+  workdir, type PromptVarContext,
 } from "../../src/domain/prompt-vars.ts";
 import { seedOffice } from "../helpers/office.ts";
 
@@ -73,11 +73,26 @@ describe("提示词变量", () => {
     expect(memberCount(dmCtx("alice"))).toBe(0);
   });
 
+  it("session_kind / session_info：私聊一句 / 群聊带项目与成员", () => {
+    seedOffice(root, {
+      agents: [{ id: "alice", alias: "爱丽丝" }, { id: "bob" }],
+      projects: [{ id: "demo", alias: "演示项目", members: ["alice", "bob"] }],
+    });
+    expect(sessionKind(dmCtx("alice"))).toBe("dm");
+    expect(sessionKind(groupCtx("demo", "alice"))).toBe("group");
+    expect(sessionInfo(dmCtx("alice"))).toContain("私聊");
+    const group = sessionInfo(groupCtx("demo", "alice"));
+    expect(group).toContain("演示项目");
+    expect(group).toContain("爱丽丝");
+    expect(group).toContain("bob");
+  });
+
   it("promptVariables 注册表暴露全部变量函数（消费端按名字调用）", () => {
     seedOffice(root, { agents: [{ id: "alice", alias: "爱丽丝" }], projects: [{ id: "demo", members: ["alice"] }] });
     const group = groupCtx("demo", "alice");
     expect(Object.keys(promptVariables).sort()).toEqual([
-      "agent_id", "agent_name", "boss_name", "member_count", "members", "project_id", "project_name", "workdir",
+      "agent_id", "agent_name", "boss_name", "group_rules", "member_count", "members", "project_id", "project_name",
+      "session_info", "session_kind", "workdir",
     ]);
     expect(promptVariables["agent_name"]?.(group)).toBe("爱丽丝");
     expect(promptVariables["workdir"]?.(group)).toBe(path.join(root, "work", "alice"));

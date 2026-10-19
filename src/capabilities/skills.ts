@@ -3,6 +3,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spaceSkillsDir, type Workspace } from "../domain/paths.ts";
+import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
+import type { LoadedConfig } from "../config/schema.ts";
 
 export type SkillRef = { name: string; dir: string };
 
@@ -47,4 +49,30 @@ export function resolveSkillRefs(
     resolved.push({ name, dir: hit });
   }
   return { resolved, missing };
+}
+
+/** 累加作用域链各层的 skills 名（D10：不去重、空串丢弃），保序。 */
+export function skillNamesFrom(scopes: readonly LoadedConfig[]): string[] {
+  const names: string[] = [];
+  for (const scope of scopes) {
+    for (const raw of scope.fields.skills) {
+      const name = raw.trim();
+      if (name !== "") names.push(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * 会话的「可用技能」段：作用域链累加的技能名 → 按名解析目录，**恒含系统内置技能**；
+ * 无可用技能时仍会列出系统内置技能（本段恒非空，不返回空串）。
+ */
+export function renderSkillCatalog(
+  ws: Workspace,
+  scopes: readonly LoadedConfig[],
+  extraRoots: readonly string[] = [],
+): string {
+  const names = skillNamesFrom(scopes);
+  const { resolved } = resolveSkillRefs(ws, names, extraRoots);
+  return renderSkills(listSkills([...resolved.map((skill) => skill.dir), FRAMEWORK_SKILLS_DIR]));
 }

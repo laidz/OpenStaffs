@@ -2,128 +2,137 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
-import { listEmployees, loadEmployee, memoryOf, renderInstructions } from "../../src/domain/employee.ts";
-import { loadPerson } from "../../src/domain/org.ts";
+import { createWorkspace, memoryFile, workDir } from "../../src/domain/paths.ts";
+import { listEmployees, loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-emp-"));
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-function write(id: string, content: string) {
-  fs.mkdirSync(path.join(tmp, "agents"), { recursive: true });
-  fs.writeFileSync(path.join(tmp, "agents", `${id}.agent.config.json`), content);
+/** 在 agents/ 下写一个人的定义文件（D1/D2）。 */
+function seed(id: string, config: Record<string, unknown> = {}): string {
+  const file = path.join(tmp, "agents", `${id}.agent.config.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  return file;
 }
 
-describe("loadEmployee（org 薄适配层，B1）", () => {
-  it("转发到 org：读 id / model / prompt，renderInstructions === prompt", () => {
+describe("loadEmployee（单一 config 定义）", () => {
+  it("从 .agent.config.json 读出 alias / prompt / skills / mcp / model", () => {
     const ws = createWorkspace(tmp);
-    write("alice", JSON.stringify({ model: "opencode-go/deepseek-v4.1-flash", thinkingLevel: "low", prompt: "你是 alice。" }));
-
+    seed("alice", {
+      alias: "爱丽丝",
+      prompt: "你是爱丽丝。",
+      skills: ["写报告", "查数据"],
+      mcp: ["github"],
+      model: "opencode-go/deepseek-v4.1-flash",
+      thinkingLevel: "low",
+    });
     const e = loadEmployee(ws, "alice");
-    expect(e).toEqual(loadPerson(ws, "alice")); // 适配层 = org 的同一个人
     expect(e.id).toBe("alice");
+    expect(e.alias).toBe("爱丽丝");
+    expect(e.prompt).toBe("你是爱丽丝。");
+    expect(e.skills).toEqual(["写报告", "查数据"]);
+    expect(e.mcp).toEqual(["github"]);
     expect(e.model).toEqual({ model: "opencode-go/deepseek-v4.1-flash", thinkingLevel: "low" });
-    expect(renderInstructions(e)).toBe("你是 alice。"); // D5：人级 instructions = 内联 prompt
+    expect(e.workDir).toBe(workDir(ws, "alice"));
+    expect("entry" in e).toBe(false); // AGENTS.md 入口已废除（D5）
+    expect("profile" in e).toBe(false); // profile.md 已废除（D2）
+    expect("departmentPath" in e).toBe(false); // 定义来源收口到单一 config 文件
   });
 
-  it("prompt 缺省时为空串，renderInstructions 也为空", () => {
+  it("不再读 AGENTS.md / profile.md（写在同一目录也不生效）", () => {
     const ws = createWorkspace(tmp);
-    write("bob", JSON.stringify({ model: "faux/faux-model" }));
+    seed("bob");
+    // 旧机制的真实布局：agents/<id>/AGENTS.md（不是 agents/ 根）；写在这里也不生效
+    const bobDir = path.join(tmp, "agents", "bob");
+    fs.mkdirSync(bobDir, { recursive: true });
+    fs.writeFileSync(path.join(bobDir, "AGENTS.md"), "空间总纲（应被忽略）");
+    fs.writeFileSync(path.join(bobDir, "profile.md"), "岗位说明（应被忽略）");
     const e = loadEmployee(ws, "bob");
-    expect(e.prompt).toBe("");
-    expect(renderInstructions(e)).toBe("");
+    expect(e.prompt).toBeUndefined();
+    expect(JSON.stringify(e)).not.toContain("空间总纲");
+    expect(JSON.stringify(e)).not.toContain("岗位说明");
   });
 
-  it("员工不存在时报错（沿用旧口径）", () => {
+  it("定义文件缺失 → 抛「员工不存在」", () => {
     const ws = createWorkspace(tmp);
     expect(() => loadEmployee(ws, "nobody")).toThrow("员工不存在");
   });
 
-  it("坏 JSON / model 非字符串时不崩溃", () => {
+  it("坏 JSON / 空文件 → 与空配置等价（不崩，model 为空）", () => {
     const ws = createWorkspace(tmp);
-    write("carol", "{ not json");
-    expect(loadEmployee(ws, "carol").model).toEqual({ model: "" });
-    write("carol", JSON.stringify({ model: 42 }));
-    expect(loadEmployee(ws, "carol").model).toEqual({ model: "" });
+    fs.mkdirSync(path.join(tmp, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "agents", "carol.agent.config.json"), "{ not json");
+    const e = loadEmployee(ws, "carol");
+    expect(e.model).toEqual({ model: "" });
+    expect(e.skills).toEqual([]);
+    expect(e.mcp).toEqual([]);
+    expect(e.prompt).toBeUndefined();
+    expect(e.permissions).toBeUndefined();
+
+    // 真·空文件（0 字节）走同一兜底：按空配置处理，不崩
+    fs.writeFileSync(path.join(tmp, "agents", "dan.agent.config.json"), "");
+    const empty = loadEmployee(ws, "dan");
+    expect(empty.model).toEqual({ model: "" });
+    expect(empty.prompt).toBeUndefined();
+    expect(empty.skills).toEqual([]);
   });
 
   it("thinkingLevel 只接受非空字符串（trim）；数字 / null / 空串忽略", () => {
     const ws = createWorkspace(tmp);
-    write("henry", JSON.stringify({ model: "faux/m", thinkingLevel: 42 }));
+    seed("henry", { model: "faux/m", thinkingLevel: 42 });
     expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
-    write("henry", JSON.stringify({ model: "faux/m", thinkingLevel: "  high  " }));
+    seed("henry", { model: "faux/m", thinkingLevel: "  high  " });
     expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m", thinkingLevel: "high" });
-    write("henry", JSON.stringify({ model: "faux/m", thinkingLevel: "   " }));
+    seed("henry", { model: "faux/m", thinkingLevel: "   " });
     expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
-    write("henry", JSON.stringify({ model: "faux/m", thinkingLevel: null }));
+    seed("henry", { model: "faux/m", thinkingLevel: null });
     expect(loadEmployee(ws, "henry").model).toEqual({ model: "faux/m" });
   });
 
-  it("alias 作为展示名读出（改名不动 id）", () => {
+  it("alias / prompt 两端空白被 trim", () => {
     const ws = createWorkspace(tmp);
-    write("dave", JSON.stringify({ model: "faux/m", alias: "灯芯草" }));
-    expect(loadEmployee(ws, "dave").alias).toBe("灯芯草");
-  });
-
-  it("alias 非字符串 / 空串时 alias 为 undefined", () => {
-    const ws = createWorkspace(tmp);
-    write("erin", JSON.stringify({ model: "faux/m" }));
-    expect(loadEmployee(ws, "erin").alias).toBeUndefined();
-    write("frank", JSON.stringify({ alias: 42 }));
-    expect(loadEmployee(ws, "frank").alias).toBeUndefined();
-  });
-
-  it("alias 两端空白被 trim", () => {
-    const ws = createWorkspace(tmp);
-    write("grace", JSON.stringify({ alias: "  阿草  " }));
+    seed("grace", { alias: "  阿草  ", prompt: "  你是阿草。  " });
     expect(loadEmployee(ws, "grace").alias).toBe("阿草");
+    expect(loadEmployee(ws, "grace").prompt).toBe("你是阿草。");
+  });
+
+  it("permissions 按 config 读出（工具 → 路径表）", () => {
+    const ws = createWorkspace(tmp);
+    seed("pat", { permissions: { write: ["./out"], read: ["./"] } });
+    expect(loadEmployee(ws, "pat").permissions).toEqual({ write: ["./out"], read: ["./"] });
+  });
+
+  it("记忆读自 work/<id>/MEMORY.md（trim）；缺失 → 空串", () => {
+    const ws = createWorkspace(tmp);
+    seed("alice", { prompt: "你是 alice。" });
+    expect(loadEmployee(ws, "alice").memory).toBe("");
+    fs.mkdirSync(workDir(ws, "alice"), { recursive: true });
+    fs.writeFileSync(memoryFile(ws, "alice"), "  记住这条  \n");
+    expect(loadEmployee(ws, "alice").memory).toBe("记住这条");
+  });
+
+  it("renderInstructions = prompt（缺省空串）", () => {
+    const ws = createWorkspace(tmp);
+    seed("alice", { prompt: "你是 alice。" });
+    expect(renderInstructions(loadEmployee(ws, "alice"))).toBe("你是 alice。");
+    seed("earl", {});
+    expect(renderInstructions(loadEmployee(ws, "earl"))).toBe("");
   });
 });
 
-describe("memoryOf（D27：优先 work/<id>/MEMORY.md，旧位置回落）", () => {
-  function writeFile(rel: string, content: string): void {
-    const file = path.join(tmp, rel);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, content);
-  }
-
-  it("读 work/<id>/MEMORY.md", () => {
-    const ws = createWorkspace(tmp);
-    write("alice", JSON.stringify({ prompt: "你是 alice。" }));
-    writeFile(path.join("work", "alice", "MEMORY.md"), "新记忆。");
-    expect(memoryOf(ws, "alice")).toBe("新记忆。");
-  });
-
-  it("work 下为空/缺失时回落到旧位置 agents/<id>/MEMORY.md", () => {
-    const ws = createWorkspace(tmp);
-    write("alice", JSON.stringify({ prompt: "你是 alice。" }));
-    writeFile(path.join("agents", "alice", "MEMORY.md"), "旧记忆。");
-    expect(memoryOf(ws, "alice")).toBe("旧记忆。");
-    // work 下写了空白 → 视为无，继续回落
-    writeFile(path.join("work", "alice", "MEMORY.md"), "   \n");
-    expect(memoryOf(ws, "alice")).toBe("旧记忆。");
-  });
-
-  it("两处都没有 → 空串（不崩）", () => {
-    const ws = createWorkspace(tmp);
-    write("bob", JSON.stringify({ prompt: "" }));
-    expect(memoryOf(ws, "bob")).toBe("");
-  });
-});
-
-it("listEmployees：按 id 排序、跳过隐藏条目、坏 config 不崩", () => {
+it("listEmployees：按 id 排序、跳过隐藏项与无定义文件的目录", () => {
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-list-"));
   try {
     fs.mkdirSync(path.join(root2, "agents"), { recursive: true });
     for (const id of ["bob", "alice"]) {
-      fs.writeFileSync(path.join(root2, "agents", `${id}.agent.config.json`), JSON.stringify({ prompt: `你是 ${id}。` }));
+      fs.writeFileSync(path.join(root2, "agents", `${id}.agent.config.json`), "{}\n");
     }
+    fs.mkdirSync(path.join(root2, "agents", "eng"), { recursive: true }); // 无定义文件的部门目录
     fs.mkdirSync(path.join(root2, "agents", ".hidden"), { recursive: true });
-    fs.writeFileSync(path.join(root2, "agents", ".hidden", "x.agent.config.json"), JSON.stringify({ prompt: "x" }));
-    fs.writeFileSync(path.join(root2, "agents", "alice.agent.config.json"), "{坏");
+    fs.writeFileSync(path.join(root2, "agents", ".hidden", "x.agent.config.json"), "{}\n");
     const ws = createWorkspace(root2);
     expect(listEmployees(ws).map((e) => e.id)).toEqual(["alice", "bob"]);
-    expect(listEmployees(ws)[0]!.model).toEqual({ model: "" });
   } finally {
     fs.rmSync(root2, { recursive: true, force: true });
   }

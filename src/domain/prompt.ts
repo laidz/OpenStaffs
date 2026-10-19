@@ -1,25 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { promptVariables, type PromptVarContext } from "./prompt-vars.ts";
-
-export type PromptKind = "dm" | "group";
-
-/** 系统内置模板目录（本文件在 src/domain → src/prompts）。 */
-const FRAMEWORK_PROMPT_DIR = fileURLToPath(new URL("../prompts/", import.meta.url));
-
-/** 模板路径：固定指向系统内置（环境段属系统级，不可被空间覆盖；要加规矩写空间 config 的 prompt）。 */
-export function promptTemplatePath(kind: PromptKind): string {
-  return path.join(FRAMEWORK_PROMPT_DIR, `${kind}.md`);
-}
-
-function readFileOrEmpty(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
-}
 
 /** 表达式 = 变量名 + 多级路径（点号 / `[下标]`）；未知变量或越界 → undefined。 */
 function resolveExpression(expr: string, ctx: PromptVarContext): unknown {
@@ -28,7 +7,7 @@ function resolveExpression(expr: string, ctx: PromptVarContext): unknown {
   if (head === undefined || head === "") return undefined;
   let value: unknown;
   try {
-    // 环境段是尽力而为的装饰：任一变量取值抛错都不该拖垮建会话。
+    // prompt 渲染是尽力而为的装饰：任一变量取值抛错都不该拖垮建会话。
     value = promptVariables[head]?.(ctx);
   } catch {
     return undefined;
@@ -62,11 +41,4 @@ function formatValue(value: unknown): string {
 /** 渲染模板：把 `{{ 变量.路径 }}` 替换为文本（未知 → 空串）。 */
 export function renderTemplate(text: string, ctx: PromptVarContext): string {
   return text.replace(/\{\{([^{}]*)\}\}/gu, (_match, expr: string) => formatValue(resolveExpression(expr.trim(), ctx)));
-}
-
-/** 渲染系统环境段；模板缺失 / 为空 → 空串（不产出空段）。 */
-export function renderEnvironment(ctx: PromptVarContext): string {
-  const template = readFileOrEmpty(promptTemplatePath(ctx.kind)).trim();
-  if (template === "") return "";
-  return renderTemplate(template, ctx).trim();
 }

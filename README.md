@@ -61,6 +61,10 @@
 
 在办公空间的 `openstaffs/space.config.json` 里，给全体会话加总纲 / 默认技能与 MCP：
 
+> 新建空间时框架已自动物化一份**内置空间总纲**（写进本文件的 `prompt` 字段）——这也是空间总纲的唯一来源：想改直接改这个 `prompt`（改完**新开会话**生效），不必（也不能）改框架文件。
+>
+> **旧空间升级提示**：已存在 `space.config.json` 的空间不会自动迁移总纲。**P5 之前建的空间如需新版空间总纲，请删除 `openstaffs/space.config.json` 后重启**（框架会重新物化一份内置总纲；删前先备份你手改过的内容）。
+
 ```json
 {
   "prompt": "汇报用中文、简短；先给结论。",
@@ -91,7 +95,7 @@ EOF
 - `skills` / `mcp`：可选，技能名 / MCP server 名数组（累加；见「空间能力」与「MCP server」两节）。
 - `permissions`：可选，**按工具 → 路径列表**。缺省 `{ "write": [], "read": ["./"], "bash": ["./"] }`；相对路径相对**本文件所在目录**（即她所在部门目录）。员工配置**只能由你（或框架的授权流程）写**——员工自己（含主管）写不了 `*.agent.config.json`。
 - 部门可写 `department.config.json` 声明展示名与负责人：`{ "alias": "工程部", "head": ["alice"] }`——`head` 只能写**本级直属成员**（写子部门成员 / 写错 id 视为无）；负责人对自己所在部门的**整棵子树**有写权限（穿透），但其中的 `*.agent.config.json` 仍在硬保护内（写不了）——**主管当前没有直接写下级定义的通道**，改下级定义请由你写或走授权流程。你写配置一律通过 `write` 工具（受 attenuation 校验）；`bash` 写配置会被拦。
-- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里；可放 `MEMORY.md`，新会话自动注入）；`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` 要**新开会话**生效，`permissions` 每轮写校验即时读。
+- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里；记忆文件落点即 `work/<她的 id>/MEMORY.md`，新会话自动注入）；`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` 要**新开会话**生效，`permissions` 每轮写校验即时读。
 
 她的展示名与人格（`prompt`）都可以继续完善——需要什么直接问她：她能自己动手的会自己动手，动不了的会告诉你怎么做。
 

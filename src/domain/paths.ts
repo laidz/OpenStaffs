@@ -58,3 +58,8 @@ export const WORK_DIR_NAME = "work";
 export function workDir(ws: Workspace, id: string): string {
   return path.join(ws.root, WORK_DIR_NAME, id);
 }
+
+/** 默认记忆文件（D27）：工作目录里的 MEMORY.md。 */
+export function memoryFile(ws: Workspace, id: string): string {
+  return path.join(workDir(ws, id), "MEMORY.md");
+}

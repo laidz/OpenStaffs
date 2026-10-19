@@ -1413,3 +1413,38 @@ git commit -m "chore(p5): 清点删除旧机制（AGENTS.md/profile.md/members.m
 - **B5**：File Structure 里 `src/capabilities/scopes.ts` / `skills.ts` 改为「复用（追加导出）、不得重写」；`capabilityScopesFor` 按 P3 的别名方案（`= scopesForOrg`）追加。
 - **N3**：`ToolPermissionMap` 的 import 从 `./permissions.ts` 改为 P3 的 `src/config/schema.ts`（或 `src/config/load.ts` 别名）。
 - **P1 对齐**：跨阶段假设新增「P1 已落地事实」段（`RoomMessage` 条目键 `store:<seq>`、`mergeRoomMessages` 已删、库实例唯一化在 `main.ts`、`ToolContext` 带 `broadcast`），并声明 P5 不碰 `src/store/`、链文件与 `messagesDbFile` 不冲突。
+
+---
+
+## P5 执行对齐（2026-10-19；**优先于正文对应段落**）
+
+> 依据：P3/P4 实际落地 + 跨计划裁定（B1–B5 / N3 / N4）。**凡本节与正文冲突，以本节为准**；正文给的实现骨架仍有效，差异只列在下。
+
+- **分支**：以 **`feat/definition-model`** 为准（自 `master` = P4 合并后的 `a7a5ea2` 之后新开）；不 push；完成后 `merge --squash` 回 master 并删除分支。
+- **Task 1（记忆落点）**：
+  - `paths.memoryFile(ws, id)` = `path.join(workDir(ws, id), "MEMORY.md")`（`workDir` 复用 P2，正文照写）。
+  - `employee.ts` **本任务只加 `ensureMemory`**（幂等建 `work/<id>/` + 空 `MEMORY.md`）；**不改 `loadEmployee` 的返回形状、不加 `Employee.memory`**——`Employee` 的整体收口归 **Task 2**。Task 1 的测试只断言 `memoryFile` / `ensureMemory` / 「打开会话自动补建」；`loadEmployee(...).memory` 的断言放 Task 2。
+  - 保留现有 `memoryOf` 不动（conversations 仍用它）；本任务只在 conversations 的会话建立处新增 `ensureMemory(ws, speakerId)` 调用。
+  - 夹具：正文里 `write("alice", "AGENTS.md", …)` 是旧写法 → 改为一律写 `agents/<id>.agent.config.json`（可用 `tests/helpers/office.ts` 的 `seedOffice`）。
+- **Task 2（人 = 单一 config）**：
+  - 现行 `src/domain/employee.ts` 是 P2 的 org 薄层（`Employee = OrgPerson`；导出 `loadEmployee`/`listEmployees`/`renderInstructions`/`memoryOf`）。本任务**整体重写** `Employee` 为正文字段集（`id/dir/workDir/memory/model/alias?/prompt?/skills/mcp/permissions?`，**无 `departmentPath`/`file`/`entry`/`profile`**）；`loadEmployee` = P2 `loadPerson` 定位 + P3 `loadAgentConfig` 解析 + `memoryFile` 读记忆；`renderInstructions(person) = person.prompt ?? ""`；**删除 `memoryOf`**（conversations 改为 `speaker.memory`）。
+  - `tests/domain/employee.test.ts` **已存在**（P2/P3 落地）→ **改写**而非新建。
+  - **已完成、不要再改**：`http.ts` 的 `roomExists`（P3 已改 `findPerson(loadOrg)` + `loadProjectConfig`）、`registry.ts` 的 `member_profile`（P3 已读 agent config、无 `profile.md`）。正文 Task 2 Step 5 **作废**。
+  - `ToolPermissionMap`：从 **`src/config/schema.ts`** 具名导入 `PermissionTable`（P3 的 `load.ts` **没有** `CapabilityConfig`/`ToolPermissionMap` 别名——裁定 N3）。
+- **Task 3（技能按名）**：
+  - **不要**在 `src/domain/skills.ts` 加 `resolveSkillsByName`——P3 已在 `src/capabilities/skills.ts` 落地唯一按名解析 `resolveSkillRefs(ws, names, extraRoots?) -> { resolved: {name,dir}[]; missing: string[] }`（去重保序、不安全名进 `missing`）。P5 只在其上**追加**两个导出（B5：不得重写）：
+    - `skillNamesFrom(scopes: readonly LoadedConfig[]): string[]`（累加各层 `fields.skills`；D10：不去重、空串丢弃、保序）
+    - `renderSkillCatalog(ws: Workspace, scopes: readonly LoadedConfig[], extraRoots: readonly string[] = []): string`（内部 `resolveSkillRefs` 取目录 + `domain/skills.ts` 的 `listSkills`/`renderSkills`，恒含 `FRAMEWORK_SKILLS_DIR`）
+  - **作用域链取用**：用 `conversations.ts` 既有本地 `scopesFor(ws, relation, speaker)`（内部调 `scopesForOrg(ws, speaker.id, relation.kind === "group" ? relation.project : undefined)`）。**不要**新增 `capabilityScopesFor` 别名、**不要**改 `scopes.ts`（B5）。
+  - 正文的 `resolveSkillsByName` / `CapabilityScope` 作废；测试改为对 `skillNamesFrom` / `renderSkillCatalog`（`tests/capabilities/skills.test.ts` 追加）；`src/domain/skills.ts` **不改**。
+- **Task 4（prompt 累加）**：
+  - 作用域条目类型 = P3 的 `LoadedConfig`（`src/config/schema.ts`），**没有** `CapabilityScope`。故 `renderPromptChain(scopes: readonly LoadedConfig[], ctx: PromptVarContext): string`，读 `scope.fields.prompt`；测试用最小 `LoadedConfig` 夹具。
+  - `prompt-vars.ts`：在既有 `promptVariables` 表追加 `session_kind`(= `ctx.kind`) 与 `session_info`（正文函数可直接用，`bossName`/`projectName`/`memberCount`/`members` 均已在位）。
+  - 删 `prompt.ts` 的 `renderEnvironment` / `promptTemplatePath`（及随之无用的 `FRAMEWORK_PROMPT_DIR`/`PromptKind`）、删 `src/prompts/dm.md` / `group.md`、改写 `src/prompts/space.md`（正文文案可用；P4 的 `ensureSpaceConfig` 会物化它）。
+  - `instructionsFor` 新组成 = `renderPromptChain(scopesFor(...), promptContextFor(...))` + `speaker.memory`（Task 2 字段）+ `renderSkillCatalog(ws, scopesFor(...), readSkillPaths(ws))`；**不再**用 `renderEnvironment`；`assembleCapabilities` 仍留在 `specFor` 里供 MCP 名使用。
+- **Task 5（项目扁平化）**：**P3 已完整落地**——`projects/<名>.project.config.json`；`src/domain/project.ts` 导出 `Project = {id, alias, config: LoadedConfig}` + `createProject`/`loadProject`/`listProjects`；`access-control.ts` 的 `parseMembers`/`projectsOf` 读 `.config.fields.members`；`paths.ts` 已删 `membersFile`/`projectDir`。**本任务无代码改动**（正文各 step 作废）——只断言现状通过；**不要**把 `Project` 改成正文的 `{members, owner, prompt}` 顶层形状（会打断 `access-control.ts` / `prompt-vars.ts` 的消费）。
+- **Task 6（cwd / 会话链）**：
+  - `relationCwd(ws, _relation, speakerId)` **已是 3 参、已返回 `workDir(ws, speakerId)`**（P3 落地）→ 正文这部分无需改，保留 `_relation` 未用参数。
+  - 仍需做：**会话链落点收进机器私有**。删 `paths.ts` 的 `conversationIdsFile` / `groupConversationIdsFile`，加 `dmChainFile(ws, agentId)` / `groupChainFile(ws, project, agentId)` → `stateDir(ws)/chains/…`（正文命名可用）；`conversations.ts` 的 `chainFileFor` / `sessionChains` 改用两者。现行 dm 链在 `work/<id>/conversation_ids.md`（不在员工目录），本任务把它一并收进 `stateDir/chains/`（spec §3 机器私有）。
+  - `tests/domain/paths.test.ts` 现有的 `groupConversationIdsFile` 断言改为新 helper。
+- **Task 7**：`src/mcp.json` 已由 P3 删除（**无需再删**）；其余 grep 断言照写（`renderEnvironment` / `promptTemplatePath` / `skillDirsFor` / `AGENTS\.md` / `profile\.md` / `members\.md` / `membersFile` / `projectDir(` 期望为空）。`renderInstructions` 保留（裁定 B1），不做「期望为空」断言。

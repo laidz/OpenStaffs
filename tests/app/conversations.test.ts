@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
+import { createWorkspace, memoryFile } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
@@ -13,6 +13,7 @@ import {
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
+import { newSpaceConfig } from "../../src/domain/space.ts";
 import { seedOffice } from "../helpers/office.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
 
@@ -43,6 +44,21 @@ describe("应用用例", () => {
       expect(fs.existsSync(path.join(root, "work", "alice"))).toBe(true);
       const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain.map((r) => r.id)).toEqual([convId]);
+      // 会话链不在员工目录（D25/D26）：agents/<id>/conversation_ids.md 不存在
+      expect(fs.existsSync(path.join(root, "agents", "alice", "conversation_ids.md"))).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("打开会话时自动补建 work/<id>/MEMORY.md（D27）", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      await openDm(ws, harness, "alice");
+      expect(fs.existsSync(memoryFile(ws, "alice"))).toBe(true);
     } finally {
       await harness.close();
     }
@@ -88,7 +104,7 @@ describe("应用用例", () => {
     }
   });
 
-  it("instructions：环境段 → 空间/部门/项目/员工 prompt 累加 → 记忆 → 技能目录（含系统内置）", () => {
+  it("instructions：prompt 链（空间 → 部门 → 项目 → 员工）→ 记忆 → 技能目录（含系统内置）", () => {
     const ws = seedOffice(root, {
       space: { prompt: "空间总纲" },
       departments: [{ path: "eng", prompt: "部门规矩" }],
@@ -109,6 +125,16 @@ describe("应用用例", () => {
     const ws = seedOffice(root, { agents: [{ id: "alice" }] });
     expect(relationCwd(ws, { kind: "group", project: "yt" }, "alice")).toBe(path.join(root, "work", "alice"));
     expect(relationCwd(ws, { kind: "dm", employeeId: "alice" }, "alice")).toBe(path.join(root, "work", "alice"));
+  });
+
+  it("关系工作目录：私聊与群聊都是发言人的 work/<id>/，群聊不落项目目录（D20/D25/D26）", () => {
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
+    expect(relationCwd(ws, { kind: "dm", employeeId: "alice" }, "alice")).toBe(path.join(root, "work", "alice"));
+    // 群聊 cwd = 发言人的 work 目录（Review Focus #4），不是项目目录（projects/yt）
+    expect(relationCwd(ws, { kind: "group", project: "yt" }, "bob")).toBe(path.join(root, "work", "bob"));
   });
 
   it("access：权限 = 项目 + 员工累加 + 运行时（工作目录 / 主管写权 / 技能根）", () => {
@@ -180,6 +206,26 @@ describe("应用用例", () => {
       expect(readChain(bobFile)).toHaveLength(1);
       expect(readChain(aliceFile)[0]!.id).toBe(aliceConv);
       expect(readChain(bobFile)[0]!.id).toBe(bobConv);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("群聊链落 openstaffs/.data/chains/，不落员工目录（D25/D26）", async () => {
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      await openGroup(ws, harness, "yt", "alice");
+      const chainsDir = path.join(root, "openstaffs", ".data", "chains");
+      expect(fs.existsSync(chainsDir)).toBe(true);
+      // 链文件确实落在 .data/chains/ 下（递归列出，含成员名）
+      expect(fs.readdirSync(chainsDir, { recursive: true }).some((entry) => entry.includes("alice"))).toBe(true);
+      expect(readChain(path.join(chainsDir, "group-yt", "alice.md"))).toHaveLength(1);
+      expect(fs.existsSync(path.join(root, "agents", "alice", "conversation_ids.md"))).toBe(false);
     } finally {
       await harness.close();
     }
@@ -261,6 +307,18 @@ describe("应用用例", () => {
     expect(dm).not.toContain("来自外部撞名");
   });
 
+  it("技能清单只认 config 的 skills 名：agents/<id>/skills/ 不再被扫描", () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const ghost = path.join(root, "agents", "alice", "skills", "ghost", "SKILL.md");
+    fs.mkdirSync(path.dirname(ghost), { recursive: true });
+    fs.writeFileSync(ghost, "---\nname: ghost\ndescription: 员工目录里的幽灵技能\n---\n");
+    const text = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
+    expect(text).not.toContain("ghost");
+    // 系统内置技能仍恒在（清单非空，不因忽略员工目录而变空）
+    expect(text).toContain(path.join("src", "skills", "openstaffs", "SKILL.md"));
+  });
+
   it("内置基础技能随默认会话注入：列出 openstaffs 系列技能并给出 SKILL.md 位置", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
@@ -307,8 +365,39 @@ describe("应用用例", () => {
     expect(dm).not.toContain("任务：做 yt 视频。");
   });
 
-  it("instructionsFor：框架环境段在最前；群聊再带项目与成员；私聊不带项目", () => {
+  it("空间 / 项目 AGENTS.md 不再进入 instructions（D5/D33）", () => {
+    const ws = seedOffice(root, { agents: [{ id: "alice" }], projects: [{ id: "seo", members: ["alice"] }] });
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "空间总纲（应被忽略）");
+    fs.mkdirSync(path.join(root, "projects", "seo"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects", "seo", "AGENTS.md"), "项目规范（应被忽略）");
+    const text = instructionsFor(ws, { kind: "group", project: "seo" }, loadEmployee(ws, "alice"));
+    expect(text).not.toContain("空间总纲");
+    expect(text).not.toContain("项目规范");
+  });
+
+  it("prompt 链进入 instructions：空间 → 部门（根 → 叶）→ 项目 → 员工，`\\n\\n` 分段", () => {
+    const ws = createWorkspace(root);
+    const seedJson = (file: string, value: unknown): void => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(value));
+    };
+    seedJson(path.join(root, "openstaffs", "space.config.json"), { prompt: "空间段" });
+    seedJson(path.join(root, "agents", "department.config.json"), { prompt: "根部门段" });
+    seedJson(path.join(root, "agents", "eng", "department.config.json"), { prompt: "工程部段" });
+    seedJson(path.join(root, "agents", "eng", "alice.agent.config.json"), { prompt: "员工段" });
+    seedJson(path.join(root, "projects", "seo.project.config.json"), { members: ["alice"], prompt: "项目段" });
+
+    const text = instructionsFor(ws, { kind: "group", project: "seo" }, loadEmployee(ws, "alice"));
+    const order = ["空间段", "根部门段", "工程部段", "项目段", "员工段"].map((segment) => text.indexOf(segment));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order); // 顺序严格递增
+    expect(text).toContain("空间段\n\n根部门段"); // 逐段渲染 + `\n\n` 分段
+    expect(text).toContain("项目段\n\n员工段");
+  });
+
+  it("空间 prompt（内置物化）在最前；群聊再带项目与成员；私聊不带项目", () => {
     const ws = seedOffice(root, {
+      space: newSpaceConfig(), // 内置 space.md 物化进空间 config（D32）
       agents: [{ id: "alice", prompt: "你是 alice。" }, { id: "bob", prompt: "你是 bob。" }],
       projects: [{ id: "yt", alias: "演示项目", members: ["alice", "bob"] }],
     });
