@@ -68,6 +68,10 @@
 | D28 | **权限是一套逻辑（与工具语义无关）** | 对框架而言工具的**实际语义无关**；`permissions` 只是一张"**工具名 → 路径列表**"的表，**同一套逻辑**（默认空 / attenuation / 运行时授权）套到所有工具，含未来新增 |
 | D29 | **会话记录进自有数据库** | **重构级**：消息 / 会话记录由 OpenStaffs **自有数据库**保存，**不再依赖基座（Pi）的 transcript**。收益：① 基座**弱相关**（可移植性↑）；② 项目（群）会话**无需去重 / 合并**（一条投递 = 一条记录）。**修订**架构设计「消息 = transcript entry（唯一真相）」|
 | D30 | **落库 = run 结束后一条** | 流式 delta **不落库**；一次 run 结束落**一条**记录；**中途崩溃不处理**（该 run 丢弃）。**不做迁移**（允许破坏性更新）|
+| D31 | **会话真相当属框架** | 会话 / 消息存 **`openstaffs/.data/`（SQLite）**；**不保留**基座 transcript；基座弱化为"**发消息的工具**"，聊天能力收归框架、**唯一权威** |
+| D32 | **内置 prompt 物化进空间配置** | 新建空间（启动时**无 `space.config.json`**）→ 把**内置 prompt 注入 `space.config.json`**；此后**运行时无关**（不再依赖框架模板）|
+| D33 | **不使用 AGENTS.md** | **彻底不管 AGENTS.md**（`pi-durable 1.3.0` 也无自动加载，已核实）。所有引导走各 config 的 `prompt` 字段（如 `project.config.json.prompt` 自去引导）|
+| D34 | **强模块化** | 本次重构抽象量大（**工具 / 权限 / `*.config.json` / 组织 / 会话存储**），实现须**强模块化**：每能力一个独立模块、清晰接口、可独立测试与替换（见 §12）|
 
 ---
 
@@ -242,10 +246,25 @@
 
 ## 11. 待定 / 风险
 
-- **自有会话数据库的形态与位置**：落 `openstaffs/.data/`（SQLite？）；与基座 transcript 的关系（是否仍保留以便 `resume`）。
-- **系统作用域声明**：框架内置 prompt 模板如何并入"统一配置"（是否引入 `src/` 下的声明文件）。
-- **`AGENTS.md` 移除的兼容**：Pi 祖先链自动加载消失，需确认"私活"场景 instructions 注入路径覆盖完整。
 - **项目 / 群聊**：本设计只加了"群主 + 统一配置"，群内模式（`@`、组队等）未动。
 
-> **已定**：**不做迁移**（允许破坏性更新）；落库 = **run 结束后一条**，中途崩溃不处理。
-> **已闭环**：能力 / 权限一律**累加**（无优先级）、各工具默认值、**attenuation 全工具统一**、`skills` → `openstaffs/skills/<技能名>/`、`mcp` → `openstaffs/mcps.json`、成员放 `project.config.json`、全局配置进 `.data/`、新工具默认空、**会话记录进自有库**（组会话无需去重合并）。
+> **已定/闭环**：能力与权限一律**累加**（无优先级）、各工具默认值、**attenuation 全工具统一**、`skills` → `openstaffs/skills/<技能名>/`、`mcp` → `openstaffs/mcps.json`、成员放 `project.config.json`、全局配置进 `.data/`、新工具默认空、**会话记录进自有库**（`openstaffs/.data/`，组会话无需去重合并）、**落库 = run 结束一条**、**不做迁移**、**内置 prompt 物化进 `space.config.json`**、**不使用 AGENTS.md**（引导走 `prompt` 字段）。
+
+---
+
+## 12. 模块化边界（实现原则，D34）
+
+本次重构抽象量大，**必须强模块化**：每个能力一个独立模块、清晰接口、可独立测试与替换。
+
+| 模块 | 职责 | 主要依赖 |
+|---|---|---|
+| **config** | 加载 / 校验 / 命名解析 `*.config.json`（五层）+ `openstaffs/.data/config.json` | 无（纯域） |
+| **org** | 部门树、负责人（head/owner）、管理权（穿透） | config |
+| **permissions** | 按工具权限：默认 / 继承 / 运行时 / **attenuation** | config、org |
+| **capabilities** | 作用域链装配：`prompt` / `skills` / `mcp` **累加** | config、org |
+| **store** | 会话 / 消息自有库（SQLite，`openstaffs/.data/`） | 无 |
+| **tools** | 工具注册 / 执行 / 权限闸门 | permissions |
+| **harness** | 基座适配（Pi）：发消息、驱动 agent 循环 | tools、store |
+| **ui / server** | HTTP / SSE / 渲染 | 上述 |
+
+**原则**：基座（Pi）**只出现在 `harness` 一个模块**；换基座**只动它**。权限 / 配置 / 组织 / 会话存储均为**自有、与基座无关**的域模块。
