@@ -236,4 +236,8 @@
 - **配置文件命名统一为 `*.config.json`**：`alice.agent.config.json` / `department.config.json` / `space.config.json` / `project.config.json`；四者内容同构（**权限 / mcp / 技能 / prompt**）。项目文件由 `project.json` 改名。
   待定：全局 `config.json`（`providers` / 密钥 / `model` / `port`）是否并入 `space.config.json`（与上面"合并 `.openstaffs/`"一条交互）。
 
+- **创建 0 号员工（首席管家 Staff0）**：**非框架改动**——新增一个**流程**，产出它的 `agent.config.json`。核心是**权限**：**写空间根 `./`（整个空间）**——即"空间管理员"。
+  注：这是对"空间级附属 = 老板地盘、员工写不进"的**有意例外**（管家是那个例外）。Staff0 直属老板（无上级部门）。
+  待定：Staff0 落点（根下 `agents/staff0.agent.config.json`？）；**触发时机**（首次启动自动建 / 命令 / 工具调用）。
+
 *（更多想法待续。）*
