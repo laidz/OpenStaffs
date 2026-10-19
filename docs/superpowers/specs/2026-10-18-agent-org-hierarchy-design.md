@@ -53,8 +53,8 @@
 | D13 | **运行时权限（非显性，不落盘）** | ① agent 自己的工作目录（所有工具）；② **主管对管理子树的写权**；均由**运行时**授予，不写进 config |
 | D14 | **新建默认值** | agent：`write:[]`、`read:["./"]`、`bash:["./"]`；**新工具默认空**；新建项目同理 |
 | D15 | **`permissions` 写入 = attenuation** | 写 `permissions` 时**值 ⊆ 写者自身该工具权限集（含继承）**；逐级收窄、可传递 |
-| D16 | **MCP = 全局定义 + 按名引用** | server 统一在全局定义，各消费方按 **mcp 名**引用（与 skills 同构）；取代"内联定义" |
-| D17 | **`skills` = 按名引用** | 引用共享技能库（`openstaffs/skills/` 等），不内联技能正文 |
+| D16 | **MCP = 全局定义 + 按名引用** | 定义在 **`openstaffs/mcps.json`**；消费方按 **mcp 名**引用；取代"内联定义" |
+| D17 | **`skills` = 按名引用** | 解析到 **`openstaffs/skills/<技能名>/`**；不内联技能正文 |
 | D18 | **头像可选** | `avatar?` = 图片路径；缺省**前端**取**名称首字** + **名称派生色**作底色 |
 | D19 | **空间目录合并** | `.openstaffs/` + `openstaffs/` → **单一 `openstaffs/`**；机器私有（全局 `config.json`、数据库、状态）进 **`openstaffs/.data/`** |
 | D20 | **工作树平铺** | `work/<名字>/` 各自独立（含 `memory.md`），与定义树分离 |
@@ -65,6 +65,8 @@
 | D25 | **项目无工作目录** | 项目**没有**工作目录概念；需要共享目录时，由**人或项目主管**用项目的 `prompt` + `permissions` 按需定义 |
 | D26 | **项目 = 扁平配置文件** | `projects/<名字>.project.config.json`（与 agent 同构的扁平文件）；无 `data/` |
 | D27 | **agent 工作目录默认发 `MEMORY.md`** | 工作目录**仅 agent 有**；默认给它一个 `MEMORY.md`，其余内容 agent 自由发挥 |
+| D28 | **权限是一套逻辑（与工具语义无关）** | 对框架而言工具的**实际语义无关**；`permissions` 只是一张"**工具名 → 路径列表**"的表，**同一套逻辑**（默认空 / attenuation / 运行时授权）套到所有工具，含未来新增 |
+| D29 | **会话记录进自有数据库** | **重构级**：消息 / 会话记录由 OpenStaffs **自有数据库**保存，**不再依赖基座（Pi）的 transcript**。收益：① 基座**弱相关**（可移植性↑）；② 项目（群）会话**无需去重 / 合并**（一条投递 = 一条记录）。**修订**架构设计「消息 = transcript entry（唯一真相）」|
 
 ---
 
@@ -90,8 +92,8 @@
 │  └─ bob/  carol/  dave/  staff0/  …
 └─ openstaffs/                              # 空间附属 + 机器私有
    ├─ space.config.json                     # 空间声明（prompt / skills / mcp / permissions）
-   ├─ skills/                               # 共享技能库（被按名引用）
-   ├─ mcp.json                              # MCP 全局定义（被按名引用）
+   ├─ skills/<技能名>/                       # 共享技能库（按名引用）
+   ├─ mcps.json                             # MCP 全局定义（按名引用）
    └─ .data/                                # 机器私有（gitignore）：config.json（密钥）/ state.sqlite / …
 ```
 
@@ -167,7 +169,7 @@
 **硬规则：**
 
 - **人不可写任何 `<名字>.agent.config.json`（含自己的）**——防自授权（主管的写入是"写下级"）。
-- **`permissions` 写入 = attenuation**（D15）：写任何层的 `permissions` 时，**每个工具的值 ⊆ 写者该工具的有效集（含继承）**。
+- **`permissions` 写入 = attenuation**（D15/D28）：写任何层的 `permissions` 时，**每个工具的值 ⊆ 写者该工具的有效集（含继承）**。**全管**——对所有工具一视同仁，**与工具实际语义无关**（写/读/bash/未来工具都是同一套逻辑；未知工具按默认空）。
 - **读**：与写同机制的路径列表（D9/D12）。
 
 **与现有机制的关系：**
@@ -192,6 +194,7 @@
 - `prompt` **累加**即可（**做好换行分割**）。
 
 > 已定：`space` / `department` **不进**配置权限路线（"默认不补"）；主管的管理写权改由**运行时**授予。
+> 引用解析：`skills` → **`openstaffs/skills/<技能名>/`**；`mcp` → **`openstaffs/mcps.json`**。
 
 ---
 
@@ -212,6 +215,7 @@
 | `2026-10-16-...-architecture-design.md` §4.1 | 「员工扁平、组织由群聊表达（决策）」 | **修订**：组织由**目录层级 + 负责人**表达；群聊只管协作 |
 | 同上 §非目标 | 「独立组织架构层」列为非目标 | **移出** |
 | 同上 §4.1 注 / §4.2 表 | 员工目录 `AGENTS.md` 为入口、引入 profile/MEMORY | **修订**：入口改为 `.agent.config.json`；`prompt` 渲染 instructions |
+| 同上「**消息 = transcript entry（唯一真相）**」 | 消息真相在基座 transcript | **修订**（D29）：消息 / 会话由 **OpenStaffs 自有数据库**保存；基座只负责"跑" |
 | `2026-10-16-openstaffs-permissions-design.md` | 写权限（`permission.json`，仅写） | **扩展**：按工具权限、声明内联、attenuation |
 | `2026-10-17-space-layer-design.md` | 空间目录两分（`.openstaffs/` + `openstaffs/`） | **修订**：合并为 `openstaffs/`（机器私有进 `openstaffs/.data/`） |
 | `docs/产品规划.md` §未落地 | 「组织架构：`agents/` 部门树」未实现 | **更新**为已落地（新形态）；Staff0 落地 |
@@ -227,20 +231,20 @@
 
 | 阶段 | 范围 | 关键点 |
 |---|---|---|
-| **P1 组织 + 负责人 + 权限骨架** | `agents/` 部门嵌套；`department.config.json` / `<名字>.agent.config.json` 发现与解析（人先支持 `alias`/`model`/`prompt`）；`head` 与穿透管理权；侧栏**可折叠树** | 先把"部门 + 人 + 负责人"的结构与权限跑通 |
-| **P2 配置统一 + 按工具权限** | 四类能力统一为 `*.config.json`（空间/项目/部门/员工）；**一套解析器**；权限升级为**按工具路径列表** | 去掉旧机制的格式分叉 |
-| **P3 空间目录合并 + Staff0** | `.openstaffs/` → `openstaffs/.data/`；路径解析、启动探测、引导页、`.gitignore`；首次启动自动建 Staff0 | 影响面广，需回归 |
-| **P4 定义模型迁移** | `.agent.config.json` 全面取代多文件；`prompt` 渲染；记忆迁 `work/<id>/memory.md`；技能库集中；`AGENTS.md` 取消 | 破坏性：需迁移工具 + 兼容期 |
+| **P1 会话记录进自有数据库** | 消息 / 会话记录自存（**脱离基座 transcript**）；群会话 = **单条流**，去掉去重 / 合并 | 架构级；先做，后续都受益 |
+| **P2 组织 + 负责人 + 权限骨架** | `agents/` 部门嵌套；`department.config.json` / `<名字>.agent.config.json` 发现与解析（人先支持 `alias`/`model`/`prompt`）；`head` 与穿透管理权；侧栏**可折叠树** | 先把"部门 + 人 + 负责人"的结构与权限跑通 |
+| **P3 配置统一 + 按工具权限** | 四类能力统一为 `*.config.json`（空间/项目/部门/员工）；**一套解析器**；权限升级为**按工具路径列表** | 去掉旧机制的格式分叉 |
+| **P4 空间目录合并 + Staff0** | `.openstaffs/` → `openstaffs/.data/`；路径解析、启动探测、引导页、`.gitignore`；首次启动自动建 Staff0 | 影响面广，需回归 |
+| **P5 定义模型迁移** | `.agent.config.json` 全面取代多文件；`prompt` 渲染；记忆迁 `work/<id>/memory.md`；技能库集中；`AGENTS.md` 取消 | 破坏性：需迁移工具 + 兼容期 |
 
 ---
 
 ## 11. 待定 / 风险
 
-- **attenuation（授权不越权）的适用范围**：主管写下属 `permissions` 时"只能给子集"，是**对每个工具分别生效**（下属 `read` ⊆ 主管 `read`、`bash` ⊆ 主管 `bash`…），还是**只管 `write`**？
-- **未来新工具的登记**：新工具默认权限**空**（已定）；但**工具清单从哪来**、`permissions` 的合法键由谁定义？
-- **`skills` / `mcp` 引用语法**：名字解析到哪个目录（`openstaffs/skills/` / 系统内置 / 外部 `skillPaths`）；是否允许直接写路径。
-- **组会话链的落点**：项目变扁平（无目录）后，原先 `projects/<id>/conversation_ids/<成员>.md`（各成员在群里的会话链）放哪。
+- **自有会话数据库的形态与位置**：落 `openstaffs/.data/`（SQLite？）；与基座 transcript 的关系（是否仍保留以便 `resume`）；旧 transcript 的历史消息迁移。
 - **系统作用域声明**：框架内置 prompt 模板如何并入"统一配置"（是否引入 `src/` 下的声明文件）。
 - **`AGENTS.md` 移除的兼容**：Pi 祖先链自动加载消失，需确认"私活"场景 instructions 注入路径覆盖完整。
-- **迁移**：P4 需一次性迁移脚本；不做双读。
-- **项目 / 群聊**：本设计只加了"群主 + 统一配置"，群内模式未动。
+- **迁移**：旧目录结构 + 旧 transcript → 新 `*.config.json` + 自有库；不做双读。
+- **项目 / 群聊**：本设计只加了"群主 + 统一配置"，群内模式（`@`、组队等）未动。
+
+> **已闭环**：能力 / 权限一律**累加**（无优先级）、各工具默认值、**attenuation 全工具统一**、`skills` → `openstaffs/skills/<技能名>/`、`mcp` → `openstaffs/mcps.json`、成员放 `project.config.json`、全局配置进 `.data/`、新工具默认空、**会话记录进自有库**（组会话无需去重合并）。
