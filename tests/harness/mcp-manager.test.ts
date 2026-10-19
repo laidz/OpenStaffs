@@ -62,9 +62,7 @@ function manager(options?: {
 
 describe("MCP 管理器", () => {
   it("正常启动生成扩展，群聊 / 私聊的 server 集不同", async () => {
-    writeJson(path.join(root, "agents", "alice", "mcp.json"), {
-      mcpServers: { employeeOnly: fixtureServer() },
-    });
+    writeJson(path.join(root, "agents", "alice.agent.config.json"), { prompt: "你是 alice。" });
     writeJson(path.join(root, "projects", "p1", "mcp.json"), {
       mcpServers: { projectOnly: fixtureServer() },
     });
@@ -73,7 +71,6 @@ describe("MCP 管理器", () => {
 
     const dm = instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice");
     expect(dm).toContain("mcp:system:fixture");
-    expect(dm).toContain("mcp:employee:alice:employeeOnly");
     expect(dm).not.toContain("mcp:project:p1:projectOnly");
 
     const group = instance.extensionsFor({ kind: "group", project: "p1" }, "alice");
@@ -212,18 +209,18 @@ describe("MCP 管理器", () => {
     expect(instance.errors().join("\n")).toContain("启动失败");
   });
 
-  it("员工自挂 server 只进入该员工自己的会话", async () => {
-    writeJson(path.join(root, "agents", "alice", "mcp.json"), {
-      mcpServers: { aliceOnly: fixtureServer() },
+  it("项目自挂 server 只进入该项目自己的会话（不串到别的项目）", async () => {
+    writeJson(path.join(root, "projects", "p1", "mcp.json"), {
+      mcpServers: { p1Only: fixtureServer() },
     });
-    writeJson(path.join(root, "agents", "bob", "mcp.json"), {
-      mcpServers: { bobOnly: fixtureServer() },
+    writeJson(path.join(root, "projects", "p2", "mcp.json"), {
+      mcpServers: { p2Only: fixtureServer() },
     });
     const { instance } = manager();
     await instance.start();
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).toContain("mcp:employee:alice:aliceOnly");
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "bob" }, "bob")).toContain("mcp:employee:bob:bobOnly");
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "bob" }, "bob")).not.toContain("mcp:employee:alice:aliceOnly");
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).not.toContain("mcp:employee:bob:bobOnly");
+    expect(instance.extensionsFor({ kind: "group", project: "p1" }, "alice")).toContain("mcp:project:p1:p1Only");
+    expect(instance.extensionsFor({ kind: "group", project: "p2" }, "alice")).toContain("mcp:project:p2:p2Only");
+    expect(instance.extensionsFor({ kind: "group", project: "p2" }, "alice")).not.toContain("mcp:project:p1:p1Only");
+    expect(instance.extensionsFor({ kind: "group", project: "p1" }, "alice")).not.toContain("mcp:project:p2:p2Only");
   });
 });

@@ -53,3 +53,11 @@ export function spaceSkillsDir(ws: Workspace): string {
 export function messagesDbFile(ws: Workspace): string {
   return path.join(stateDir(ws), "messages.sqlite");
 }
+
+/** 工作树目录名（D20：平铺 `work/<名字>/`，与定义树分离）。 */
+export const WORK_DIR_NAME = "work";
+
+/** agent 的工作目录（会话 cwd / 自己的可写目录 / 会话链落点）；P2 只建目录，不预置 MEMORY.md（D27 归 P5）。 */
+export function workDir(ws: Workspace, id: string): string {
+  return path.join(ws.root, WORK_DIR_NAME, id);
+}

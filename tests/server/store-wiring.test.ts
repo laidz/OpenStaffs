@@ -30,10 +30,11 @@ afterEach(() => {
 });
 
 function seedEmployee(id: string): void {
-  const dir = path.join(root, "agents", id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "agents", `${id}.agent.config.json`),
+    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
+  );
 }
 
 /** 桩 harness：只实现 HTTP 发送路径会用到的面（开会话 + 提交，不跑真模型）。 */

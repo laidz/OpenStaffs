@@ -62,7 +62,7 @@ describe("MCP 端到端", () => {
         cwd,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [] },
+        access: { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [cwd] },
         mcpExtensions: manager.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice"),
       });
       const reply = await harness.send(convId, "调用工具");

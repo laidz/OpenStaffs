@@ -1,8 +1,8 @@
 # OpenStaffs
 
-完全本地化的「AI 办公室」：**文件夹就是员工，拉群就是立项，下载就是招募。**
+完全本地化的「AI 办公室」：**一个配置文件就是一个员工，拉群就是立项，下载就是招募。**
 
-- **员工 = 文件夹**：人格、记忆、技能都在 `agents/<员工 id>/` 里，自包含——可版本化、可备份、可整包迁移。
+- **人 = 一个配置文件**：`agents/<部门…>/<名字>.agent.config.json` 定义一个人的展示名、模型与人格（`prompt`）；`agents/` 下的**文件夹 = 部门，可任意嵌套**——整棵组织树可版本化、可备份、可整包迁移。各人的工作产物在 `work/<名字>/`。
 - **项目 = 群聊**：在 `projects/<项目 id>/` 建一个文件夹、写下成员名单，就是一场多人群聊 + 一个共享工作区。
 - **100% 本地**：服务与数据都在本机；对话内容只会发往你自己配置的模型供应商，密钥不出本机。
 - **纯 Web**：浏览器打开 `http://localhost:4319` 即可使用，无需安装桌面应用。
@@ -14,7 +14,7 @@
 要求：Node ≥ 22.19（服务端直接用 Node 运行 TypeScript，无需编译）。
 
 1. `npm install`
-2. 准备一个**办公空间目录**（运行数据与配置都存这里：`agents/` 员工、`projects/` 群聊、`openstaffs/` 你的技能与 MCP、`.openstaffs/` 配置，与框架代码相互独立）：
+2. 准备一个**办公空间目录**（运行数据与配置都存这里：`agents/` 人与部门、`projects/` 群聊、`work/` 各人的工作目录、`openstaffs/` 你的技能与 MCP、`.openstaffs/` 配置，与框架代码相互独立）：
    ```bash
    mkdir -p ~/MyOffice
    ```
@@ -27,7 +27,7 @@
    ```
 5. 浏览器打开 `http://localhost:4319`（或你指定的端口）。
 
-> 办公数据与框架代码强制分离：不指定目录会报错退出；把办公空间目录指向框架目录本身也会被拒绝。建议在办公空间目录里单独 `git init`——员工档案与记忆随之可版本化、可备份、可整包迁移。（级别命名：系统 / 空间 / 项目 / 员工——指目录一律说「办公空间」。）
+> 办公数据与框架代码强制分离：不指定目录会报错退出；把办公空间目录指向框架目录本身也会被拒绝。建议在办公空间目录里单独 `git init`——人与部门配置随之可版本化、可备份、可整包迁移。（级别命名：系统 / 空间 / 项目 / 员工——指目录一律说「办公空间」。）
 
 （开发自用：`npm test`、`npm run typecheck`、`npm run build:web`。）
 
@@ -49,51 +49,32 @@
 ```
 
 - `providers`：供应商 → 密钥。可选 `opencode-go` / `anthropic` / `openai` / `deepseek` / `google` / `openrouter`（写了名单外的供应商，启动会直接报错）。
-- `model`：全局默认模型，格式 `供应商/模型 id`；员工没有单独指定模型时用它兜底。
-- `thinkingLevel`：可选，全局默认思考强度。档位由模型决定（候选 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）；配置端不校验，但非思考模型（只支持 `off`）、未显式映射的 `xhigh` / `max`、以及非法档，界面都会展示 `null`。员工自己的 `thinkingLevel` 优先；改动**新开会话**生效。
+- `model`：全局默认模型，格式 `供应商/模型 id`；人没有在自己的配置里单独指定模型时用它兜底。
+- `thinkingLevel`：可选，全局默认思考强度。档位由模型决定（候选 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）；配置端不校验，但非思考模型（只支持 `off`）、未显式映射的 `xhigh` / `max`、以及非法档，界面都会展示 `null`。人自己配置里的 `thinkingLevel` 优先；改动**新开会话**生效。
 - `bossName`：可选，负责人称谓（缺省「老板」；空值自动回落，不可为空）。界面、消息与员工文案都用它。
 - `skillPaths`：可选，外部技能目录数组（你的全局技能库）。三种写法：`~/` 开头（或裸 `~`）= 家目录、绝对路径 = 原样、其余 = 相对办公空间目录。算**空间级**技能（所有会话可用），改动**新开会话**生效。**只指向你自己信任的目录**——这里的技能会进入**所有**员工会话的制度提示词（`name` / `description` 注入，正文由员工按需 `read`）。
 - `mcp`：可选，MCP server 的凭据（`mcp.<server>.<key>`）。各层 `mcp.json` 里只写 `${config.mcp.<server>.<key>}` 引用，不写明文。
-- 可只配一家，也可多配几家、按员工分配不同模型。
+- 可只配一家，也可多配几家、按人分配不同模型。
 - 配置是进程级的：**改完重启服务才生效**（例外：`bossName` 直读，刷新页面 / 新开会话即生效；`skillPaths`、`model`、`thinkingLevel` 新开会话生效）。建议 `chmod 600 .openstaffs/config.json`；密钥只存在本机，不会出现在日志与任何 API 响应里。
-
-### 3. MCP server（可选）
-
-四层各一个 `mcp.json`：系统 `src/mcp.json`、空间 `openstaffs/mcp.json`、项目 `projects/<项目>/mcp.json`、员工 `agents/<员工>/mcp.json`。
-
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${config.mcp.github.token}" }
-    }
-  }
-}
-```
-
-- server 名就是 `mcpServers` 的 key，直接用于工具名、扩展名与凭据引用；只允许字母、数字、`_`、`-`（不能含点号或空白）。
-- 同名 server 窄者胜：项目 → 员工 → 空间 → 系统；不同名都挂。
-- 凭据优先放 `env`；写进 `args` 会出现在进程参数里（`ps` 可见）。
-- **新增 / 修改 server 需要重启服务**；server 只进入之后**新建**的会话。
-- 员工也可以在自己的目录挂 server；这等于允许启动本地进程，只挂可信来源。需要密钥时由你把凭据加进 `.openstaffs/config.json` 的 `mcp`。
-- 工具名形如 `mcp__<server>__<tool>`；工具太多时员工先用 `tool_search` 搜索。
 
 ### 2. Agent（员工）
 
-员工 = `agents/` 下的一个文件夹，**目录名就是员工 id**。最小做法：
+**人 = 一个配置文件** `agents/<部门…>/<名字>.agent.config.json`（**文件名的骨干就是员工 id**，全局唯一）；`agents/` 下的**文件夹 = 部门，可任意嵌套**。最小做法：
 
 ```bash
-mkdir -p agents/alice
-cat > agents/alice/AGENTS.md <<'EOF'
-你是 alice，负责前端开发。用中文汇报。
+mkdir -p agents/eng
+cat > agents/eng/alice.agent.config.json <<'EOF'
+{ "alias": "爱丽丝", "model": "opencode-go/deepseek-v4.1-flash", "prompt": "你是 alice，负责前端开发。用中文汇报。" }
 EOF
 ```
 
-刷新页面，alice 出现在左侧栏；进入她的私聊即可对话。她的回复会按 Markdown 排版展示（标题、列表、代码块、表格都支持）；你发出的消息保持原样。
+刷新页面，alice 出现在左侧栏（**员工按部门折叠成树，点部门名展开 / 收起**）；进入她的私聊即可对话。她的回复会按 Markdown 排版展示（标题、列表、代码块、表格都支持）；你发出的消息保持原样。
 
-她的展示名、岗位档案、长期记忆、技能都可以继续完善——需要什么直接问她：她能自己动手的会自己动手，动不了的会告诉你怎么做。
+- `prompt`：她的人格与职责（会话创建时注入）；`alias`：展示名（缺省 = 文件名主干）；`model` / `thinkingLevel`：可选，覆盖全局默认模型与思考强度。
+- 部门可写 `department.config.json` 声明展示名与负责人：`{ "alias": "工程部", "head": ["alice"] }`——`head` 只能写**本级直属成员**（写子部门成员 / 写错 id 视为无）；负责人对自己所在部门的**整棵子树**有写权限（穿透）。
+- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊会话落在这里）；`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` 要**新开会话**生效。
+
+她的展示名与人格（`prompt`）都可以继续完善——需要什么直接问她：她能自己动手的会自己动手，动不了的会告诉你怎么做。
 
 ### 3. 项目（群聊）
 
@@ -112,5 +93,28 @@ EOF
 > **会话语义**：`新开会话` = 「下一条消息开启新会话」——按钮只置就绪态（不落盘、不建会话），你发出的第一条消息投递时才真正建会话（空点不产生空会话、撤回也不建）；员工在跑时消息先**排队**，在消息区显示为灰底「排队中」气泡，可**单条撤回**（只撤还没开始投递的；停止正在跑的任务用 `中断`）。
 
 > **会话信息条**：聊天标题下方显示当前房间每条活跃会话**实际在用**的模型全值（`供应商/模型 id`）、思考强度、已用上下文 / 模型窗口与占比（如「12.8K / 128K，10%」）。这些是会话创建时的快照（改配置后要新开会话才变）；模型不支持的思考档（非思考模型、未映射的 `xhigh` / `max`、非法档）展示 `null`。上下文用量是已提交上下文的估算：新会话在首轮回复前可能显示 0，首轮后按模型回报更新。
+
+### 4. MCP server（可选）
+
+三层各一个 `mcp.json`：系统 `src/mcp.json`、空间 `openstaffs/mcp.json`、项目 `projects/<项目>/mcp.json`。（**员工层已取消**——人不再有自己的目录；用配置里的名字按人引用是后续阶段的事。）
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${config.mcp.github.token}" }
+    }
+  }
+}
+```
+
+- server 名就是 `mcpServers` 的 key，直接用于工具名、扩展名与凭据引用；只允许字母、数字、`_`、`-`（不能含点号或空白）。
+- 同名 server 窄者胜：项目 → 空间 → 系统；不同名都挂。
+- 凭据优先放 `env`；写进 `args` 会出现在进程参数里（`ps` 可见）。
+- **新增 / 修改 server 需要重启服务**；server 只进入之后**新建**的会话。
+- 员工不能自己挂 server（员工层已取消）：需要新 server 请改空间 / 项目层的 `mcp.json`。带密钥的 server 由你把凭据加进 `.openstaffs/config.json` 的 `mcp`。
+- 工具名形如 `mcp__<server>__<tool>`；工具太多时员工先用 `tool_search` 搜索。
 
 > 更多细节（权限、技能、空间规矩（根 `AGENTS.md`）、排障……）都在你员工的技能里——办公室开起来之后，直接问你的员工即可。

@@ -1,6 +1,6 @@
 import { parseMembers } from "./access-control.ts";
 import { readBossName } from "./config.ts";
-import { loadEmployee } from "./employee.ts";
+import { personDisplayName } from "./org.ts";
 import type { Workspace } from "./paths.ts";
 import { loadProject } from "./project.ts";
 
@@ -15,13 +15,9 @@ export type PromptVarContext = {
   cwd: string;
 };
 
-/** 员工展示名（alias 缺省 = id）；缺目录回退 id。 */
+/** 员工展示名（alias 缺省 = id）；未知人回退 id。 */
 function displayNameOf(ws: Workspace, id: string): string {
-  try {
-    return loadEmployee(ws, id).alias ?? id;
-  } catch {
-    return id;
-  }
+  return personDisplayName(ws, id);
 }
 
 /** 员工展示名（alias 缺省 = id）。 */

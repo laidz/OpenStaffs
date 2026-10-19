@@ -9,6 +9,10 @@ export type { RoomSessionInfo } from "../src/app/conversations.ts";
 
 export type Status = { configured: boolean; root: string; port: number; model?: string; providers?: string[]; bossName: string };
 export type EmployeeSummary = { id: string; alias?: string; model: string };
+/** 组织树里的一员（与 EmployeeSummary 同形；树里也叫人）。 */
+export type OrgPerson = { id: string; alias?: string; model: string };
+/** 部门节点：本部门直属人 + 子部门（递归）。根部门 path === ""。 */
+export type OrgDept = { path: string; name: string; people: OrgPerson[]; departments: OrgDept[] };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
 export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[]; queued: QueuedItemView[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
@@ -31,7 +35,8 @@ function roomPath(roomKey: string): string {
 
 export const api = {
   status: () => request<Status>("/api/status"),
-  employees: () => request<EmployeeSummary[]>("/api/employees"),
+  /** 组织树（部门嵌套 + 人）；取代旧的 /api/employees 平铺列表。 */
+  org: () => request<{ root: OrgDept }>("/api/org"),
   projects: () => request<ProjectSummary[]>("/api/projects"),
   messages: (roomKey: string) => request<RoomMessages>(`${roomPath(roomKey)}/messages`),
   /** newSession=true：这条消息投递时对目标成员真正新开会话（「新开会话」按钮的落地）。 */

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor } from "../domain/config.ts";
-import { loadEmployee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
+import { personDisplayName } from "../domain/org.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
 import type { MessageStore } from "../store/messages.ts";
@@ -120,13 +120,8 @@ export async function sendToRoom(
 
 /** 发送者标注：`爱丽丝（alice）`；无 alias 或与 id 相同 → 直接用 id。 */
 function senderLabel(ws: Workspace, senderId: string): string {
-  let alias: string | undefined;
-  try {
-    alias = loadEmployee(ws, senderId).alias;
-  } catch {
-    alias = undefined;
-  }
-  return alias === undefined || alias === senderId ? senderId : `${alias}（${senderId}）`;
+  const alias = personDisplayName(ws, senderId);
+  return alias === senderId ? senderId : `${alias}（${senderId}）`;
 }
 
 /**

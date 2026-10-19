@@ -1,4 +1,4 @@
-import { listEmployees } from "../domain/employee.ts";
+import { findPerson, listPeople, loadOrg } from "../domain/org.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, readBossName } from "../domain/config.ts";
@@ -14,7 +14,12 @@ import type { MessageStore } from "../store/messages.ts";
 import type { StoredMessage } from "../store/row.ts";
 import type { SseHub } from "./sse.ts";
 
-export type RoomRef = { roomKey: string; memberId: string };
+export type RoomRef = {
+  roomKey: string;
+  memberId: string;
+  /** 人级展示名（register 时按 org 解析；缺省 = id）。 */
+  alias?: string;
+};
 
 type Deps = {
   ws: Workspace;
@@ -60,9 +65,12 @@ export class Pump {
     if (this.#refs.has(convId)) return;
     const inFlight = this.#pending.get(convId);
     if (inFlight !== undefined) return inFlight.promise;
+    // 内部展示名改走 org（人 = 文件后 alias 由人级配置决定）；随订阅带上，回调侧不必再扫盘。
+    const alias = findPerson(loadOrg(this.#deps.ws), ref.memberId)?.alias;
+    const fullRef: RoomRef = { ...ref, ...(alias === undefined ? {} : { alias }) };
     const state = { cancelled: false };
     const task = (async () => {
-      const unsubscribe = await this.#deps.harness.watch(convId, (event) => this.#onEvent(convId, ref, event));
+      const unsubscribe = await this.#deps.harness.watch(convId, (event) => this.#onEvent(convId, fullRef, event));
       // in-flight 期间被 unregister：立即退订，不写入 #refs（不留"幽灵订阅"）。
       if (state.cancelled) {
         await unsubscribe();
@@ -95,9 +103,9 @@ export class Pump {
   /** 启动/重启后扫描全部活跃会话并订阅；单个会话失败只记日志，不锁死启动。 */
   async registerAll(): Promise<void> {
     const ws = this.#deps.ws;
-    for (const employee of listEmployees(ws)) {
-      for (const session of activeMemberSessions(ws, { kind: "dm", employeeId: employee.id })) {
-        await this.#registerSafe(session.convId, { roomKey: `dm:${employee.id}`, memberId: employee.id });
+    for (const person of listPeople(ws)) {
+      for (const session of activeMemberSessions(ws, { kind: "dm", employeeId: person.id })) {
+        await this.#registerSafe(session.convId, { roomKey: `dm:${person.id}`, memberId: person.id });
       }
     }
     for (const project of listProjects(ws)) {

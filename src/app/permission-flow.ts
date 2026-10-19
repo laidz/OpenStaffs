@@ -1,14 +1,13 @@
-import fs from "node:fs";
 import path from "node:path";
-import { loadEmployee } from "../domain/employee.ts";
 import { readBossName } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
-import { employeeDir, type Workspace } from "../domain/paths.ts";
+import { findPerson, loadOrg } from "../domain/org.ts";
+import { agentsDir, type Workspace } from "../domain/paths.ts";
 import { appendPermissionPaths } from "../domain/permissions.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { MessageStore } from "../store/messages.ts";
-import type { SessionDefaults } from "./conversations.ts";
+import { agentPermissionFileOf, type SessionDefaults } from "./conversations.ts";
 import { parseRoomKey, toRoomMessage, type RoomMessage } from "./rooms.ts";
 import { sendToRoom, type KeyedQueue } from "./send.ts";
 
@@ -19,17 +18,16 @@ export class PermissionRequestNotFoundError extends Error {}
 export type PermissionRequestView = PermissionRequest & { agentName: string };
 
 export function permissionRequestView(ws: Workspace, request: PermissionRequest): PermissionRequestView {
-  let agentName = request.agentId;
-  try {
-    agentName = loadEmployee(ws, request.agentId).alias ?? request.agentId;
-  } catch {
-    agentName = request.agentId;
-  }
-  return { ...request, agentName };
+  const alias = findPerson(loadOrg(ws), request.agentId)?.alias;
+  return { ...request, agentName: alias ?? request.agentId };
 }
 
+/** 人级授权文件（人 = 文件后，授权与定义同目录、同主干；找不到人 → 回落 agents/ 根）。 */
 export function permissionFilePath(ws: Workspace, agentId: string): string {
-  return path.join(employeeDir(ws, agentId), "permission.json");
+  const person = findPerson(loadOrg(ws), agentId);
+  return person === undefined
+    ? path.join(agentsDir(ws), `${agentId}.permission.json`)
+    : agentPermissionFileOf(person);
 }
 
 export type PermissionFlowDeps = {
@@ -55,7 +53,7 @@ const inFlight = new Set<string>();
 
 /**
  * 处理一条授权请求：
- * accept → 写发起者员工级 permission.json；随后（两种决策）以老板消息投递结果、清请求、广播。
+ * accept → 写发起者人级 permission.json（`<人所在目录>/<id>.permission.json`）；随后（两种决策）以老板消息投递结果、清请求、广播。
  * 写盘失败会抛出且请求保留；投递失败不抛（授权已生效），返回带 warning 的结果。
  */
 export async function resolvePermissionRequest(
@@ -70,7 +68,7 @@ export async function resolvePermissionRequest(
     if (request === undefined) throw new PermissionRequestNotFoundError(`授权请求不存在或已处理：${id}`);
 
     if (decision === "accept") {
-      if (!fs.existsSync(employeeDir(deps.ws, request.agentId))) {
+      if (findPerson(loadOrg(deps.ws), request.agentId) === undefined) {
         throw new PermissionRequestNotFoundError(`发起者已不存在：${request.agentId}（可点「拒绝」清除该请求）`);
       }
       appendPermissionPaths(permissionFilePath(deps.ws, request.agentId), request.paths);

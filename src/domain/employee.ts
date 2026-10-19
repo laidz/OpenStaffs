@@ -1,88 +1,23 @@
-import fs from "node:fs";
-import path from "node:path";
-import { agentsDir, employeeDir, type Workspace } from "./paths.ts";
-import type { EmployeeId, ModelChoice } from "./types.ts";
+// src/domain/employee.ts —— 【薄适配层：P2 保留；是否彻底删由 P5 收口（B1）】
+// 调用方（P3 `roomExists` / P5 `loadEmployee` / `renderInstructions`）按旧名读「展示名 / 人员枚举 / instructions」。
+// 新代码一律直接用 `src/domain/org.ts`；本文件把旧 API 折到 org 上，导出签名对外不变。
+import { findPerson, loadOrg, type OrgPerson } from "./org.ts";
+import type { Workspace } from "./paths.ts";
 
-export type Employee = {
-  id: EmployeeId;
-  dir: string;
-  entry: string;
-  profile: string;
-  memory: string;
-  model: ModelChoice;
-  /** 可变展示名；目录名（id）不可变。 */
-  alias?: string;
-};
+export type Employee = OrgPerson;
 
-function readText(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
+/** 人员存在性检查（缺失抛错，沿用旧口径）。 */
+export function loadEmployee(ws: Workspace, id: string): Employee {
+  const person = findPerson(loadOrg(ws), id);
+  if (person === undefined) throw new Error(`员工不存在: ${id}`);
+  return person;
 }
 
-function readModel(dir: string): ModelChoice {
-  const raw = readText(path.join(dir, "config.json"));
-  if (raw.trim() === "") return { model: "" };
-  try {
-    const parsed = JSON.parse(raw) as Partial<ModelChoice>;
-    const thinking =
-      typeof parsed.thinkingLevel === "string" && parsed.thinkingLevel.trim() !== ""
-        ? { thinkingLevel: parsed.thinkingLevel.trim() }
-        : {};
-    return {
-      model: typeof parsed.model === "string" ? parsed.model.trim() : "",
-      ...thinking,
-    };
-  } catch {
-    return { model: "" };
-  }
-}
-
-export function loadEmployee(ws: Workspace, id: EmployeeId): Employee {
-  const dir = employeeDir(ws, id);
-  if (!fs.existsSync(dir)) throw new Error(`员工不存在: ${id}`);
-  const alias = readAlias(dir);
-  return {
-    id,
-    dir,
-    entry: readText(path.join(dir, "AGENTS.md")),
-    profile: readText(path.join(dir, "profile.md")),
-    memory: readText(path.join(dir, "MEMORY.md")),
-    model: readModel(dir),
-    ...(alias === undefined ? {} : { alias }),
-  };
-}
-
-function readAlias(dir: string): string | undefined {
-  const raw = readText(path.join(dir, "config.json"));
-  if (raw.trim() === "") return undefined;
-  try {
-    const parsed = JSON.parse(raw) as { alias?: unknown };
-    return typeof parsed.alias === "string" && parsed.alias.trim() !== "" ? parsed.alias.trim() : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function renderInstructions(employee: Employee): string {
-  return [employee.entry, employee.profile, employee.memory]
-    .filter((part) => part.trim() !== "")
-    .join("\n\n");
-}
-
-/** 扫描 agents/ 下全部员工（按 id 排序；跳过隐藏目录）。 */
 export function listEmployees(ws: Workspace): Employee[] {
-  let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(agentsDir(ws), { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => entry.name)
-    .sort()
-    .map((id) => loadEmployee(ws, id));
+  return loadOrg(ws).people;
+}
+
+/** 人级 instructions = 内联 prompt（D5：取消员工侧 AGENTS.md / profile.md / MEMORY.md）。 */
+export function renderInstructions(person: Employee): string {
+  return person.prompt;
 }

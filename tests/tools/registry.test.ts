@@ -18,11 +18,12 @@ import type { Relation } from "../../src/domain/types.ts";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-tools-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-function seedEmployee(id: string, alias?: string): void {
-  const dir = path.join(root, "agents", id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model", ...(alias === undefined ? {} : { alias }) }));
+function seedEmployee(id: string, alias?: string, prompt = `你是 ${id}。`): void {
+  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "agents", `${id}.agent.config.json`),
+    JSON.stringify({ model: "faux/faux-model", prompt, ...(alias === undefined ? {} : { alias }) }),
+  );
 }
 
 function seedProject(id: string, memberIds: string[], alias?: string): void {
@@ -95,13 +96,13 @@ describe("office_list", () => {
     expect(out).toContain("演示项目");
     expect(out).toContain("bob");
     expect(out).toContain("true"); // demo 含 alice
+    expect(out).toContain("（办公室直属）"); // 人在 agents/ 根 → 直属
   });
 });
 
 describe("member_profile", () => {
-  it("读成员展示名 + profile.md 正文", async () => {
-    seedEmployee("bob", "Bob");
-    fs.writeFileSync(path.join(root, "agents", "bob", "profile.md"), "职责：后端工程师。");
+  it("读成员展示名 + prompt 正文", async () => {
+    seedEmployee("bob", "Bob", "职责：后端工程师。");
     const out = await tool("member_profile").run({ member: "bob" }, ctxFor(createWorkspace(root), "alice", dm("alice")));
     expect(out).toContain("Bob");
     expect(out).toContain("后端工程师");
@@ -316,7 +317,7 @@ describe("new_session", () => {
     try {
       const before = await openDm(ws, harness, "alice");
       await tool("new_session").run({}, ctxFor(ws, "alice", dm("alice"), harness));
-      const chain = readChain(path.join(root, "agents", "alice", "conversation_ids.md"));
+      const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain).toHaveLength(2);
       expect(chain[1]!.previous).toBe(before);
     } finally {
@@ -340,7 +341,7 @@ describe("request_permission", () => {
       { paths: ["notes/a.md", "./notes/a.md", "/abs/x"], reason: "整理笔记" },
       ctx,
     );
-    const expected = path.join(root, "agents", "alice", "notes", "a.md");
+    const expected = path.join(root, "work", "alice", "notes", "a.md");
     expect(out).toContain("发起授权请求");
     expect(out).toContain("2 个地址");
     expect(out).toContain(expected);

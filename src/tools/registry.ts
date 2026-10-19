@@ -3,8 +3,8 @@ import path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { parseMembers, projectsOf } from "../domain/access-control.ts";
 import { readBossName, readConfig } from "../domain/config.ts";
-import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
+import { listPeople, loadPerson, personDisplayName } from "../domain/org.ts";
 import { messagesDbFile, stateDir, type Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
@@ -43,20 +43,8 @@ export type ToolDef = {
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 };
 
-function readTextOrEmpty(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
 function displayName(ws: Workspace, id: string): string {
-  try {
-    return loadEmployee(ws, id).alias ?? id;
-  } catch {
-    return id;
-  }
+  return personDisplayName(ws, id);
 }
 
 /** 新会话/新条会话的模型与思考强度兜底（全局配置）。 */
@@ -64,14 +52,18 @@ function defaultsOf(ctx: ToolContext): SessionDefaults | undefined {
   return sessionDefaults(readConfig(ctx.ws));
 }
 
-/** 列出办公室：成员 + 项目。 */
+/** 列出办公室：成员（id、展示名、所在部门） + 项目。 */
 const officeList: ToolDef = {
   name: "office_list",
   description:
-    "列出办公室：全部成员（id、展示名）与全部项目（id、展示名、成员 id、你是否在其中）。想了解有哪些同事 / 哪些群聊时用它。",
+    "列出办公室：全部成员（id、展示名、所在部门）与全部项目（id、展示名、成员 id、你是否在其中）。想了解有哪些同事 / 哪些群聊时用它。",
   parameters: Type.Object({}),
   async run(_args, ctx) {
-    const employees = listEmployees(ctx.ws).map((e) => ({ id: e.id, name: e.alias ?? e.id }));
+    const employees = listPeople(ctx.ws).map((p) => ({
+      id: p.id,
+      name: p.alias ?? p.id,
+      department: p.departmentPath === "" ? "（办公室直属）" : p.departmentPath,
+    }));
     const mine = new Set(projectsOf(ctx.ws, ctx.selfId));
     const projects = listProjects(ctx.ws).map((p) => ({
       id: p.id,
@@ -86,13 +78,13 @@ const officeList: ToolDef = {
 /** 读某成员资料。 */
 const memberProfile: ToolDef = {
   name: "member_profile",
-  description: "读某位成员的资料：id、展示名与 profile.md 正文（岗位 / 职责 / 人格）。参数 member 是成员 id（目录名）。",
-  parameters: Type.Object({ member: Type.String({ description: "成员 id（agents/ 下的目录名）" }) }),
+  description: "读某位成员的资料：id、展示名与 prompt 正文（人格 / 职责 / 岗位）。参数 member 是成员 id（`<id>.agent.config.json` 的文件名主干）。",
+  parameters: Type.Object({ member: Type.String({ description: "成员 id（agents/ 下 `<id>.agent.config.json` 的主干）" }) }),
   async run(args, ctx) {
     const member = String(args["member"]);
-    const employee = loadEmployee(ctx.ws, member);
-    const profile = readTextOrEmpty(path.join(employee.dir, "profile.md"));
-    return [`成员：${employee.alias ?? employee.id}（${employee.id}）`, profile === "" ? "（无 profile.md）" : profile].join("\n\n");
+    const person = loadPerson(ctx.ws, member);
+    const prompt = person.prompt.trim();
+    return [`成员：${person.alias ?? person.id}（${person.id}）`, prompt === "" ? "（prompt 为空）" : prompt].join("\n\n");
   },
 };
 

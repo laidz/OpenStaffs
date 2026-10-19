@@ -46,7 +46,7 @@ describe("OpenStaffs 工具扩展", () => {
         cwd: dir,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [] },
+        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [dir] },
       };
       const convId = await harness.startSession(spec);
       const officeList = (ext.tools ?? []).find((t) => t.name === "office_list")!;
@@ -81,7 +81,7 @@ describe("OpenStaffs 工具扩展", () => {
         cwd: dir,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [] },
+        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [dir] },
       };
       const convId = await harness.startSession(spec);
       const tool = (ext.tools ?? []).find((t) => t.name === "request_permission")!;

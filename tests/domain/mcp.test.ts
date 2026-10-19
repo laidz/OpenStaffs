@@ -27,8 +27,8 @@ function server(command: string): { command: string } {
   return { command };
 }
 
-describe("四层 mcp.json", () => {
-  it("合并顺序为系统 → 空间 → 员工 → 项目，同名窄者胜，私聊不含项目层", () => {
+describe("三层 mcp.json", () => {
+  it("合并顺序为系统 → 空间 → 项目，同名窄者胜，私聊不含项目层", () => {
     const ws = createWorkspace(root);
     const systemFile = path.join(root, "system-mcp.json");
     writeJson(systemFile, {
@@ -40,9 +40,7 @@ describe("四层 mcp.json", () => {
     writeJson(path.join(root, "openstaffs", "mcp.json"), {
       mcpServers: { shared: server("space"), onlySpace: server("space") },
     });
-    writeJson(path.join(root, "agents", "alice", "mcp.json"), {
-      mcpServers: { shared: server("employee"), onlyEmployee: server("employee") },
-    });
+    writeJson(path.join(root, "agents", "alice.agent.config.json"), { prompt: "你是 alice。" });
     writeJson(path.join(root, "projects", "p1", "mcp.json"), {
       mcpServers: { shared: server("project"), onlyProject: server("project") },
     });
@@ -53,25 +51,35 @@ describe("四层 mcp.json", () => {
       ["shared", "project"],
       ["onlySystem", "system"],
       ["onlySpace", "space"],
-      ["onlyEmployee", "employee"],
       ["onlyProject", "project"],
     ]);
 
     const dm = resolveMcpServers(snapshot, { kind: "dm", employeeId: "alice" }, "alice").selections;
     expect(dm.map((item) => [item.name, item.config.command])).toEqual([
-      ["shared", "employee"],
+      ["shared", "space"],
       ["onlySystem", "system"],
       ["onlySpace", "space"],
-      ["onlyEmployee", "employee"],
     ]);
+  });
+
+  it("员工层不再有 mcp.json 来源：私聊只有空间 + 系统", () => {
+    const ws = createWorkspace(root);
+    const systemFile = path.join(root, "system-mcp.json");
+    writeJson(path.join(root, "agents", "alice.agent.config.json"), { prompt: "x" });
+    writeJson(path.join(root, "agents", "alice", "mcp.json"), { mcpServers: { gone: server("employee") } });
+
+    const snapshot = loadMcpSnapshot(ws, { systemFile });
+    expect(snapshot.sources.some((source) => source.scope.kind === "employee")).toBe(false);
+    expect(resolveMcpServers(snapshot, { kind: "dm", employeeId: "alice" }, "alice").selections).toEqual([]);
   });
 
   it("窄层同名定义非法时遮蔽宽层，不回落到宽层", () => {
     const ws = createWorkspace(root);
     const systemFile = path.join(root, "system-mcp.json");
     writeJson(systemFile, { mcpServers: { shared: server("system") } });
-    writeJson(path.join(root, "agents", "alice", "mcp.json"), {
-      // 缺 command：非法
+    writeJson(path.join(root, "agents", "alice.agent.config.json"), { prompt: "你是 alice。" });
+    writeJson(path.join(root, "openstaffs", "mcp.json"), {
+      // 缺 command：非法（空间层比系统层窄）
       mcpServers: { shared: { args: [] } },
     });
 

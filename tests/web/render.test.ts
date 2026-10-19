@@ -33,6 +33,8 @@ describe("渲染", () => {
     expect(html).toContain('"opencode-go": { "apiKey": "你的密钥" }');
     expect(html).toContain('"model": "opencode-go/deepseek-v4.1-flash"');
     expect(html).toContain('"port": 4319');
+    expect(html).toContain("agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json");
+    expect(html).not.toContain("agents/&lt;员工&gt;/config.json");
   });
 });
 
@@ -275,5 +277,55 @@ describe("气泡工具栏与 pin 高亮", () => {
     const html = sidebarHtml(state);
     expect(html).toContain('<span class="badge">2</span>');
     expect(html).toContain('<span class="badge">1</span>');
+  });
+});
+
+describe("侧栏部门树", () => {
+  const ORG = {
+    path: "",
+    name: "办公室",
+    people: [{ id: "staff0", model: "faux/faux-model" }],
+    departments: [
+      {
+        path: "eng",
+        name: "研发",
+        people: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
+        departments: [{ path: "eng/platform", name: "平台", people: [{ id: "bob", model: "faux/y" }], departments: [] }],
+      },
+    ],
+  };
+
+  it("sidebarHtml：部门树（嵌套 + 折叠时不渲染正文 + 空部门仍出部门头）", () => {
+    const state = { ...initialState, configured: true, org: ORG, pins: { "dm:bob": 1 } };
+    const html = sidebarHtml(state);
+    expect(html).toContain('data-toggle-dept="eng"');
+    expect(html).toContain('data-toggle-dept="eng/platform"');
+    expect(html).toContain('data-room="dm:alice"');
+    expect(html).toContain('data-room="dm:bob"');
+    expect(html).toContain('<span class="badge">1</span>');
+    expect(html).toContain("爱丽丝");
+    expect(html).toContain('aria-expanded="true"');
+
+    const collapsed = sidebarHtml({ ...state, collapsedDepts: ["eng"] });
+    expect(collapsed).toContain('data-toggle-dept="eng"');
+    expect(collapsed).not.toContain('data-room="dm:alice"'); // 折叠后正文不渲染
+    expect(collapsed).not.toContain('data-room="dm:bob"');
+    expect(collapsed).toContain('aria-expanded="false"');
+
+    const empty = sidebarHtml({
+      ...initialState,
+      configured: true,
+      org: { path: "", name: "办公室", people: [], departments: [{ path: "eng", name: "研发", people: [], departments: [] }] },
+    });
+    expect(empty).toContain('data-toggle-dept="eng"');
+    expect(empty).not.toContain("还没有员工");
+  });
+
+  it("sidebarHtml：无 org 数据时回落平铺（首帧不白屏）；都没有才出提示", () => {
+    const flat = sidebarHtml({ ...initialState, configured: true, employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }] });
+    expect(flat).toContain('data-room="dm:alice"');
+    const empty = sidebarHtml({ ...initialState, configured: true });
+    expect(empty).toContain("还没有员工");
+    expect(empty).toContain("&lt;名字&gt;.agent.config.json");
   });
 });

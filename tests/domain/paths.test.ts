@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile, membersFile, projectDir,
+  agentsDir, conversationIdsFile, createWorkspace, employeeDir, groupConversationIdsFile, membersFile, projectDir, workDir,
 } from "../../src/domain/paths.ts";
 
 describe("workspace paths", () => {
@@ -14,6 +14,7 @@ describe("workspace paths", () => {
   it("给出各标准目录", () => {
     expect(agentsDir(ws)).toBe(path.join("/tmp/company", "agents"));
     expect(employeeDir(ws, "alice")).toBe(path.join("/tmp/company", "agents", "alice"));
+    expect(workDir(ws, "alice")).toBe(path.join("/tmp/company", "work", "alice"));
     expect(projectDir(ws, "yt")).toBe(path.join("/tmp/company", "projects", "yt"));
     expect(membersFile(ws, "yt")).toBe(path.join("/tmp/company", "projects", "yt", "members.md"));
   });

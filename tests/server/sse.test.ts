@@ -6,7 +6,7 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, conversationIdsFile, employeeDir, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { createWorkspace, conversationIdsFile, messagesDbFile, stateDir, workDir } from "../../src/domain/paths.ts";
 import { startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
@@ -34,6 +34,7 @@ afterEach(() => {
   store?.close();
   store = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
+  fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(root, ".openstaffs"), { recursive: true, force: true });
 });
@@ -123,10 +124,8 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 8000): P
 
 describe("SSE 全链路", () => {
   it("发消息后推送：room.message(user) → delta → room.message(assistant)；pin 后推 room.pins", async () => {
-    const dir = path.join(root, "agents", "alice");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(root, "agents", "alice.agent.config.json"), JSON.stringify({ model: "faux/faux-model", prompt: "你是 alice。" }));
 
     // tokensPerSecond/tokenSize：放慢流式输出，使 delta 跨过 pi-durable 的 100ms partial 落盘窗口（否则 faux 瞬时出稿、无增量事件）。
     // 回答文本足够长（29 字 ≈ 400ms 流式）以保证 delta 断言稳定；仍以 "流式回答内容" 开头。
@@ -207,10 +206,8 @@ describe("SSE 全链路", () => {
 
 describe("待发队列全链路（Pi submission 事件驱动）", () => {
   it("忙时发送 → room.queued；投递开始 → room.dequeued(delivered)；消息照常落盘", async () => {
-    const dir = path.join(root, "agents", "alice");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(root, "agents", "alice.agent.config.json"), JSON.stringify({ model: "faux/faux-model", prompt: "你是 alice。" }));
 
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -303,10 +300,11 @@ describe("待发队列全链路（Pi submission 事件驱动）", () => {
 
 describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
   function writeEmployee(id: string): void {
-    const dir = path.join(root, "agents", id);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "agents", `${id}.agent.config.json`),
+      JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
+    );
   }
 
   function fauxHarness(suffix: string): ReturnType<typeof createPiHarness> {
@@ -551,8 +549,8 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     writeEmployee("bob");
     const ws = createWorkspace(root);
     const now = new Date().toISOString();
-    startNewSession(conversationIdsFile(ws, employeeDir(ws, "alice")), "bad-session", now);
-    startNewSession(conversationIdsFile(ws, employeeDir(ws, "bob")), "good-session", now);
+    startNewSession(conversationIdsFile(ws, workDir(ws, "alice")), "bad-session", now);
+    startNewSession(conversationIdsFile(ws, workDir(ws, "bob")), "good-session", now);
     const watched: string[] = [];
     const harness = {
       watch: async (convId: string) => {

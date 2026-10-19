@@ -243,4 +243,33 @@ describe("前端状态归约", () => {
     state = reduce(state, { type: "permission-resolved", id: "pr_2" });
     expect(state.permissionRequests).toEqual([]);
   });
+
+  const ORG = {
+    path: "",
+    name: "办公室",
+    people: [{ id: "staff0", model: "faux/faux-model" }],
+    departments: [
+      {
+        path: "eng",
+        name: "研发",
+        people: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
+        departments: [{ path: "eng/platform", name: "平台", people: [{ id: "bob", model: "faux/y" }], departments: [] }],
+      },
+    ],
+  };
+
+  it("org 事件：喂树 + 拍平 employees（DFS 顺序）", () => {
+    const state = reduce(initialState, { type: "org", root: ORG });
+    expect(state.org).toEqual(ORG);
+    expect(state.employees.map((e) => e.id)).toEqual(["staff0", "alice", "bob"]);
+  });
+
+  it("toggle-dept：可折叠可展开（幂等）", () => {
+    let state = reduce(initialState, { type: "toggle-dept", path: "eng" });
+    expect(state.collapsedDepts).toEqual(["eng"]);
+    state = reduce(state, { type: "toggle-dept", path: "eng/platform" });
+    expect(state.collapsedDepts).toEqual(["eng", "eng/platform"]);
+    state = reduce(state, { type: "toggle-dept", path: "eng" });
+    expect(state.collapsedDepts).toEqual(["eng/platform"]);
+  });
 });

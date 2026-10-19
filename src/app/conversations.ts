@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { conversationIdsFile, employeeDir, groupConversationIdsFile, projectDir, spaceSkillsDir, type Workspace } from "../domain/paths.ts";
-import { loadEmployee, renderInstructions, type Employee } from "../domain/employee.ts";
+import { conversationIdsFile, groupConversationIdsFile, projectDir, spaceSkillsDir, workDir, type Workspace } from "../domain/paths.ts";
+import { findPerson, loadOrg, loadPerson, managedDirsOf, type OrgPerson } from "../domain/org.ts";
 import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
@@ -20,32 +20,37 @@ export function relationKey(relation: Relation, speakerId: string): string {
 }
 
 export function relationCwd(ws: Workspace, relation: Relation): string {
-  return relation.kind === "dm" ? employeeDir(ws, relation.employeeId) : projectDir(ws, relation.project);
+  return relation.kind === "dm" ? workDir(ws, relation.employeeId) : projectDir(ws, relation.project);
 }
 
-export function permissionFilesFor(ws: Workspace, relation: Relation, speaker: Employee): string[] {
+/** 人级额外写权限文件（过渡命名：与人同目录、同主干 + `.permission.json`；P3 收进配置的 permissions）。 */
+export function agentPermissionFileOf(person: OrgPerson): string {
+  return path.join(person.dir, `${person.id}.permission.json`);
+}
+
+export function permissionFilesFor(ws: Workspace, relation: Relation, speaker: OrgPerson): string[] {
   const files: string[] = [];
   if (relation.kind === "group") files.push(path.join(projectDir(ws, relation.project), "permission.json"));
-  files.push(path.join(employeeDir(ws, speaker.id), "permission.json"));
+  files.push(agentPermissionFileOf(speaker));
   return files;
 }
 
 function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): string {
   return relation.kind === "dm"
-    ? conversationIdsFile(ws, employeeDir(ws, relation.employeeId))
+    ? conversationIdsFile(ws, workDir(ws, relation.employeeId))
     : groupConversationIdsFile(ws, relation.project, speakerId);
 }
 
 /**
  * 技能根目录（越窄越优先，同名先出现者胜）：
- * 群聊 = 项目 + 员工 + 空间 + 外部 skillPaths + 系统内置；私聊 = 员工 + 空间 + 外部 + 系统内置。
+ * 群聊 = 项目 + 空间 + 外部 skillPaths + 系统内置；私聊 = 空间 + 外部 + 系统内置。
  */
 export function skillDirsFor(
-  ws: Workspace, relation: Relation, speaker: Employee, externalSkillDirs: readonly string[] = [],
+  ws: Workspace, relation: Relation, speaker: OrgPerson, externalSkillDirs: readonly string[] = [],
 ): string[] {
   const dirs: string[] = [];
   if (relation.kind === "group") dirs.push(path.join(projectDir(ws, relation.project), "skills"));
-  dirs.push(path.join(employeeDir(ws, speaker.id), "skills"));
+  // 员工技能目录随「人 = 文件」取消（P3 用 config 的 skills 名引用恢复）
   dirs.push(spaceSkillsDir(ws));
   dirs.push(...externalSkillDirs);
   dirs.push(FRAMEWORK_SKILLS_DIR);
@@ -61,7 +66,7 @@ function readTextOrEmpty(file: string): string {
 }
 
 /** 系统提示词变量上下文（供 prompt-vars 取值）；私聊不带 projectId。 */
-export function promptContextFor(ws: Workspace, relation: Relation, speaker: Employee): PromptVarContext {
+export function promptContextFor(ws: Workspace, relation: Relation, speaker: OrgPerson): PromptVarContext {
   return {
     ws,
     kind: relation.kind,
@@ -71,9 +76,9 @@ export function promptContextFor(ws: Workspace, relation: Relation, speaker: Emp
   };
 }
 
-/** 会话快照（仅 startSession/新开会话时渲染一次）：系统环境段 → 空间总纲 → 项目规范（群聊）→ 员工 → 技能。 */
+/** 会话快照（仅 startSession/新开会话时渲染一次）：系统环境段 → 空间总纲 → 项目规范（群聊）→ 人级 prompt → 技能。 */
 export function instructionsFor(
-  ws: Workspace, relation: Relation, speaker: Employee, externalSkillDirs: readonly string[] = [],
+  ws: Workspace, relation: Relation, speaker: OrgPerson, externalSkillDirs: readonly string[] = [],
 ): string {
   const parts: string[] = [];
   const environment = renderEnvironment(promptContextFor(ws, relation, speaker));
@@ -84,20 +89,23 @@ export function instructionsFor(
     const projectAgents = readTextOrEmpty(path.join(projectDir(ws, relation.project), "AGENTS.md"));
     if (projectAgents !== "") parts.push(projectAgents);
   }
-  parts.push(renderInstructions(speaker));
+  parts.push(speaker.prompt);
   parts.push(renderSkills(listSkills(skillDirsFor(ws, relation, speaker, externalSkillDirs))));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
 
 /** 只计算 access 上下文（实时读 members.md；不读 profile/记忆）。 */
-export function accessFor(ws: Workspace, relation: Relation, speaker: Employee): AccessContext {
+export function accessFor(ws: Workspace, relation: Relation, speaker: OrgPerson): AccessContext {
   const cwd = relationCwd(ws, relation);
+  const tree = loadOrg(ws);
   return {
     root: ws.root,
     cwd,
     selfId: speaker.id,
     memberProjects: projectsOf(ws, speaker.id),
     permissionFiles: permissionFilesFor(ws, relation, speaker),
+    // 运行时写权（D13）：自己的工作目录 + 主管管理的部门目录（整棵子树由前缀判定覆盖）
+    writableDirs: [workDir(ws, speaker.id), ...managedDirsOf(tree, ws, speaker.id)],
   };
 }
 
@@ -113,15 +121,21 @@ export function sessionDefaults(config: WorkspaceConfig | undefined): SessionDef
   };
 }
 
+/** 会话 cwd 必须是真实目录（工具落点与 Pi 会话都要求）。 */
+function ensureCwd(cwd: string): string {
+  fs.mkdirSync(cwd, { recursive: true });
+  return cwd;
+}
+
 function specFor(
-  ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
+  ws: Workspace, relation: Relation, speaker: OrgPerson, defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): ConversationSpec {
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
   }
-  const cwd = relationCwd(ws, relation);
+  const cwd = ensureCwd(relationCwd(ws, relation));
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
-  // 思考强度独立于 model 解析：员工 > 会话默认（全局配置）。配置端不校验档位。
+  // 思考强度独立于 model 解析：人 > 会话默认（全局配置）。配置端不校验档位。
   const thinkingLevel = speaker.model.thinkingLevel ?? defaults?.thinkingLevel;
   const mcpExtensions = mcp?.extensionsFor(relation, speaker.id) ?? [];
   return {
@@ -139,7 +153,7 @@ async function ensure(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
-  const speaker = loadEmployee(ws, speakerId);
+  const speaker = loadPerson(ws, speakerId);
   const file = chainFileFor(ws, relation, speakerId);
   const active = activeSession(file);
   if (active !== undefined && (await harness.attach(active.id, accessFor(ws, relation, speaker)))) {
@@ -167,7 +181,7 @@ export async function newSession(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
-  const speaker = loadEmployee(ws, speakerId);
+  const speaker = loadPerson(ws, speakerId);
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
   return convId;
@@ -176,7 +190,7 @@ export async function newSession(
 /** 关系下各成员的会话链（群聊按 members.md 顺序；未创建过会话的成员为空链）。 */
 export function sessionChains(ws: Workspace, relation: Relation): { memberId: string; rows: SessionRow[] }[] {
   if (relation.kind === "dm") {
-    return [{ memberId: relation.employeeId, rows: readChain(conversationIdsFile(ws, employeeDir(ws, relation.employeeId))) }];
+    return [{ memberId: relation.employeeId, rows: readChain(conversationIdsFile(ws, workDir(ws, relation.employeeId))) }];
   }
   return parseMembers(ws, relation.project).map((memberId) => ({
     memberId,
@@ -257,12 +271,8 @@ export function findSessionOwner(ws: Workspace, relation: Relation, convId: stri
 export async function roomTranscripts(ws: Workspace, harness: HarnessPort, relation: Relation): Promise<MemberTranscript[]> {
   const out: MemberTranscript[] = [];
   for (const session of activeMemberSessions(ws, relation)) {
-    let alias: string | undefined;
-    try {
-      alias = loadEmployee(ws, session.memberId).alias;
-    } catch {
-      alias = undefined;
-    }
+    const person = findPerson(loadOrg(ws), session.memberId);
+    const alias = person?.alias;
     try {
       const messages = await harness.transcript(session.convId);
       out.push({ memberId: session.memberId, ...(alias === undefined ? {} : { alias }), convId: session.convId, messages });

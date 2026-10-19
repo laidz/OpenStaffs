@@ -53,7 +53,7 @@ function renderDynamic(event: UiEvent): void {
       renderSidebar();
       return;
     }
-    // UI 事件（employees/projects/pins 等）只影响侧栏；需要整页的调用点走 "all" 档。
+    // UI 事件（org/projects/pins 等）只影响侧栏；需要整页的调用点走 "all" 档。
     renderSidebar();
     return;
   }
@@ -131,6 +131,7 @@ function renderSidebar(): void {
   if (sidebar === null) return;
   sidebar.outerHTML = sidebarHtml(state);
   bindRoomButtons(); // outerHTML 重建了侧栏，需重新挂载房间点击
+  bindDeptToggles(); // 以及部门折叠
 }
 
 /** 消息列表局部更新；nearBottom 必须在重建 DOM 之前测量。 */
@@ -249,8 +250,16 @@ function bindRoomButtons(): void {
   }
 }
 
+/** 部门折叠（renderSidebar 重建侧栏后必须重挂）。 */
+function bindDeptToggles(): void {
+  for (const button of app.querySelectorAll<HTMLElement>("[data-toggle-dept]")) {
+    button.addEventListener("click", () => dispatch({ type: "toggle-dept", path: button.dataset.toggleDept! }));
+  }
+}
+
 function bindEvents(): void {
   bindRoomButtons();
+  bindDeptToggles();
   document.getElementById("composer-send")?.addEventListener("click", () => void sendCurrent());
   const input = document.getElementById("composer-input");
   input?.addEventListener("keydown", (event) => {
@@ -367,13 +376,13 @@ function onServerEvent(event: ServerEvent): void {
 }
 
 async function refreshAll(): Promise<void> {
-  const [employees, projects, pins, permissions] = await Promise.all([
-    api.employees(),
+  const [org, projects, pins, permissions] = await Promise.all([
+    api.org(),
     api.projects(),
     api.pins(),
     api.permissionRequests(),
   ]);
-  dispatch({ type: "employees", list: employees });
+  dispatch({ type: "org", root: org.root });
   dispatch({ type: "projects", list: projects });
   dispatch({ type: "pins", pins });
   dispatch({ type: "permissions", list: permissions.requests });
@@ -467,6 +476,7 @@ async function openHistory(): Promise<void> {
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
   bindRoomButtons(); // 面板内也带一份侧栏
+  bindDeptToggles(); // 面板内侧栏的部门折叠同样可用
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
   for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
     const convId = element.dataset.conv!;
@@ -482,6 +492,7 @@ async function loadHistoryView(roomKey: string, convId: string): Promise<void> {
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => guard(openHistory()));
   bindRoomButtons(); // 详情视图同样带一份侧栏
+  bindDeptToggles(); // 详情视图侧栏的部门折叠同样可用
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
 }
 
@@ -490,13 +501,13 @@ async function main(): Promise<void> {
     status = await api.status();
     dispatch({ type: "status", configured: status.configured, bossName: status.bossName }, "all");
     if (!status.configured) return;
-    const [employees, projects, pins, permissions] = await Promise.all([
-      api.employees(),
+    const [org, projects, pins, permissions] = await Promise.all([
+      api.org(),
       api.projects(),
       api.pins(),
       api.permissionRequests(),
     ]);
-    dispatch({ type: "employees", list: employees }, "all");
+    dispatch({ type: "org", root: org.root }, "all");
     dispatch({ type: "projects", list: projects }, "all");
     dispatch({ type: "pins", pins }, "all");
     dispatch({ type: "permissions", list: permissions.requests }, "all");

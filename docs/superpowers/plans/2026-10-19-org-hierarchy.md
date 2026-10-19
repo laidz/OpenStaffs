@@ -1892,3 +1892,26 @@ git commit -m "test: P2 组织架构全量回归与冒烟记录"
 - **B2**：org 模块接口以本计划实际签名为准（`findPerson` / `listPeople` / `loadPerson` / `ancestryOf` / `managedDirsOf` / `managedDepartmentsOf`，人带 `dir` / `departmentPath`），并在 Task 2 新增 **`managedSubtreeOf(ws, id) -> { departmentDirs, agentDirs }`** 适配器 + 走盘单测（P3 消费）。
 - **B3**：Task 3 加权威说明——`workDir(ws, id)` 是工作目录函数的**唯一实现**，P3 的 `employeeWorkDir` 与 P5 的 `workDir` 定义作废、改为 import。
 - **B4**：跨阶段假设表的五层配置解析器路径由 `src/domain/config.ts` 改为 **`src/config/*`**（P3 提供）；`src/domain/config.ts` 只保留机器私有配置职责（`readConfig` / `readBossName` / `bossNamesFor` 等）。
+
+---
+
+## 执行记录
+
+- 日期：2026-10-19 · 分支：feat/message-store
+- `npm test` / `npm run typecheck` / `npm run build:web`：**全部通过**。
+  - `npm test`（`vitest run`）：**48 个测试文件 / 426 个用例全绿**（Duration 3.29s）。仅出现 `node:sqlite` 的 `ExperimentalWarning`（非失败）。
+  - `npm run typecheck`（`tsc --noEmit`）：退出码 0，无输出。
+  - `npm run build:web`：输出 `[build-web] public/ 已生成`，退出码 0。
+  - 残留引用扫描（Step 2）：`grep -rn "api\.employees\|/api/employees" src web tests` 命中 **3 处**，逐条核对**均非残留用法**，而是「旧端点已移除」的注释与回归断言——`web/api.ts:38`（注释「取代旧的 /api/employees 平铺列表」）、`tests/server/http.test.ts:127`（用例名）、`tests/server/http.test.ts:148`（断言 `GET /api/employees` 为 404）。**无任何实际调用点**，且真实服务实测 404（见下）。按 B1 裁定，`employeeDir` / `loadEmployee` / `listEmployees` / `renderInstructions` / `domain/employee` 保留，不计入残留。
+- 手工冒烟：真实服务 + 真实浏览器执行（工作空间 `$TMPDIR/org-smoke-79516`、端口 4399、`node src/server/main.ts <ws> 4399`；供应商用 `deepseek` + 占位 apiKey，故**模型实际生成无法验证**）。
+  - **Task 7 Step 9 第 1 步（启动）**：通过。日志 `[openstaffs] 服务已启动：http://localhost:4399`；`GET /api/status` 200、`GET /` 200。
+  - **第 2 步（建目录文件）**：通过。`agents/eng/department.config.json`（`{"alias":"研发部","head":["alice"]}`）+ `agents/eng/alice.agent.config.json` + `agents/eng/platform/bob.agent.config.json`（另建 `agents/sales/` 作对照组）。
+  - **第 3 步（刷新后侧栏出现部门树）**：通过。真实 Chrome 快照：`▾ 研发部` → `爱丽丝`、`▾ platform` → `bob`；`▾ 销售部` → `carol`；另有一个空部门头 `▾ boss-skill` 仍渲染（旁证「空部门仍出部门头」）。`GET /api/org` 同形：`root.departments[eng].departments[platform].people=[bob]`。
+  - **第 4 步（点部门折叠 / 再点恢复）**：通过。点 `研发部` 后 alice 与 platform 整体消失、箭头变 `▸`；再点恢复原树形——与预期逐字一致。
+  - **第 5 步（点 alice 进私聊发一句 → 回复正常；`work/alice/` 被创建含 `conversation_ids.md`）**：**部分通过**。真实浏览器点 `爱丽丝` → 私聊面板打开；`work/alice/` 自动创建且含 `conversation_ids.md`（会话链一行 `| 2 | … | - |`）；从 GUI 发消息返回 HTTP 202、`deliveries[alice].status=placed`、消息落库并即时上屏（P1 消息库链路在 UI 中可见，房间行 `convId:"store"`）。**「回复正常」未执行/未验证**：占位 apiKey 无法真实调用模型，alice 无任何回复，服务端日志亦无异常。
+  - **第 6 步（alice 写受保护配置文件被拦）**：**构造式通过，真实模型未执行**。用生产函数 `accessFor(ws, {kind:"dm",employeeId:"alice"}, alice)` + `isWriteAllowed` 实测 `agents/eng/platform/bob.agent.config.json` → `false`；拦截文案与提示「可 request_permission」由 `tests/harness/access-extension.test.ts` 覆盖。由真实模型发起 `write` 工具调用需真实凭据，**未执行**。
+  - **Task 9 Step 3 第 7 步（主管写权穿透）**：**通过（构造式）**。alice 为 `eng` 的 head 生效：`managedDirsOf(alice)=["agents/eng"]`、`writableDirs=["work/alice","agents/eng"]`；实测 `agents/eng/platform/notes.md`（管辖子树·孙级）→ `true`（成功）、`agents/sales/notes.md`（兄弟部门）→ `false`（被拦）；附测 `agents/eng/department.config.json` → `false`、`work/alice/notes.md` → `true`、`/etc/passwd` → `false`。注：清单里的相对写法 `agents/eng/…` 会按会话 cwd（`work/alice`）解析而落在自己工作目录内，故用绝对路径复现同一语义。
+  - **Task 9 Step 3 第 8 步（权限链路：申请 → 接受 → 文件出现 → 再写成功）**：**部分执行——发起 / 接受 / 生效三段真实走通，真实模型自发调用未执行**。① 发起：调用**真实 `request_permission` 工具**（`src/tools/registry.ts`，无需 LLM）→ 工具返回「已向『老板』发起授权请求」、`notify` 触发 1 次、请求落盘 `.openstaffs/permission-requests.json`（`agentId=alice`、`roomKey=dm:alice`、paths 为空间外路径）。② 接受：真实服务 `POST /api/permission-requests/<id>/resolve {"decision":"accept"}` → 200 `{"ok":true}`，`GET /api/permission-requests` 随即清空；接受前 `agents/eng/alice.permission.json` 不存在，接受后出现且内容为所申请的路径（落点与 `permissionFilePath` 一致）。③ 生效：重新装配 access 后 `isWriteAllowed(所申请路径)=true`，同目录未授权的 `other.txt=false`（未过度授权）。**未执行**：① 界面弹框点击（以同一 HTTP 端点等价替代）；② 真实模型自发调用 `request_permission`；③ 真实模型评测后再写该路径成功（以重装配 access 后的判定函数替代）。
+- 与 P1 的衔接：**P1 已合并**（在 `feat/message-store`，见 `.superpowers/sdd/2026-10-19-message-store/progress.md`）；`sessionId` 是否补填：**否**（理由：P2 不改变消息→会话映射；补填走 store 写行时用 `work/<id>/conversation_ids.md` 的活跃行）。旁证：本次冒烟的房间消息全部走 P1 的 `store` 行（`convId:"store"`、`seq` 递增、房间视图直接读库）且显示正常。
+- 跨阶段假设是否被证伪：**无**。逐项核对：`src/config/*` 不存在 → P3 未提前落地；`stateDir` 仍为 `.openstaffs/`、无 `agents/staff0.agent.config.json` 自动创建 → P4 未提前落地；`instructionsFor` 仍只取「空间/项目 `AGENTS.md` + 人级 `prompt`」、无 `MEMORY.md` 注入 → P5 未提前落地；B2 要求的 `managedSubtreeOf(ws, id)` 已落地（`src/domain/org.ts:162`）、B1 的 `src/domain/employee.ts` 确为薄适配层、B3 的 `workDir` 唯一实现成立。
+- 结论与后续单：**通过（含 3 项「未执行 / 部分执行」，均为环境限制：无真实模型凭据 → 模型实际回复与「模型自发工具调用」无法端到端验证；界面弹框以等价 HTTP 端点替代）**。建议在具备真实供应商凭据的环境补做三次真实冒烟：① 私聊得到正常回复；② 模型自发 `write` 越界被拦并给出 `request_permission` 提示；③ 模型自发 `request_permission` + 界面弹框接受 + 再写成功。

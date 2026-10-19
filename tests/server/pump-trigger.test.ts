@@ -31,10 +31,11 @@ afterEach(() => {
 });
 
 function seedEmployee(id: string): void {
-  const dir = path.join(root, "agents", id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "AGENTS.md"), `你是 ${id}。`);
-  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ model: "faux/faux-model" }));
+  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "agents", `${id}.agent.config.json`),
+    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
+  );
 }
 
 async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 15000): Promise<T> {

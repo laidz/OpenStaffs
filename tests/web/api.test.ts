@@ -55,4 +55,10 @@ describe("前端 API 封装", () => {
     expect(calls[2]!.init?.method).toBe("POST");
     expect(JSON.parse(String(calls[2]!.init?.body))).toEqual({ convId: "c1", entryId: "10", pinned: true });
   });
+
+  it("org：GET /api/org", async () => {
+    const calls = stubFetch({ root: { path: "", name: "办公室", people: [], departments: [] } });
+    await api.org();
+    expect(calls[0]!.url).toBe("/api/org");
+  });
 });

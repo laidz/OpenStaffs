@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
-import { isWriteAllowed, parseMembers, projectsOf, type AccessContext } from "../../src/domain/access-control.ts";
+import { isProtectedConfigName, isWriteAllowed, parseMembers, projectsOf, type AccessContext } from "../../src/domain/access-control.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-acl-"));
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -22,6 +22,7 @@ function ctx(extra: Partial<AccessContext> = {}): AccessContext {
     selfId: "alice",
     memberProjects: ["yt"],
     permissionFiles: [],
+    writableDirs: [],
     ...extra,
   };
 }
@@ -46,10 +47,39 @@ describe("projectsOf", () => {
 });
 
 describe("isWriteAllowed", () => {
-  it("允许写自己的工作区（私聊 cwd = 员工目录）", () => {
-    const c = ctx({ cwd: path.join(tmp, "agents", "alice") });
+  it("运行时目录（自己的工作目录）可写；目录外仍拒绝", () => {
+    const work = path.join(tmp, "work", "alice");
+    const c = ctx({ cwd: work, writableDirs: [work] });
     expect(isWriteAllowed(c, "note.md")).toBe(true);
-    expect(isWriteAllowed(c, "data/x.md")).toBe(true);
+    expect(isWriteAllowed(c, "sub/a.md")).toBe(true);
+    expect(isWriteAllowed(c, path.join(tmp, "agents", "bob.agent.config.json"))).toBe(false);
+  });
+
+  it("主管穿透：管理子树内可写（含孙级），兄弟部门 / 子树外不可写", () => {
+    const managed = path.join(tmp, "agents", "eng");
+    const boss = ctx({ cwd: path.join(tmp, "work", "alice"), writableDirs: [path.join(tmp, "work", "alice"), managed] });
+    expect(isWriteAllowed(boss, path.join(tmp, "agents", "eng", "platform", "notes.md"))).toBe(true);
+    expect(isWriteAllowed(boss, path.join(tmp, "agents", "sales", "notes.md"))).toBe(false);
+    expect(isWriteAllowed(boss, path.join(tmp, "agents", "eng", "alice.agent.config.json"))).toBe(false); // 配置文件不可写
+    expect(isWriteAllowed(boss, path.join(tmp, "agents", "eng", "department.config.json"))).toBe(false);
+  });
+
+  it("受保护的配置文件名一律不可写（含人级权限文件与部门声明）", () => {
+    const c = ctx({ cwd: tmp, writableDirs: [tmp] });
+    expect(isWriteAllowed(c, "agents/alice.agent.config.json")).toBe(false);
+    expect(isWriteAllowed(c, "agents/eng/department.config.json")).toBe(false);
+    expect(isWriteAllowed(c, "agents/alice.permission.json")).toBe(false);
+    expect(isWriteAllowed(c, "projects/yt/permission.json")).toBe(false);
+    expect(isProtectedConfigName("bob.agent.config.json")).toBe(true);
+    expect(isProtectedConfigName("notes.md")).toBe(false);
+  });
+
+  it("受保护配置名的大小写变体同样不可写（目标卷可能大小写不敏感）", () => {
+    const c = ctx({ cwd: tmp, writableDirs: [tmp] });
+    expect(isProtectedConfigName("Bob.AGENT.CONFIG.JSON")).toBe(true);
+    expect(isProtectedConfigName("PERMISSION.JSON")).toBe(true);
+    expect(isWriteAllowed(c, "agents/Bob.AGENT.CONFIG.JSON")).toBe(false);
+    expect(isWriteAllowed(c, "agents/eng/DEPARTMENT.CONFIG.JSON")).toBe(false);
   });
 
   it("允许写所在项目（群聊 cwd = 项目目录）", () => {

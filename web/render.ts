@@ -2,6 +2,7 @@ import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
+import type { EmployeeSummary, OrgDept } from "./api.ts";
 import type { Live, State } from "./state.ts";
 
 export function escapeHtml(text: string): string {
@@ -21,22 +22,20 @@ export function setupPage(root: string, port: number): string {
   "model": "opencode-go/deepseek-v4.1-flash",
   "port": ${port}
 }</pre>
-      <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在 <code>agents/&lt;员工&gt;/config.json</code> 里用 <code>model</code> 覆盖成别的供应商与模型。</p>
+      <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在自己的 <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code> 里用 <code>model</code> 字段覆盖成别的供应商与模型。</p>
       <p>保存配置后：Ctrl+C 停止服务 → 重新 <code>npm start</code> → 刷新本页。</p>
-      <p class="hint">员工与项目不需要在这里配置：直接在 <code>agents/</code> 与 <code>projects/</code> 下建文件夹即可（详见 README.md）。</p>
+      <p class="hint">员工与项目不需要在这里配置：人 = <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code>（单文件，所在文件夹即部门）；<code>projects/</code> 下建目录并写 members.md 即可（详见 README.md）。</p>
     </main>`;
 }
 
 export function sidebarHtml(state: State): string {
-  const employeeItems = state.employees
-    .map((employee) => {
-      const roomKey = `dm:${employee.id}`;
-      const pins = state.pins[roomKey] ?? 0;
-      const busy = state.busy[employee.id] === true ? '<span class="dot"></span>' : "";
-      const active = state.roomKey === roomKey ? " active" : "";
-      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(employee.alias ?? employee.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
-    })
-    .join("");
+  const employeeItems =
+    state.org === undefined
+      ? state.employees.map((person) => personItemHtml(state, person)).join("") // 首帧（org 未到）回落平铺
+      : [
+          ...state.org.people.map((person) => personItemHtml(state, person)),
+          ...state.org.departments.map((dept) => deptHtml(state, dept)),
+        ].join("");
   const projectItems = state.projects
     .map((project) => {
       const roomKey = `group:${project.id}`;
@@ -47,9 +46,28 @@ export function sidebarHtml(state: State): string {
     })
     .join("");
   return `<aside class="sidebar" id="sidebar">
-    <h3>员工</h3>${employeeItems || `<p class="hint">还没有员工：在 agents/ 下创建目录并写 AGENTS.md（见 README.md）。</p>`}
+    <h3>员工</h3>${employeeItems || `<p class="hint">还没有员工：在 agents/ 下创建 &lt;名字&gt;.agent.config.json（见 README.md）。</p>`}
     <h3>项目</h3>${projectItems || `<p class="hint">还没有项目：在 projects/ 下创建目录并写 members.md（见 README.md）。</p>`}
   </aside>`;
+}
+
+/** 侧栏里的一员（私聊入口）：红点 = 该房间 pin 计数，忙碌点 = 正在跑。 */
+function personItemHtml(state: State, person: EmployeeSummary): string {
+  const roomKey = `dm:${person.id}`;
+  const pins = state.pins[roomKey] ?? 0;
+  const busy = state.busy[person.id] === true ? '<span class="dot"></span>' : "";
+  const active = state.roomKey === roomKey ? " active" : "";
+  return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
+}
+
+/** 部门节点：可折叠（折叠时不渲染正文——不是藏起来再叠着显示）。 */
+function deptHtml(state: State, dept: OrgDept): string {
+  const collapsed = state.collapsedDepts.includes(dept.path);
+  const body = [...dept.people.map((p) => personItemHtml(state, p)), ...dept.departments.map((d) => deptHtml(state, d))].join("");
+  return `<div class="dept" data-dept="${escapeHtml(dept.path)}">
+    <button type="button" class="dept-head" data-toggle-dept="${escapeHtml(dept.path)}" aria-expanded="${collapsed ? "false" : "true"}"><span class="caret">${collapsed ? "▸" : "▾"}</span><span>${escapeHtml(dept.name)}</span></button>
+    ${collapsed ? "" : `<div class="dept-body">${body}</div>`}
+  </div>`;
 }
 
 /** 排队标识（挂在真气泡上，或独立占位气泡里）：等待的成员 + 撤回入口（撤回 = 撤掉这条消息所有没开始的投递）。 */

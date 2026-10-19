@@ -1,7 +1,7 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
-import type { EmployeeSummary, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
+import type { EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
 
 export type Live = {
   convId: string;
@@ -36,6 +36,10 @@ export type State = {
   freshSession: boolean;
   busy: Record<string, boolean>;
   panel?: "history";
+  /** 组织树（部门嵌套）；未拿到时为 undefined（侧栏回落平铺）。 */
+  org?: OrgDept;
+  /** 折叠的部门路径（**不持久化**：刷新回到全展开）。 */
+  collapsedDepts: string[];
 };
 
 export const initialState: State = {
@@ -52,11 +56,13 @@ export const initialState: State = {
   pinned: [],
   freshSession: false,
   busy: {},
+  org: undefined,
+  collapsedDepts: [],
 };
 
 export type UiEvent =
   | { type: "status"; configured: boolean; bossName: string }
-  | { type: "employees"; list: EmployeeSummary[] }
+  | { type: "org"; root: OrgDept }
   | { type: "projects"; list: ProjectSummary[] }
   | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
   | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
@@ -69,6 +75,7 @@ export type UiEvent =
   | { type: "permission-busy"; id: string; busy: boolean }
   | { type: "permission-error"; id: string; error: string }
   | { type: "permission-resolved"; id: string }
+  | { type: "toggle-dept"; path: string }
   | { type: "sse"; event: ServerEvent };
 
 export function selectView(state: State): "setup" | "main" {
@@ -77,6 +84,17 @@ export function selectView(state: State): "setup" | "main" {
 
 function messageKey(message: RoomMessage): string {
   return `${message.convId}:${message.entryId}`;
+}
+
+/** 部门树 → 平铺的人员列表（DFS：本部门的人在前，再依次进子部门）；chat / 会话信息条仍读平铺列表。 */
+export function flattenOrg(root: OrgDept): EmployeeSummary[] {
+  const out: EmployeeSummary[] = [];
+  const walk = (dept: OrgDept): void => {
+    out.push(...dept.people);
+    for (const child of dept.departments) walk(child);
+  };
+  walk(root);
+  return out;
 }
 
 /** 增量合并：按消息键（convId:entryId，房间视图里即 `store:<seq>`）去重，保持排序。
@@ -95,8 +113,14 @@ export function reduce(state: State, event: UiEvent): State {
   switch (event.type) {
     case "status":
       return { ...state, configured: event.configured, bossName: event.bossName };
-    case "employees":
-      return { ...state, employees: event.list };
+    case "org":
+      return { ...state, org: event.root, employees: flattenOrg(event.root) };
+    case "toggle-dept": {
+      const collapsed = state.collapsedDepts.includes(event.path)
+        ? state.collapsedDepts.filter((path) => path !== event.path)
+        : [...state.collapsedDepts, event.path];
+      return { ...state, collapsedDepts: collapsed };
+    }
     case "projects":
       return { ...state, projects: event.list };
     case "room":

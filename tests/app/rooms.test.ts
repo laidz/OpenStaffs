@@ -21,9 +21,8 @@ function stored(over: Partial<StoredMessage>): StoredMessage {
 
 // toRoomMessage 要解析员工 alias：造一个最小工作区（alice 有 alias）。
 const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-rooms-"));
-fs.mkdirSync(path.join(wsRoot, "agents", "alice"), { recursive: true });
-fs.writeFileSync(path.join(wsRoot, "agents", "alice", "AGENTS.md"), "你是 alice。");
-fs.writeFileSync(path.join(wsRoot, "agents", "alice", "config.json"), JSON.stringify({ alias: "Alice" }));
+fs.mkdirSync(path.join(wsRoot, "agents"), { recursive: true });
+fs.writeFileSync(path.join(wsRoot, "agents", "alice.agent.config.json"), JSON.stringify({ prompt: "你是 alice。", alias: "Alice" }));
 const ws = createWorkspace(wsRoot);
 afterEach(() => fs.rmSync(path.join(wsRoot, ".openstaffs"), { recursive: true, force: true }));
 

@@ -17,7 +17,7 @@ function spec(): ConversationSpec {
     cwd: aliceCwd,
     instructions: "你是 alice。",
     model: { provider: "faux", modelId: "faux-model" },
-    access: { root, cwd: aliceCwd, selfId: "alice", memberProjects: [], permissionFiles: [] },
+    access: { root, cwd: aliceCwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [aliceCwd] },
   };
 }
 

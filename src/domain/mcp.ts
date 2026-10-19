@@ -2,8 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readMcpCredentials, type McpCredentials } from "./config.ts";
-import { listEmployees } from "./employee.ts";
-import { employeeDir, projectDir, spaceDir, type Workspace } from "./paths.ts";
+import { projectDir, spaceDir, type Workspace } from "./paths.ts";
 import { listProjects } from "./project.ts";
 import type { Relation } from "./types.ts";
 
@@ -207,17 +206,13 @@ export function readMcpSource(scope: McpScope, file: string, credentials: McpCre
   return source;
 }
 
-/** 启动快照：四层全部读一次（含全部员工 / 项目）；此后新增 / 修改需重启。 */
+/** 启动快照：三层全部读一次（系统 / 空间 / 全部项目）；此后新增 / 修改需重启。 */
 export function loadMcpSnapshot(ws: Workspace, options?: { systemFile?: string }): McpSnapshot {
   const credentials = readMcpCredentials(ws);
   const sources: McpSource[] = [];
   sources.push(readMcpSource({ kind: "system" }, options?.systemFile ?? SYSTEM_MCP_FILE, credentials));
   sources.push(readMcpSource({ kind: "space" }, path.join(spaceDir(ws), "mcp.json"), credentials));
-  for (const employee of listEmployees(ws)) {
-    sources.push(
-      readMcpSource({ kind: "employee", id: employee.id }, path.join(employeeDir(ws, employee.id), "mcp.json"), credentials),
-    );
-  }
+  // 员工层 mcp.json 随「人 = 文件」取消；P3 用 agent.config.json 的 `mcp` 名引用恢复
   for (const project of listProjects(ws)) {
     sources.push(
       readMcpSource({ kind: "project", id: project.id }, path.join(projectDir(ws, project.id), "mcp.json"), credentials),
@@ -228,6 +223,7 @@ export function loadMcpSnapshot(ws: Workspace, options?: { systemFile?: string }
 
 function sourcesFor(snapshot: McpSnapshot, relation: Relation, speakerId: string): McpSource[] {
   const out = snapshot.sources.filter((source) => source.scope.kind === "system" || source.scope.kind === "space");
+  // 员工层分支保留：P2 起 loadMcpSnapshot 不再产出 employee 来源（人 = 文件），P3 用配置的 `mcp` 名引用恢复
   for (const source of snapshot.sources) {
     if (source.scope.kind === "employee" && source.scope.id === speakerId) out.push(source);
   }

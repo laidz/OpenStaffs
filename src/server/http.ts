@@ -1,12 +1,12 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
-import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
+import { findPerson, loadOrg, type OrgDepartment, type OrgTree } from "../domain/org.ts";
+import { projectDir, type Workspace } from "../domain/paths.ts";
 import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage } from "../app/rooms.ts";
 import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
@@ -78,14 +78,27 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-function memberSummaries(ws: Workspace, project: string): { id: string; alias?: string }[] {
+type OrgPersonJson = { id: string; alias?: string; model: string };
+type OrgDeptJson = { path: string; name: string; people: OrgPersonJson[]; departments: OrgDeptJson[] };
+
+/** 部门 → 视图：展示名 = department.config.json 的 alias，根部门兜底「办公室」。 */
+function orgDeptView(config: WorkspaceConfig, dept: OrgDepartment): OrgDeptJson {
+  return {
+    path: dept.path,
+    name: dept.path === "" ? (dept.alias ?? "办公室") : (dept.alias ?? dept.name),
+    people: dept.people.map((person) => ({
+      id: person.id,
+      ...(person.alias === undefined ? {} : { alias: person.alias }),
+      model: formatModelRef(resolveEmployeeModel(config.model, person.model)),
+    })),
+    departments: dept.departments.map((child) => orgDeptView(config, child)),
+  };
+}
+
+function memberSummaries(ws: Workspace, tree: OrgTree, project: string): { id: string; alias?: string }[] {
   return parseMembers(ws, project).map((id) => {
-    try {
-      const employee = loadEmployee(ws, id);
-      return { id, ...(employee.alias === undefined ? {} : { alias: employee.alias }) };
-    } catch {
-      return { id };
-    }
+    const person = findPerson(tree, id);
+    return { id, ...(person?.alias === undefined ? {} : { alias: person.alias }) };
   });
 }
 
@@ -106,7 +119,7 @@ function resolveStatic(publicDir: string, pathname: string): string | undefined 
 
 function roomExists(ws: Workspace, relation: Relation): boolean {
   return relation.kind === "dm"
-    ? fs.existsSync(employeeDir(ws, relation.employeeId))
+    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined
     : fs.existsSync(projectDir(ws, relation.project));
 }
 
@@ -298,12 +311,7 @@ async function handleRooms(
       json(res, 404, { error: "会话不存在" });
       return;
     }
-    let alias: string | undefined;
-    try {
-      alias = loadEmployee(deps.ws, owner).alias;
-    } catch {
-      alias = undefined;
-    }
+    const alias = findPerson(loadOrg(deps.ws), owner)?.alias;
     const messages = roomMessagesOfTranscript(roomKey, {
       memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId),
     }, memberIds, bossNames);
@@ -348,26 +356,19 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             return;
           }
           const harness = deps.getHarness();
-          if (segments[1] === "employees" && method === "GET") {
-            json(
-              res,
-              200,
-              listEmployees(deps.ws).map((employee) => ({
-                id: employee.id,
-                ...(employee.alias === undefined ? {} : { alias: employee.alias }),
-                model: formatModelRef(resolveEmployeeModel(config.model, employee.model)),
-              })),
-            );
+          if (segments[1] === "org" && method === "GET") {
+            json(res, 200, { root: orgDeptView(config, loadOrg(deps.ws).root) });
             return;
           }
           if (segments[1] === "projects" && method === "GET") {
+            const tree = loadOrg(deps.ws);
             json(
               res,
               200,
               listProjects(deps.ws).map((project) => ({
                 id: project.id,
                 alias: project.alias,
-                members: memberSummaries(deps.ws, project.id),
+                members: memberSummaries(deps.ws, tree, project.id),
               })),
             );
             return;
@@ -432,8 +433,8 @@ export function createHttpServer(deps: ServerDeps): http.Server {
           if (segments[1] === "pins" && method === "GET" && harness !== undefined) {
             const bossName = readBossName(deps.ws);
             const rooms: { key: string; messages: RoomMessage[] }[] = [];
-            for (const employee of listEmployees(deps.ws)) {
-              const key = `dm:${employee.id}`;
+            for (const person of loadOrg(deps.ws).people) {
+              const key = `dm:${person.id}`;
               rooms.push({ key, messages: deps.store.listByRoom(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
             }
             for (const project of listProjects(deps.ws)) {
