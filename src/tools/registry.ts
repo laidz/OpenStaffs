@@ -4,7 +4,9 @@ import { Type, type TSchema } from "typebox";
 import { parseMembers, projectsOf } from "../domain/access-control.ts";
 import { readBossName, readConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
-import { listPeople, loadPerson, personDisplayName } from "../domain/org.ts";
+import { listPeople, personDisplayName } from "../domain/org.ts";
+import { loadEmployee } from "../domain/employee.ts";
+import { loadAgentConfig } from "../config/load.ts";
 import { messagesDbFile, stateDir, type Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
@@ -78,13 +80,14 @@ const officeList: ToolDef = {
 /** 读某成员资料。 */
 const memberProfile: ToolDef = {
   name: "member_profile",
-  description: "读某位成员的资料：id、展示名与 prompt 正文（人格 / 职责 / 岗位）。参数 member 是成员 id（`<id>.agent.config.json` 的文件名主干）。",
-  parameters: Type.Object({ member: Type.String({ description: "成员 id（agents/ 下 `<id>.agent.config.json` 的主干）" }) }),
+  description: "读某位成员的资料：id、展示名与其定义 config 的 prompt 正文。参数 member 是成员 id。",
+  parameters: Type.Object({ member: Type.String({ description: "成员 id（<名字>.agent.config.json 的名字）" }) }),
   async run(args, ctx) {
     const member = String(args["member"]);
-    const person = loadPerson(ctx.ws, member);
-    const prompt = person.prompt.trim();
-    return [`成员：${person.alias ?? person.id}（${person.id}）`, prompt === "" ? "（prompt 为空）" : prompt].join("\n\n");
+    const employee = loadEmployee(ctx.ws, member);
+    const config = loadAgentConfig(employee.dir, employee.id);
+    const prompt = config?.fields.prompt ?? "";
+    return [`成员：${employee.alias ?? employee.id}（${employee.id}）`, prompt === "" ? "（未配置 prompt）" : prompt].join("\n\n");
   },
 };
 
@@ -212,15 +215,16 @@ const newSessionTool: ToolDef = {
 const requestPermission: ToolDef = {
   name: "request_permission",
   description:
-    "向负责人申请写入某些路径的权限。**异步**：工具立即返回；负责人稍后在界面弹框中接受或拒绝，结果会以一条新消息通知你——在此之前不要重复发起，也不要尝试写入这些路径或用其他方式绕过拦截。paths 为要申请的路径（目录或文件，可多个；相对路径按当前工作目录解析）；reason 为简短理由（必填，会展示给负责人）。",
+    "向负责人申请写入某些路径的权限。**异步**：工具立即返回；负责人稍后在界面弹框中接受或拒绝，结果会以一条新消息通知你——在此之前不要重复发起，也不要尝试写入这些路径或用其他方式绕过拦截。paths 为要申请的路径（目录或文件，可多个；相对路径按当前工作目录解析）；reason 为简短理由（必填，会展示给负责人）。`tool` 缺省 `write`；权限按工具授予，写 / 读 / bash 各是一张路径表。",
   parameters: Type.Object({
     paths: Type.Array(Type.String(), { description: "要申请的路径（目录 / 文件，可多个）" }),
     reason: Type.String({ description: "简短理由：为什么需要这些路径（会展示给负责人）" }),
+    tool: Type.Optional(Type.String({ description: "权限工具名（缺省 write；如 read / bash）" })),
   }),
   async run(args, ctx) {
     const permissions = ctx.permissions;
     if (permissions === undefined) throw new Error("授权申请不可用：当前会话未装配该能力。");
-    const cwd = relationCwd(ctx.ws, ctx.relation);
+    const cwd = relationCwd(ctx.ws, ctx.relation, ctx.selfId);
     const rawPaths = Array.isArray(args["paths"]) ? args["paths"] : [];
     const paths = [
       ...new Set(
@@ -235,10 +239,13 @@ const requestPermission: ToolDef = {
     if (paths.length === 0) throw new Error("paths 不能为空：至少给出一个要申请的路径。");
     const reason = String(args["reason"] ?? "").trim();
     if (reason === "") throw new Error(`reason 不能为空：用一两句话说明为什么要这些路径（会展示给「${bossName}」）。`);
-    if (permissions.store.findDuplicate(ctx.selfId, paths) !== undefined) {
+    const tool = typeof args["tool"] === "string" && args["tool"].trim() !== "" ? args["tool"].trim() : "write";
+    // 工具名会被写进 config 的 permissions 键与日志，只放行字母 / 数字 / _ / -（防路径穿越或怪异键）。
+    if (!/^[A-Za-z0-9_-]+$/u.test(tool)) throw new Error(`tool 不合法：${tool}（只允许字母、数字、下划线、连字符）`);
+    if (permissions.store.findDuplicate(ctx.selfId, paths, tool) !== undefined) {
       return `已有相同的授权请求在等待「${bossName}」处理（${paths.length} 个地址），请勿重复发起。`;
     }
-    const request = permissions.store.add({ agentId: ctx.selfId, roomKey: roomKeyOf(ctx.relation), paths, reason });
+    const request = permissions.store.add({ agentId: ctx.selfId, roomKey: roomKeyOf(ctx.relation), tool, paths, reason });
     permissions.notify(request);
     return [
       `已向「${bossName}」发起授权请求（${paths.length} 个地址）：`,

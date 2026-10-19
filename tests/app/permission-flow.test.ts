@@ -3,11 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
-import { loadPerson } from "../../src/domain/org.ts";
-import { agentPermissionFileOf } from "../../src/app/conversations.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
-import { PermissionRequestNotFoundError, permissionFilePath, permissionRequestView, resolvePermissionRequest } from "../../src/app/permission-flow.ts";
+import { PermissionRequestNotFoundError, permissionRequestView, resolvePermissionRequest } from "../../src/app/permission-flow.ts";
+import { seedOffice } from "../helpers/office.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
@@ -22,18 +21,27 @@ afterEach(() => {
 
 /** 人 = `agents/[<部门>/]<id>.agent.config.json`（dept 缺省 = 根部 agents/）。 */
 function seedEmployee(id: string, alias?: string, dept?: string): void {
-  const dir = dept === undefined ? path.join(root, "agents") : path.join(root, "agents", dept);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。`, ...(alias === undefined ? {} : { alias }) }),
-  );
+  seedOffice(root, {
+    agents: [{
+      id,
+      ...(dept === undefined ? {} : { department: dept }),
+      ...(alias === undefined ? {} : { alias }),
+      model: "faux/faux-model",
+      prompt: `你是 ${id}。`,
+    }],
+  });
 }
 
+/** 群 = `projects/<id>.project.config.json` 的 members（D22 扁平 config）。 */
 function seedGroup(project: string, members: string[]): void {
-  const dir = path.join(root, "projects", project);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...members.map((m) => `- ${m}`), ""].join("\n"));
+  seedOffice(root, { projects: [{ id: project, members }] });
+}
+
+/** 人配置的落点（授权追加目标）。 */
+function agentConfigPath(id: string, dept?: string): string {
+  return dept === undefined
+    ? path.join(root, "agents", `${id}.agent.config.json`)
+    : path.join(root, "agents", dept, `${id}.agent.config.json`);
 }
 
 class FakePort implements HarnessPort {
@@ -78,7 +86,7 @@ function setup() {
 }
 
 describe("授权请求处理", () => {
-  it("accept：写人级 permission.json（<人所在目录>/<id>.permission.json），投递「已完成授权」、清请求、广播", async () => {
+  it("accept：把路径追加进发起者 agent config 的 permissions.write，其余字段不动", async () => {
     seedEmployee("alice", "爱丽丝", "eng"); // 人落在 agents/eng/
     const { ws, store, port, register, broadcast, deps } = setup();
     const target = path.join(root, "outside", "shared");
@@ -86,10 +94,11 @@ describe("授权请求处理", () => {
 
     const result = await resolvePermissionRequest(deps, request.id, "accept");
     expect(result).toEqual({ ok: true });
-    expect(permissionFilePath(ws, "alice")).toBe(path.join(root, "agents", "eng", "alice.permission.json"));
-    expect(JSON.parse(fs.readFileSync(permissionFilePath(ws, "alice"), "utf8"))).toEqual([target]);
-    // 与装配层的落点函数同源（R-P2-5）：授权文件与人定义同目录、同主干
-    expect(agentPermissionFileOf(loadPerson(ws, "alice"))).toBe(permissionFilePath(ws, "alice"));
+    const parsed = JSON.parse(fs.readFileSync(agentConfigPath("alice", "eng"), "utf8")) as Record<string, unknown>;
+    expect(parsed.prompt).toBe("你是 alice。");
+    expect(parsed.alias).toBe("爱丽丝");
+    expect(parsed.model).toBe("faux/faux-model");
+    expect(parsed.permissions).toEqual({ write: [target] });
     expect(port.submits).toHaveLength(1);
     expect(port.submits[0]!.text).toBe("已完成授权");
     expect(port.submits[0]!.meta?.kind).toBe("chat.message");
@@ -99,6 +108,33 @@ describe("授权请求处理", () => {
     expect(broadcast).toHaveBeenCalledWith(request.id);
     expect(store.list()).toEqual([]);
     expect(readPermissionRequests(ws)).toEqual([]);
+  });
+
+  it('accept：request.tool = "read" 时写进 permissions.read', async () => {
+    seedEmployee("alice");
+    const { store, deps } = setup();
+    const target = path.join(root, "outside", "docs");
+    const request = store.add({ agentId: "alice", roomKey: "dm:alice", tool: "read", paths: [target], reason: "要读" });
+
+    const result = await resolvePermissionRequest(deps, request.id, "accept");
+
+    expect(result).toEqual({ ok: true });
+    const parsed = JSON.parse(fs.readFileSync(agentConfigPath("alice"), "utf8")) as { permissions?: Record<string, string[]> };
+    expect(parsed.permissions?.read).toEqual([target]);
+    expect(parsed.permissions?.write).toBeUndefined();
+  });
+
+  it('accept：request.tool 为空串（旧档 / 被改坏）归一为 write', async () => {
+    seedEmployee("alice");
+    const { store, deps } = setup();
+    const target = path.join(root, "outside", "loose");
+    const request = store.add({ agentId: "alice", roomKey: "dm:alice", tool: "", paths: [target], reason: "r" });
+
+    const result = await resolvePermissionRequest(deps, request.id, "accept");
+
+    expect(result).toEqual({ ok: true });
+    const parsed = JSON.parse(fs.readFileSync(agentConfigPath("alice"), "utf8")) as { permissions: Record<string, string[]> };
+    expect(parsed.permissions.write).toEqual([target]);
   });
 
   it("accept：审批结果消息落库并广播库行（老板形态、键 store:<seq>）", async () => {
@@ -137,23 +173,24 @@ describe("授权请求处理", () => {
 
   it("reject：不写任何文件、投递「已拒绝授权」", async () => {
     seedEmployee("alice");
-    const { ws, store, port, deps } = setup();
+    const { store, port, deps } = setup();
     const request = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [path.join(root, "x")], reason: "r" });
 
     const result = await resolvePermissionRequest(deps, request.id, "reject");
     expect(result).toEqual({ ok: true });
-    expect(fs.existsSync(permissionFilePath(ws, "alice"))).toBe(false);
+    const parsed = JSON.parse(fs.readFileSync(agentConfigPath("alice"), "utf8")) as { permissions?: unknown };
+    expect(parsed.permissions).toBeUndefined();
     expect(port.submits[0]!.text).toBe("已拒绝授权");
     expect(store.list()).toEqual([]);
   });
 
   it("发起者已不存在：accept 抛 NotFound（不落文件、不投递、请求保留）；reject 可清理", async () => {
-    const { ws, store, port, deps } = setup();
+    const { store, port, deps } = setup();
     const request = store.add({ agentId: "ghost", roomKey: "dm:ghost", paths: [path.join(root, "x")], reason: "r" });
     await expect(resolvePermissionRequest(deps, request.id, "accept")).rejects.toThrow(PermissionRequestNotFoundError);
     expect(store.get(request.id)).toBeDefined();
-    // 找不到人 → 回落 agents/ghost.permission.json（依旧不存在）
-    expect(fs.existsSync(permissionFilePath(ws, "ghost"))).toBe(false);
+    // 人不存在的授权落点（agents/ghost.agent.config.json）依旧不存在
+    expect(fs.existsSync(agentConfigPath("ghost"))).toBe(false);
     expect(port.submits).toEqual([]);
     await resolvePermissionRequest(deps, request.id, "reject"); // 拒绝不检查目录，可清卡片
     expect(store.get(request.id)).toBeUndefined();
@@ -182,10 +219,10 @@ describe("授权请求处理", () => {
   });
 
   it("写盘失败：抛错、请求保留、不投递、不广播", async () => {
-    // 人级权限文件 `agents/eng/alice.permission.json` 的位置被同名**目录**占着 →
-    // appendPermissionPaths 的落盘（写临时文件后 rename）失败
+    // 人配置的**临时文件**路径被同名目录占着 → appendPermissionPaths 的落盘（写临时文件后 rename）失败；
+    // 人本身仍可正常加载（配置内容完好），失败只发生在写权限这一步。
     seedEmployee("alice", undefined, "eng");
-    fs.mkdirSync(path.join(root, "agents", "eng", "alice.permission.json"), { recursive: true });
+    fs.mkdirSync(`${agentConfigPath("alice", "eng")}.tmp`, { recursive: true });
     const { store, port, broadcast, deps } = setup();
     const request = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [path.join(root, "x")], reason: "r" });
 
@@ -197,7 +234,7 @@ describe("授权请求处理", () => {
 
   it("投递失败：授权已生效、请求仍移除、返回 warning", async () => {
     seedEmployee("alice");
-    const { ws, store, port, broadcast, broadcastMessage, deps } = setup();
+    const { store, port, broadcast, broadcastMessage, deps } = setup();
     port.submit = async () => {
       throw new Error("投递炸了");
     };
@@ -207,7 +244,8 @@ describe("授权请求处理", () => {
     const result = await resolvePermissionRequest(deps, request.id, "accept");
     expect(result.ok).toBe(true);
     expect(result.warning).toContain("通知消息投递失败");
-    expect(JSON.parse(fs.readFileSync(permissionFilePath(ws, "alice"), "utf8"))).toEqual([target]);
+    const parsed = JSON.parse(fs.readFileSync(agentConfigPath("alice"), "utf8")) as { permissions: { write: string[] } };
+    expect(parsed.permissions.write).toEqual([target]);
     expect(store.list()).toEqual([]);
     expect(broadcast).toHaveBeenCalledWith(request.id);
     expect(broadcastMessage).not.toHaveBeenCalled(); // 没落库就没有库行可广播

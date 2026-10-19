@@ -14,23 +14,17 @@ import type { RoomMessage } from "../../src/app/rooms.ts";
 import { openMessageStore } from "../../src/store/messages.ts";
 import { openStaffsToolDefs, type ToolContext } from "../../src/tools/registry.ts";
 import type { Relation } from "../../src/domain/types.ts";
+import { seedOffice } from "../helpers/office.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-tools-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function seedEmployee(id: string, alias?: string, prompt = `你是 ${id}。`): void {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "agents", `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt, ...(alias === undefined ? {} : { alias }) }),
-  );
+  seedOffice(root, { agents: [{ id, alias, model: "faux/faux-model", prompt }] });
 }
 
 function seedProject(id: string, memberIds: string[], alias?: string): void {
-  const dir = path.join(root, "projects", id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "members.md"), memberIds.map((m) => `- ${m}`).join("\n") + "\n");
-  if (alias !== undefined) fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ alias }));
+  seedOffice(root, { projects: [{ id, members: memberIds, alias }] });
 }
 
 function fauxHarness(count = 4) {
@@ -101,11 +95,18 @@ describe("office_list", () => {
 });
 
 describe("member_profile", () => {
-  it("读成员展示名 + prompt 正文", async () => {
+  it("读成员展示名 + config 的 prompt 正文", async () => {
     seedEmployee("bob", "Bob", "职责：后端工程师。");
     const out = await tool("member_profile").run({ member: "bob" }, ctxFor(createWorkspace(root), "alice", dm("alice")));
     expect(out).toContain("Bob");
     expect(out).toContain("后端工程师");
+  });
+
+  it("没配 prompt → 明确提示未配置（不返回空正文）", async () => {
+    seedOffice(root, { agents: [{ id: "bob", alias: "Bob", model: "faux/faux-model" }] });
+    const out = await tool("member_profile").run({ member: "bob" }, ctxFor(createWorkspace(root), "alice", dm("alice")));
+    expect(out).toContain("Bob");
+    expect(out).toContain("（未配置 prompt）");
   });
 });
 
@@ -351,20 +352,21 @@ describe("request_permission", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]!.agentId).toBe("alice");
     expect(requests[0]!.roomKey).toBe("dm:alice");
+    expect(requests[0]!.tool).toBe("write"); // 缺省写权限（向后兼容旧调用）
     expect(requests[0]!.paths).toEqual([expected, "/abs/x"]);
     expect(requests[0]!.reason).toBe("整理笔记");
     expect(notify).toHaveBeenCalledTimes(1);
     expect(readPermissionRequests(ws)).toHaveLength(1);
   });
 
-  it("群聊：roomKey 与相对路径按项目目录解析", async () => {
+  it("群聊：roomKey 与相对路径按会话工作目录（work/<自己>）解析，D25 项目无工作目录", async () => {
     seedEmployee("alice");
     seedProject("demo", ["alice"]);
     const ws = createWorkspace(root);
     const { ctx, store } = ctxWithStore(ws, "alice", { kind: "group", project: "demo" });
     await tool("request_permission").run({ paths: ["data/x"], reason: "r" }, ctx);
     expect(store.list()[0]!.roomKey).toBe("group:demo");
-    expect(store.list()[0]!.paths).toEqual([path.join(root, "projects", "demo", "data", "x")]);
+    expect(store.list()[0]!.paths).toEqual([path.join(root, "work", "alice", "data", "x")]);
   });
 
   it("校验：paths 空 / reason 空白 → 报错", async () => {
@@ -374,6 +376,32 @@ describe("request_permission", () => {
     await expect(tool("request_permission").run({ paths: [], reason: "r" }, ctx)).rejects.toThrow("paths 不能为空");
     await expect(tool("request_permission").run({ paths: ["  "], reason: "r" }, ctx)).rejects.toThrow("paths 不能为空");
     await expect(tool("request_permission").run({ paths: ["a"], reason: "" }, ctx)).rejects.toThrow("reason 不能为空");
+  });
+
+  it('tool：可指定 read；非法工具名报错；空白回落 write', async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const { ctx, store } = ctxWithStore(ws, "alice", dm("alice"));
+    await tool("request_permission").run({ paths: ["a"], reason: "r", tool: "read" }, ctx);
+    expect(store.list()[0]!.tool).toBe("read");
+    await expect(tool("request_permission").run({ paths: ["b"], reason: "r", tool: "bad/tool" }, ctx)).rejects.toThrow("tool 不合法");
+    await tool("request_permission").run({ paths: ["c"], reason: "r", tool: "  " }, ctx);
+    expect(store.list()[0]!.tool).toBe("write");
+  });
+
+  it('去重按工具区分：同路径 write 后再申请 read → 建成两条；同工具同路径仍判重', async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const { ctx, store } = ctxWithStore(ws, "alice", dm("alice"));
+    const first = await tool("request_permission").run({ paths: ["a"], reason: "r" }, ctx); // 缺省 write
+    expect(first).toContain("已向");
+    const second = await tool("request_permission").run({ paths: ["a"], reason: "要读", tool: "read" }, ctx);
+    expect(second).toContain("已向"); // 工具不同 → 不是重复申请
+    expect(store.list()).toHaveLength(2);
+    expect(store.list().map((r) => r.tool).sort()).toEqual(["read", "write"]);
+    const third = await tool("request_permission").run({ paths: ["a"], reason: "再要读", tool: "read" }, ctx);
+    expect(third).toContain("已有相同的授权请求");
+    expect(store.list()).toHaveLength(2);
   });
 
   it("重复申请：同路径集合不新建，返回提示；称谓进入文案", async () => {

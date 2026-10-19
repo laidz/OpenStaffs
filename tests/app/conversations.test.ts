@@ -9,26 +9,19 @@ import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
   accessFor, activeMemberSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
-  permissionFilesFor, relationKey, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults, skillDirsFor,
+  relationCwd, relationKey, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults,
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
-import { loadPerson } from "../../src/domain/org.ts";
-import { readSkillPaths } from "../../src/domain/config.ts";
-import { FRAMEWORK_SKILLS_DIR } from "../../src/domain/skills.ts";
+import { loadEmployee } from "../../src/domain/employee.ts";
+import { seedOffice } from "../helpers/office.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
-import type { Relation } from "../../src/domain/types.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-/** 夹具：人 = 单文件（放在 agents/ 根或部门目录）。 */
+/** 夹具：一个人 = 一份 `<id>.agent.config.json`（放在 agents/ 根或部门目录）。 */
 function seedEmployee(id: string, alias?: string, department?: string): void {
-  const dir = department === undefined ? path.join(root, "agents") : path.join(root, "agents", department);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。`, ...(alias === undefined ? {} : { alias }) }),
-  );
+  seedOffice(root, { agents: [{ id, department, alias, model: "faux/faux-model", prompt: `你是 ${id}。` }] });
 }
 
 function harnessWithFaux() {
@@ -95,60 +88,67 @@ describe("应用用例", () => {
     }
   });
 
-  it("私聊只挂人级 permission.json；群聊项目在前", () => {
-    seedEmployee("alice", undefined, "eng");
-    const ws = createWorkspace(root);
-    const speaker = loadPerson(ws, "alice");
-    expect(permissionFilesFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
-      path.join(root, "agents", "eng", "alice.permission.json"),
-    ]);
-    expect(permissionFilesFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
-      path.join(root, "projects", "yt", "permission.json"),
-      path.join(root, "agents", "eng", "alice.permission.json"),
-    ]);
+  it("instructions：环境段 → 空间/部门/项目/员工 prompt 累加 → 记忆 → 技能目录（含系统内置）", () => {
+    const ws = seedOffice(root, {
+      space: { prompt: "空间总纲" },
+      departments: [{ path: "eng", prompt: "部门规矩" }],
+      agents: [{ id: "alice", department: "eng", prompt: "你是运营。" }],
+      projects: [{ id: "yt", members: ["alice"], prompt: "项目规范" }],
+    });
+    fs.mkdirSync(path.join(root, "work", "alice"), { recursive: true });
+    fs.writeFileSync(path.join(root, "work", "alice", "MEMORY.md"), "记忆一条。");
+    const speaker = loadEmployee(ws, "alice");
+    const text = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+    const order = ["空间总纲", "部门规矩", "项目规范", "你是运营。", "记忆一条。", "## 可用技能"];
+    const positions = order.map((token) => text.indexOf(token));
+    expect(positions.every((index) => index >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it("access：writableDirs = 自己的工作目录 + 主管管理的部门目录（穿透）", () => {
-    seedEmployee("alice", undefined, "eng");
-    seedEmployee("bob", undefined, "eng/platform");
-    fs.writeFileSync(path.join(root, "agents", "eng", "department.config.json"), JSON.stringify({ head: ["alice"] }));
-    const ws = createWorkspace(root);
-    const access = accessFor(ws, { kind: "dm", employeeId: "alice" }, loadPerson(ws, "alice"));
-    expect(access.writableDirs).toEqual([path.join(root, "work", "alice"), path.join(root, "agents", "eng")]);
-    expect(access.writableDirs).not.toContain(path.join(root, "agents", "eng", "platform")); // 子树覆盖由前缀判定，不展开
-    expect(accessFor(ws, { kind: "dm", employeeId: "bob" }, loadPerson(ws, "bob")).writableDirs).toEqual([
+  it("工作目录 = work/<id>（项目没有工作目录，D25）", () => {
+    const ws = seedOffice(root, { agents: [{ id: "alice" }] });
+    expect(relationCwd(ws, { kind: "group", project: "yt" }, "alice")).toBe(path.join(root, "work", "alice"));
+    expect(relationCwd(ws, { kind: "dm", employeeId: "alice" }, "alice")).toBe(path.join(root, "work", "alice"));
+  });
+
+  it("access：权限 = 项目 + 员工累加 + 运行时（工作目录 / 主管写权 / 技能根）", () => {
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice", department: "eng", permissions: { write: [], read: ["./"], bash: ["./"] } }],
+      projects: [{ id: "yt", members: ["alice"], prompt: "" }],
+    });
+    const access = accessFor(ws, { kind: "group", project: "yt" }, loadEmployee(ws, "alice"));
+    expect(access.cwd).toBe(path.join(root, "work", "alice"));
+    expect(access.permissions["write"]).toEqual([path.join(root, "work", "alice")]);
+    expect(access.permissions["read"]).toContain(path.join(root, "work", "alice"));
+    expect(access.permissions["read"]).toContain(path.join(root, "openstaffs", "skills"));
+  });
+
+  it("access：主管对管理子树有写权（穿透）", () => {
+    const ws = seedOffice(root, {
+      departments: [{ path: "eng", head: ["alice"] }],
+      agents: [
+        { id: "alice", department: "eng", permissions: { write: [], read: [], bash: [] } },
+        { id: "bob", department: "eng/platform", permissions: { write: [], read: [], bash: [] } },
+      ],
+    });
+    const alice = accessFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
+    const write = alice.permissions["write"] ?? [];
+    expect(write).toContain(path.join(root, "work", "alice")); // 自己的工作目录恒可写
+    expect(write).toContain(path.join(root, "agents", "eng")); // 主管管理的部门目录
+    expect(write).toContain(path.join(root, "agents", "eng", "platform")); // 穿透到子树
+    expect(accessFor(ws, { kind: "dm", employeeId: "bob" }, loadEmployee(ws, "bob")).permissions["write"]).toEqual([
       path.join(root, "work", "bob"),
     ]);
   });
 
-  it("人级 instructions 用 prompt（不再读 profile.md / MEMORY.md）", () => {
+  it("人级 instructions 用 config 的 prompt", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
-    const out = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadPerson(ws, "alice"));
+    const out = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
     expect(out).toContain("你是 alice。");
   });
 
-  it("技能目录不再含员工技能目录（项目 → 空间 → 外部 → 系统内置）", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
-    const speaker = loadPerson(ws, "alice");
-    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker)).toEqual([
-      path.join(root, "openstaffs", "skills"), FRAMEWORK_SKILLS_DIR,
-    ]);
-    expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker)).toEqual([
-      path.join(root, "projects", "yt", "skills"), path.join(root, "openstaffs", "skills"), FRAMEWORK_SKILLS_DIR,
-    ]);
-    // 外部 skillPaths 在空间之后、系统内置之前
-    const external = ["/ext/one", "/ext/two"];
-    expect(skillDirsFor(ws, { kind: "dm", employeeId: "alice" }, speaker, external)).toEqual([
-      path.join(root, "openstaffs", "skills"), ...external, FRAMEWORK_SKILLS_DIR,
-    ]);
-    expect(skillDirsFor(ws, { kind: "group", project: "yt" }, speaker, external)).toEqual([
-      path.join(root, "projects", "yt", "skills"), path.join(root, "openstaffs", "skills"), ...external, FRAMEWORK_SKILLS_DIR,
-    ]);
-  });
-
-  it("私聊发言人与关系不一致时报错（不静默挂错权限文件）", async () => {
+  it("私聊发言人与关系不一致时报错（不静默挂错人）", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
     const ws = createWorkspace(root);
@@ -159,15 +159,16 @@ describe("应用用例", () => {
   });
 
   it("群聊：每成员一条会话、按需创建、各记各的链", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
     const harness = harnessWithFaux();
     await harness.open();
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
-      const aliceFile = path.join(root, "projects", "yt", "conversation_ids", "alice.md");
-      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      const aliceFile = path.join(root, ".openstaffs", "chains", "group-yt", "alice.md");
+      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
       expect(fs.existsSync(aliceFile)).toBe(true);
       expect(fs.existsSync(bobFile)).toBe(false);
 
@@ -185,9 +186,10 @@ describe("应用用例", () => {
   });
 
   it("群聊新开会话只影响该成员", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
     const harness = harnessWithFaux();
     await harness.open();
     try {
@@ -195,8 +197,8 @@ describe("应用用例", () => {
       const b1 = await openGroup(ws, harness, "yt", "bob");
       const a2 = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
       expect(a2).not.toBe(a1);
-      const aliceFile = path.join(root, "projects", "yt", "conversation_ids", "alice.md");
-      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      const aliceFile = path.join(root, ".openstaffs", "chains", "group-yt", "alice.md");
+      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
       expect(readChain(aliceFile)).toHaveLength(2);
       expect(readChain(aliceFile)[0]!.ended).not.toBeNull();
       expect(readChain(aliceFile)[1]!.previous).toBe(a1);
@@ -207,33 +209,36 @@ describe("应用用例", () => {
     }
   });
 
-  it("空间级技能随会话注入（私聊与群聊都注入），且同名时窄者（项目）胜", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
-    const spaceSkill = path.join(root, "openstaffs", "skills", "s", "SKILL.md");
-    fs.mkdirSync(path.dirname(spaceSkill), { recursive: true });
-    fs.writeFileSync(spaceSkill, "---\nname: 撞名技能\ndescription: 来自空间\n---\n");
-    const groupSkill = path.join(root, "projects", "yt", "skills", "a", "SKILL.md");
-    fs.mkdirSync(path.dirname(groupSkill), { recursive: true });
-    fs.writeFileSync(groupSkill, "---\nname: 撞名技能\ndescription: 来自项目\n---\n");
-    const spaceOnlySkill = path.join(root, "openstaffs", "skills", "space-only", "SKILL.md");
-    fs.mkdirSync(path.dirname(spaceOnlySkill), { recursive: true });
-    fs.writeFileSync(spaceOnlySkill, "---\nname: 空间独有\ndescription: 只在空间有\n---\n");
-    const speaker = loadPerson(ws, "alice");
-
-    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
-    expect(dm).toContain("- 撞名技能：来自空间"); // 私聊无项目目录 → 只能读到空间技能
-    expect(dm).toContain("- 空间独有：只在空间有"); // 空间独有的技能未被漏掉
+  it("技能按名引用装配：空间 / 部门 / 项目 / 员工 config 的 skills 累加，系统内置恒在", () => {
+    const ws = seedOffice(root, {
+      space: { skills: ["space-skill"] },
+      departments: [{ path: "eng", skills: ["dept-skill"] }],
+      agents: [{ id: "alice", department: "eng", skills: ["agent-skill"] }],
+      projects: [{ id: "yt", members: ["alice"], skills: ["project-skill"] }],
+    });
+    for (const name of ["space-skill", "dept-skill", "project-skill", "agent-skill"]) {
+      const file = path.join(root, "openstaffs", "skills", name, "SKILL.md");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `---\nname: ${name}\ndescription: 来自 ${name}\n---\n`);
+    }
+    const speaker = loadEmployee(ws, "alice");
 
     const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
-    expect(group).toContain("- 撞名技能：来自项目"); // 项目（窄）胜空间（宽）
-    expect(group).not.toContain("来自空间");
-    expect(group).toContain("- 空间独有：只在空间有");
+    for (const name of ["space-skill", "dept-skill", "project-skill", "agent-skill"]) {
+      expect(group).toContain(`${name}：来自 ${name}`);
+    }
+    // 私聊无项目层 → 项目引用的技能不出现；空间 / 部门 / 员工引用仍在
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
+    expect(dm).toContain("space-skill：来自 space-skill");
+    expect(dm).toContain("dept-skill：来自 dept-skill");
+    expect(dm).toContain("agent-skill：来自 agent-skill");
+    expect(dm).not.toContain("project-skill");
+    // 系统内置技能恒在（不受 config 引用影响）
+    expect(group).toContain(path.join("src", "skills", "openstaffs", "SKILL.md"));
   });
 
-  it("外部 skillPaths 的技能随会话注入（所有会话），来源在空间之后", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
+  it("外部 skillPaths 作为按名解析的后备根：空间目录缺失时命中外部库，撞名时空间优先", () => {
+    const ws = seedOffice(root, { agents: [{ id: "alice", skills: ["x", "collide"] }] });
     const extDir = path.join(root, "ext-skills");
     const extSkill = path.join(extDir, "x", "SKILL.md");
     fs.mkdirSync(path.dirname(extSkill), { recursive: true });
@@ -249,76 +254,72 @@ describe("应用用例", () => {
       path.join(root, ".openstaffs", "config.json"),
       JSON.stringify({ skillPaths: ["ext-skills"] }), // 相对办公空间根
     );
-    const speaker = loadPerson(ws, "alice");
 
-    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker, readSkillPaths(ws));
+    const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
     expect(dm).toContain("- 外部技能：来自外部库");
-    expect(dm).toContain("- 撞名：来自空间撞名"); // 空间目录在链中先于外部目录
+    expect(dm).toContain("- 撞名：来自空间撞名"); // 空间目录在解析链中先于外部目录
     expect(dm).not.toContain("来自外部撞名");
   });
 
   it("内置基础技能随默认会话注入：列出 openstaffs 系列技能并给出 SKILL.md 位置", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
-    const speaker = loadPerson(ws, "alice");
+    const speaker = loadEmployee(ws, "alice");
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
     expect(dm).toContain("openstaffs");
     expect(dm).toContain(path.join("src", "skills", "openstaffs", "SKILL.md"));
     expect(dm).toContain(path.join("src", "skills", "openstaffs-ops", "SKILL.md"));
   });
 
-  it("instructions 注入技能（名称 + 描述 + 位置；群技能在前）", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
-    const groupSkill = path.join(root, "projects", "yt", "skills", "g", "SKILL.md");
-    fs.mkdirSync(path.dirname(groupSkill), { recursive: true });
-    fs.writeFileSync(groupSkill, "---\nname: 群技能\ndescription: 来自项目\n---\n");
-    const spaceSkill = path.join(root, "openstaffs", "skills", "s", "SKILL.md");
-    fs.mkdirSync(path.dirname(spaceSkill), { recursive: true });
-    fs.writeFileSync(spaceSkill, "---\nname: 空间技能\ndescription: 来自空间\n---\n");
-    const speaker = loadPerson(ws, "alice");
-    const text = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
+  it("instructions 注入技能（名称 + 描述 + 位置；引用先出现者在前）", () => {
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice", prompt: "你是 alice。", skills: ["agent-skill"] }],
+      projects: [{ id: "yt", members: ["alice"], skills: ["group-skill"] }],
+    });
+    for (const name of ["group-skill", "agent-skill"]) {
+      const file = path.join(root, "openstaffs", "skills", name, "SKILL.md");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `---\nname: ${name}\ndescription: 来自 ${name}\n---\n`);
+    }
+    const text = instructionsFor(ws, { kind: "group", project: "yt" }, loadEmployee(ws, "alice"));
     expect(text).toContain("你是 alice。");
-    expect(text).toContain("- 群技能：来自项目");
-    expect(text).toContain("- 空间技能：来自空间");
-    expect(text.indexOf("群技能")).toBeLessThan(text.indexOf("空间技能"));
+    expect(text).toContain("- group-skill：来自 group-skill");
+    expect(text).toContain("- agent-skill：来自 agent-skill");
+    expect(text.indexOf("group-skill")).toBeLessThan(text.indexOf("agent-skill"));
   });
 
-  it("快照清单：根 AGENTS.md 与项目 AGENTS.md 按序注入（群聊），私聊只注入根 + 人级 prompt", () => {
-    seedEmployee("alice");
-    const ws = createWorkspace(root);
-    fs.writeFileSync(path.join(root, "AGENTS.md"), "公司总纲：不得违法。");
-    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "yt", "AGENTS.md"), "任务：做 yt 视频。");
-    const speaker = loadPerson(ws, "alice");
+  it("prompt 累加：群聊含项目 config 的 prompt；私聊不含项目层", () => {
+    const ws = seedOffice(root, {
+      space: { prompt: "空间总纲" },
+      agents: [{ id: "alice", prompt: "你是 alice。" }],
+      projects: [{ id: "yt", members: ["alice"], prompt: "任务：做 yt 视频。" }],
+    });
+    const speaker = loadEmployee(ws, "alice");
 
     const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
-    expect(group).toContain("公司总纲：不得违法。");
+    expect(group).toContain("空间总纲");
     expect(group).toContain("任务：做 yt 视频。");
-    expect(group.indexOf("公司总纲")).toBeLessThan(group.indexOf("任务：做 yt 视频。"));
+    expect(group.indexOf("空间总纲")).toBeLessThan(group.indexOf("任务：做 yt 视频。"));
     expect(group.indexOf("任务：做 yt 视频。")).toBeLessThan(group.indexOf("你是 alice。"));
 
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
-    expect(dm).toContain("公司总纲：不得违法。");
+    expect(dm).toContain("空间总纲");
     expect(dm).not.toContain("任务：做 yt 视频。");
   });
 
   it("instructionsFor：框架环境段在最前；群聊再带项目与成员；私聊不带项目", () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
-    fs.writeFileSync(path.join(root, "AGENTS.md"), "公司总纲：不得违法。");
-    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "- alice\n- bob\n");
-    fs.writeFileSync(path.join(root, "projects", "yt", "project.json"), JSON.stringify({ alias: "演示项目" }));
-    const speaker = loadPerson(ws, "alice");
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice", prompt: "你是 alice。" }, { id: "bob", prompt: "你是 bob。" }],
+      projects: [{ id: "yt", alias: "演示项目", members: ["alice", "bob"] }],
+    });
+    const speaker = loadEmployee(ws, "alice");
 
     const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
     expect(group).toContain("OpenStaffs");
     expect(group).toContain("老板");
     expect(group).toContain("演示项目");
     expect(group).toContain("bob");
-    expect(group.indexOf("OpenStaffs")).toBeLessThan(group.indexOf("公司总纲"));
+    expect(group.indexOf("OpenStaffs")).toBeLessThan(group.indexOf("你是 alice。"));
 
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
     expect(dm).toContain("OpenStaffs");
@@ -326,11 +327,7 @@ describe("应用用例", () => {
   });
 
   it("人未配模型时用 defaults 兜底可对话；无 defaults 则失败（不静默）", async () => {
-    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "agents", "carol.agent.config.json"),
-      JSON.stringify({ prompt: "你是 carol。" }),
-    );
+    seedOffice(root, { agents: [{ id: "carol", prompt: "你是 carol。" }] });
     const ws = createWorkspace(root);
     const harness = harnessWithFaux();
     await harness.open();
@@ -345,11 +342,10 @@ describe("应用用例", () => {
   });
 
   it("会话链辅助：sessionChains / activeMemberSessions / findSessionOwner", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n");
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
     const harness = harnessWithFaux();
     await harness.open();
     try {
@@ -372,19 +368,17 @@ describe("应用用例", () => {
   });
 
   it("interruptRoom：逐个中止各成员活跃会话；坏会话跳过不连坐", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    seedEmployee("carol");
-    const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n- carol\n");
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }, { id: "carol" }],
+      projects: [{ id: "yt", members: ["alice", "bob", "carol"] }],
+    });
     const harness = harnessWithFaux();
     await harness.open();
     try {
       const a = await openGroup(ws, harness, "yt", "alice");
       const b = await openGroup(ws, harness, "yt", "bob");
       // carol 的链写坏：活跃行指向不存在的会话
-      const carolFile = path.join(root, "projects", "yt", "conversation_ids", "carol.md");
+      const carolFile = path.join(root, ".openstaffs", "chains", "group-yt", "carol.md");
       fs.mkdirSync(path.dirname(carolFile), { recursive: true });
       fs.writeFileSync(
         carolFile,
@@ -399,17 +393,16 @@ describe("应用用例", () => {
   });
 
   it("roomTranscripts：链指向不存在的 convId 时跳过该成员（不让整房间的合并视图/红点 500）", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "# 成员\n- alice\n- bob\n");
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"] }],
+    });
     const harness = harnessWithFaux();
     await harness.open();
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
       // bob 的链被人为写坏：活跃行指向一个不存在的会话
-      const bobFile = path.join(root, "projects", "yt", "conversation_ids", "bob.md");
+      const bobFile = path.join(root, ".openstaffs", "chains", "group-yt", "bob.md");
       fs.mkdirSync(path.dirname(bobFile), { recursive: true });
       fs.writeFileSync(
         bobFile,
@@ -428,9 +421,11 @@ describe("应用用例", () => {
   });
 
   it("会话快照：会话中改 prompt 不生效；新开会话后生效", async () => {
-    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+    seedOffice(root, {
+      space: { skills: ["space-e2e"] },
+      agents: [{ id: "dave", model: "faux/faux-model", prompt: "档案版本一。" }],
+    });
     const daveFile = path.join(root, "agents", "dave.agent.config.json");
-    fs.writeFileSync(daveFile, JSON.stringify({ model: "faux/faux-model", prompt: "档案版本一。" }));
     const spaceSkill = path.join(root, "openstaffs", "skills", "space-e2e", "SKILL.md");
     fs.mkdirSync(path.dirname(spaceSkill), { recursive: true });
     fs.writeFileSync(spaceSkill, "---\nname: 端到端空间技能\ndescription: 来自空间-e2e\n---\n");
@@ -487,9 +482,8 @@ describe("应用用例", () => {
   });
 
   it("固化跨重启仍生效：重启后 attach 复读同一会话，instructions 仍在 system", async () => {
-    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
+    seedOffice(root, { agents: [{ id: "dave", model: "faux/faux-model", prompt: "你是 dave。" }] });
     const daveFile = path.join(root, "agents", "dave.agent.config.json");
-    fs.writeFileSync(daveFile, JSON.stringify({ model: "faux/faux-model", prompt: "你是 dave。" }));
     const sqlitePath = path.join(root, ".openstaffs", "state-restart.sqlite");
     const ws = createWorkspace(root);
 
@@ -529,19 +523,14 @@ describe("应用用例", () => {
   });
 
   it("思考强度装配：人 > 会话默认；非法档原样保留；未配置则不写进 spec", async () => {
-    seedEmployee("alice");
+    seedOffice(root, {
+      agents: [
+        { id: "alice", model: "faux/faux-model", thinkingLevel: "high" },
+        { id: "bob", model: "faux/faux-model" },
+        { id: "carol", model: "faux/faux-model", thinkingLevel: "banana" },
+      ],
+    });
     const aliceFile = path.join(root, "agents", "alice.agent.config.json");
-    fs.writeFileSync(
-      aliceFile,
-      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "high" }),
-    );
-    seedEmployee("bob");
-    seedEmployee("carol");
-    const carolFile = path.join(root, "agents", "carol.agent.config.json");
-    fs.writeFileSync(
-      carolFile,
-      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "banana" }),
-    );
     const ws = createWorkspace(root);
     const specs: ConversationSpec[] = [];
     const stub = {
@@ -580,13 +569,11 @@ describe("应用用例", () => {
   });
 
   it("roomSessionInfo：读会话实际快照（模型全值/思考强度/上下文用量与窗口）；坏会话跳过", async () => {
-    seedEmployee("alice");
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice", model: "faux/faux-model", thinkingLevel: "high" }],
+      projects: [{ id: "yt", members: ["alice", "ghost"] }],
+    });
     const aliceFile = path.join(root, "agents", "alice.agent.config.json");
-    fs.writeFileSync(
-      aliceFile,
-      JSON.stringify({ model: "faux/faux-model", thinkingLevel: "high" }),
-    );
-    const ws = createWorkspace(root);
     const harness = harnessWithFaux();
     await harness.open();
     try {
@@ -604,12 +591,11 @@ describe("应用用例", () => {
       expect(info!.contextUsed).toBeGreaterThan(0);
 
       // 链指向不存在的会话：只跳过该成员，好会话照常返回
-      fs.mkdirSync(path.join(root, "projects", "yt"), { recursive: true });
-      fs.mkdirSync(path.join(root, "projects", "yt", "conversation_ids"), { recursive: true });
-      fs.writeFileSync(path.join(root, "projects", "yt", "members.md"), "- alice\n- ghost\n");
       const aliceGroupConv = await openGroup(ws, harness, "yt", "alice");
+      const ghostFile = path.join(root, ".openstaffs", "chains", "group-yt", "ghost.md");
+      fs.mkdirSync(path.dirname(ghostFile), { recursive: true });
       fs.writeFileSync(
-        path.join(root, "projects", "yt", "conversation_ids", "ghost.md"),
+        ghostFile,
         ["# 会话链", "", "| id | started | ended | previous |", "|----|---------|-------|----------|", "| conv:不存在 | 2026-10-16T00:00:00Z |  | - |", ""].join("\n"),
       );
       const groupInfo = await roomSessionInfo(ws, harness, { kind: "group", project: "yt" });
@@ -629,10 +615,12 @@ describe("应用用例", () => {
     }
   });
 
-  it("会话装配把 MCP 扩展写入 spec，且透传关系与发言人", async () => {
-    seedEmployee("alice");
-    seedEmployee("bob");
-    const ws = createWorkspace(root);
+  it("会话装配按能力累加把 MCP 扩展写入 spec", async () => {
+    const ws = seedOffice(root, {
+      space: { mcp: ["space-mcp"] },
+      agents: [{ id: "alice", mcp: ["agent-mcp"] }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice", "bob"], mcp: ["project-mcp"] }],
+    });
     const specs: ConversationSpec[] = [];
     const stub = {
       startSession: async (spec: ConversationSpec) => {
@@ -643,17 +631,18 @@ describe("应用用例", () => {
     } as unknown as HarnessPort;
     const calls: string[] = [];
     const resolver = {
-      extensionsFor(relation: Relation, speakerId: string) {
-        calls.push(`${relation.kind}:${speakerId}`);
-        return ["mcp:system:fixture"];
+      extensionsFor(names: readonly string[]) {
+        calls.push(names.join(","));
+        return ["mcp:global:fixture"];
       },
     };
 
     await openDm(ws, stub, "alice", undefined, resolver);
     await newSession(ws, stub, { kind: "group", project: "yt" }, "bob", undefined, resolver);
 
-    expect(calls).toEqual(["dm:alice", "group:bob"]);
-    expect(specs[0]!.mcpExtensions).toEqual(["mcp:system:fixture"]);
-    expect(specs[1]!.mcpExtensions).toEqual(["mcp:system:fixture"]);
+    // 名字来源 = 作用域链能力累加（空间 → 部门 → 项目 → 员工）；私聊无项目层
+    expect(calls).toEqual(["space-mcp,agent-mcp", "space-mcp,project-mcp"]);
+    expect(specs[0]!.mcpExtensions).toEqual(["mcp:global:fixture"]);
+    expect(specs[1]!.mcpExtensions).toEqual(["mcp:global:fixture"]);
   });
 });

@@ -1,15 +1,21 @@
 import fs from "node:fs";
-import path from "node:path";
-import { conversationIdsFile, groupConversationIdsFile, projectDir, spaceSkillsDir, workDir, type Workspace } from "../domain/paths.ts";
-import { findPerson, loadOrg, loadPerson, managedDirsOf, type OrgPerson } from "../domain/org.ts";
-import { parseMembers, projectsOf, type AccessContext } from "../domain/access-control.ts";
+import { conversationIdsFile, groupConversationIdsFile, workDir, type Workspace } from "../domain/paths.ts";
+import { findPerson, loadOrg, loadPerson, type OrgPerson } from "../domain/org.ts";
+import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import { memoryOf, type Employee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { FRAMEWORK_SKILLS_DIR, listSkills, renderSkills } from "../domain/skills.ts";
 import { renderEnvironment } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { Relation } from "../domain/types.ts";
+import { assembleCapabilities } from "../capabilities/assemble.ts";
+import { scopesForOrg } from "../capabilities/scopes.ts";
+import { resolveSkillRefs } from "../capabilities/skills.ts";
+import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
+import { effectivePermissions } from "../permissions/effective.ts";
+import { runtimeGrantsFor } from "../permissions/runtime.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
 import type { MemberTranscript } from "./rooms.ts";
 
@@ -19,20 +25,9 @@ export function relationKey(relation: Relation, speakerId: string): string {
   return relation.kind === "dm" ? `dm:${relation.employeeId}` : `group:${relation.project}:${speakerId}`;
 }
 
-export function relationCwd(ws: Workspace, relation: Relation): string {
-  return relation.kind === "dm" ? workDir(ws, relation.employeeId) : projectDir(ws, relation.project);
-}
-
-/** 人级额外写权限文件（过渡命名：与人同目录、同主干 + `.permission.json`；P3 收进配置的 permissions）。 */
-export function agentPermissionFileOf(person: OrgPerson): string {
-  return path.join(person.dir, `${person.id}.permission.json`);
-}
-
-export function permissionFilesFor(ws: Workspace, relation: Relation, speaker: OrgPerson): string[] {
-  const files: string[] = [];
-  if (relation.kind === "group") files.push(path.join(projectDir(ws, relation.project), "permission.json"));
-  files.push(agentPermissionFileOf(speaker));
-  return files;
+/** 会话工作目录 = **agent 自己的工作目录**（D25/D27：项目没有工作目录）。 */
+export function relationCwd(ws: Workspace, _relation: Relation, speakerId: string): string {
+  return workDir(ws, speakerId); // workDir 由 P2 提供（src/domain/paths.ts），本计划只 import
 }
 
 function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): string {
@@ -41,28 +36,9 @@ function chainFileFor(ws: Workspace, relation: Relation, speakerId: string): str
     : groupConversationIdsFile(ws, relation.project, speakerId);
 }
 
-/**
- * 技能根目录（越窄越优先，同名先出现者胜）：
- * 群聊 = 项目 + 空间 + 外部 skillPaths + 系统内置；私聊 = 空间 + 外部 + 系统内置。
- */
-export function skillDirsFor(
-  ws: Workspace, relation: Relation, speaker: OrgPerson, externalSkillDirs: readonly string[] = [],
-): string[] {
-  const dirs: string[] = [];
-  if (relation.kind === "group") dirs.push(path.join(projectDir(ws, relation.project), "skills"));
-  // 员工技能目录随「人 = 文件」取消（P3 用 config 的 skills 名引用恢复）
-  dirs.push(spaceSkillsDir(ws));
-  dirs.push(...externalSkillDirs);
-  dirs.push(FRAMEWORK_SKILLS_DIR);
-  return dirs;
-}
-
-function readTextOrEmpty(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch {
-    return "";
-  }
+/** 能力累加的作用域链（空间 → 部门 → 项目 → 员工）；本模块内现算一次，供 instructions / MCP 复用。 */
+function scopesFor(ws: Workspace, relation: Relation, speaker: Employee) {
+  return scopesForOrg(ws, speaker.id, relation.kind === "group" ? relation.project : undefined);
 }
 
 /** 系统提示词变量上下文（供 prompt-vars 取值）；私聊不带 projectId。 */
@@ -72,41 +48,35 @@ export function promptContextFor(ws: Workspace, relation: Relation, speaker: Org
     kind: relation.kind,
     selfId: speaker.id,
     ...(relation.kind === "group" ? { projectId: relation.project } : {}),
-    cwd: relationCwd(ws, relation),
+    cwd: relationCwd(ws, relation, speaker.id),
   };
 }
 
-/** 会话快照（仅 startSession/新开会话时渲染一次）：系统环境段 → 空间总纲 → 项目规范（群聊）→ 人级 prompt → 技能。 */
-export function instructionsFor(
-  ws: Workspace, relation: Relation, speaker: OrgPerson, externalSkillDirs: readonly string[] = [],
-): string {
+/** 会话快照（仅新开会话时渲染一次）：环境段 → 能力累加 prompt → 记忆 → 技能目录（恒含系统内置）。 */
+export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
+  const capabilities = assembleCapabilities(scopesFor(ws, relation, speaker));
   const parts: string[] = [];
   const environment = renderEnvironment(promptContextFor(ws, relation, speaker));
   if (environment !== "") parts.push(environment);
-  const rootAgents = readTextOrEmpty(path.join(ws.root, "AGENTS.md"));
-  if (rootAgents !== "") parts.push(rootAgents);
-  if (relation.kind === "group") {
-    const projectAgents = readTextOrEmpty(path.join(projectDir(ws, relation.project), "AGENTS.md"));
-    if (projectAgents !== "") parts.push(projectAgents);
-  }
-  parts.push(speaker.prompt);
-  parts.push(renderSkills(listSkills(skillDirsFor(ws, relation, speaker, externalSkillDirs))));
+  if (capabilities.prompt !== "") parts.push(capabilities.prompt);
+  const memory = memoryOf(ws, speaker.id);
+  if (memory.trim() !== "") parts.push(memory);
+  const skillDirs = resolveSkillRefs(ws, capabilities.skills, readSkillPaths(ws)).resolved.map((skill) => skill.dir);
+  parts.push(renderSkills(listSkills([...skillDirs, FRAMEWORK_SKILLS_DIR])));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
 
-/** 只计算 access 上下文（实时读 members.md；不读 profile/记忆）。 */
-export function accessFor(ws: Workspace, relation: Relation, speaker: OrgPerson): AccessContext {
-  const cwd = relationCwd(ws, relation);
-  const tree = loadOrg(ws);
-  return {
-    root: ws.root,
-    cwd,
-    selfId: speaker.id,
-    memberProjects: projectsOf(ws, speaker.id),
-    permissionFiles: permissionFilesFor(ws, relation, speaker),
-    // 运行时写权（D13）：自己的工作目录 + 主管管理的部门目录（整棵子树由前缀判定覆盖）
-    writableDirs: [workDir(ws, speaker.id), ...managedDirsOf(tree, ws, speaker.id)],
-  };
+/** 会话访问上下文：落盘路线（项目 → 员工，D11）+ 运行时授予（D13）；路径均为绝对路径。 */
+export function accessFor(ws: Workspace, relation: Relation, speaker: Employee): AccessContext {
+  const cwd = relationCwd(ws, relation, speaker.id);
+  const agentConfig = loadAgentConfig(speaker.dir, speaker.id);
+  const projectConfig = relation.kind === "group" ? loadProjectConfig(ws, relation.project) : undefined;
+  const onDisk = [
+    ...(projectConfig === undefined ? [] : [{ table: projectConfig.fields.permissions, baseDir: projectConfig.baseDir }]),
+    { table: agentConfig?.fields.permissions ?? {}, baseDir: speaker.dir },
+  ];
+  const runtime = runtimeGrantsFor({ ws, agentId: speaker.id, workdir: cwd, extraReadRoots: readSkillPaths(ws) });
+  return { root: ws.root, cwd, selfId: speaker.id, permissions: effectivePermissions({ onDisk, runtime }) };
 }
 
 /** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）与默认思考强度。 */
@@ -133,15 +103,16 @@ function specFor(
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
     throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
   }
-  const cwd = ensureCwd(relationCwd(ws, relation));
+  const cwd = ensureCwd(relationCwd(ws, relation, speaker.id));
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
   // 思考强度独立于 model 解析：人 > 会话默认（全局配置）。配置端不校验档位。
   const thinkingLevel = speaker.model.thinkingLevel ?? defaults?.thinkingLevel;
-  const mcpExtensions = mcp?.extensionsFor(relation, speaker.id) ?? [];
+  // MCP 名字来源 = 能力累加（空间 → 部门 → 项目 → 员工）；随会话快照固化。
+  const mcpExtensions = mcp?.extensionsFor(assembleCapabilities(scopesFor(ws, relation, speaker)).mcp) ?? [];
   return {
     cwd,
     // 技能清单与 MCP 选择随会话快照固化：这里读一次（新开会话才重读）
-    instructions: instructionsFor(ws, relation, speaker, readSkillPaths(ws)),
+    instructions: instructionsFor(ws, relation, speaker),
     model: { provider: model.provider, modelId: model.modelId },
     ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
     access: accessFor(ws, relation, speaker),
@@ -187,7 +158,7 @@ export async function newSession(
   return convId;
 }
 
-/** 关系下各成员的会话链（群聊按 members.md 顺序；未创建过会话的成员为空链）。 */
+/** 关系下各成员的会话链（群聊按项目 config 的 members 顺序；未创建过会话的成员为空链）。 */
 export function sessionChains(ws: Workspace, relation: Relation): { memberId: string; rows: SessionRow[] }[] {
   if (relation.kind === "dm") {
     return [{ memberId: relation.employeeId, rows: readChain(conversationIdsFile(ws, workDir(ws, relation.employeeId))) }];

@@ -29,7 +29,7 @@ export class KeyedQueue {
   }
 }
 
-/** 群没有成员（members.md 为空）时拒绝发送。 */
+/** 群没有成员（项目 config 的 members 为空）时拒绝发送。 */
 export class EmptyGroupError extends Error {}
 
 /** 群聊消息没有 @ 到任何成员时拒绝发送（不再广播）。 */

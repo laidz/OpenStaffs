@@ -24,7 +24,7 @@ export function setupPage(root: string, port: number): string {
 }</pre>
       <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在自己的 <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code> 里用 <code>model</code> 字段覆盖成别的供应商与模型。</p>
       <p>保存配置后：Ctrl+C 停止服务 → 重新 <code>npm start</code> → 刷新本页。</p>
-      <p class="hint">员工与项目不需要在这里配置：人 = <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code>（单文件，所在文件夹即部门）；<code>projects/</code> 下建目录并写 members.md 即可（详见 README.md）。</p>
+      <p class="hint">员工与项目不需要在这里配置：人 = <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code>（单文件，所在文件夹即部门）；项目 = <code>projects/&lt;项目&gt;.project.config.json</code>（群成员写在配置的 <code>members</code> 里，详见 README.md）。</p>
     </main>`;
 }
 
@@ -47,7 +47,7 @@ export function sidebarHtml(state: State): string {
     .join("");
   return `<aside class="sidebar" id="sidebar">
     <h3>员工</h3>${employeeItems || `<p class="hint">还没有员工：在 agents/ 下创建 &lt;名字&gt;.agent.config.json（见 README.md）。</p>`}
-    <h3>项目</h3>${projectItems || `<p class="hint">还没有项目：在 projects/ 下创建目录并写 members.md（见 README.md）。</p>`}
+    <h3>项目</h3>${projectItems || `<p class="hint">还没有项目：在 projects/ 下创建 &lt;项目&gt;.project.config.json（见 README.md）。</p>`}
   </aside>`;
 }
 
@@ -227,7 +227,7 @@ export function chatHtml(state: State): string {
 /** 群聊发送对象复选框（展示名 + id；转义均在 HTML 层完成）。 */
 function composerTargetsHtml(members: { id: string; alias?: string }[]): string {
   if (members.length === 0) {
-    return `<div class="composer-targets" id="composer-targets"><span class="hint">本群还没有成员（members.md 为空）</span></div>`;
+    return `<div class="composer-targets" id="composer-targets"><span class="hint">本群还没有成员（项目 config 的 members 为空）</span></div>`;
   }
   const items = members
     .map((member) => {

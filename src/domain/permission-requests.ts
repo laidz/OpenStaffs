@@ -8,6 +8,8 @@ export type PermissionRequest = {
   id: string;         // "pr_" + uuid
   agentId: string;    // 发起者（= 授权受益者）
   roomKey: string;    // 来源房间：dm:<员工id> | group:<项目id>
+  /** 权限工具名（缺省 "write"；D9 按工具：write / read / bash 各一张路径表）。 */
+  tool?: string;
   paths: string[];    // 绝对路径（≥1 条）
   reason: string;     // 简短理由（非空）
   createdAt: string;  // ISO
@@ -24,6 +26,7 @@ function isValidRequest(value: unknown): value is PermissionRequest {
     typeof entry.id === "string" && entry.id !== "" &&
     typeof entry.agentId === "string" && entry.agentId !== "" &&
     typeof entry.roomKey === "string" && entry.roomKey !== "" &&
+    (entry.tool === undefined || typeof entry.tool === "string") &&
     Array.isArray(entry.paths) && entry.paths.length > 0 && entry.paths.every((p) => typeof p === "string" && p !== "") &&
     typeof entry.reason === "string" &&
     typeof entry.createdAt === "string"
@@ -52,14 +55,25 @@ function pathsKey(paths: string[]): string {
   return [...paths].sort().join("\u0000");
 }
 
-/** 同一 agent 且路径集合相同的已有请求（重复申请判定）。 */
+/** 权限工具名归一：缺省 / 空串（或纯空白）→ `"write"`（D9 按工具；旧档无 `tool` 字段等价于 write）。 */
+export function normalizeTool(tool: string | undefined): string {
+  const key = tool?.trim();
+  return key === undefined || key === "" ? "write" : key;
+}
+
+/** 同一 agent + 同一工具 + 同一路径集合的已有请求（重复申请判定；工具不同 = 不同申请）。 */
 export function findDuplicate(
   requests: PermissionRequest[],
   agentId: string,
   paths: string[],
+  tool?: string,
 ): PermissionRequest | undefined {
   const key = pathsKey(paths);
-  return requests.find((request) => request.agentId === agentId && pathsKey(request.paths) === key);
+  const wanted = normalizeTool(tool);
+  return requests.find(
+    (request) =>
+      request.agentId === agentId && normalizeTool(request.tool) === wanted && pathsKey(request.paths) === key,
+  );
 }
 
 function writePermissionRequests(ws: Workspace, requests: PermissionRequest[]): void {
@@ -88,15 +102,17 @@ export class PermissionRequestStore {
     return this.#requests.find((request) => request.id === id);
   }
 
-  findDuplicate(agentId: string, paths: string[]): PermissionRequest | undefined {
-    return findDuplicate(this.#requests, agentId, paths);
+  findDuplicate(agentId: string, paths: string[], tool?: string): PermissionRequest | undefined {
+    return findDuplicate(this.#requests, agentId, paths, tool);
   }
 
-  add(input: { agentId: string; roomKey: string; paths: string[]; reason: string }): PermissionRequest {
+  /** `tool` 缺省 write（旧档无此字段，向后兼容）。 */
+  add(input: { agentId: string; roomKey: string; tool?: string; paths: string[]; reason: string }): PermissionRequest {
     const request: PermissionRequest = {
       id: `pr_${randomUUID()}`,
       agentId: input.agentId,
       roomKey: input.roomKey,
+      ...(input.tool === undefined ? {} : { tool: input.tool }),
       paths: [...input.paths],
       reason: input.reason,
       createdAt: new Date().toISOString(),

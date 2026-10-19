@@ -1,17 +1,14 @@
 import type { Extension } from "@earendil-works/pi-durable";
 import {
-  DEFAULT_MCP_REQUEST_TIMEOUT_MS, MCP_DEFERRED_THRESHOLD, loadMcpSnapshot, mcpExtensionName, mcpScopeKey,
-  resolveMcpServers, type McpScope, type McpSelection, type McpSessionResolver, type McpSnapshot,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS, MCP_DEFERRED_THRESHOLD, loadMcpSnapshot, mcpExtensionName,
+  resolveMcpServers, type McpSelection, type McpSessionResolver, type McpSnapshot,
 } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
-import type { Relation } from "../domain/types.ts";
 import { createMcpExtension } from "./mcp-extension.ts";
 import { McpStdioClient, type McpCallResult, type McpToolInfo } from "./mcp-client.ts";
 
 export type McpManagerOptions = {
   ws: Workspace;
-  /** 系统级 mcp.json 路径（测试注入；缺省 src/mcp.json）。 */
-  systemFile?: string;
   log?: (line: string) => void;
   connectTimeoutMs?: number;
   heartbeatMs?: number;
@@ -24,7 +21,6 @@ export type McpManagerOptions = {
 type Runtime = {
   key: string;
   serverName: string;
-  scope: McpScope;
   selection: McpSelection;
   client?: McpStdioClient;
   /** 连接 / 初始化中的 client（close 时也要能关掉，避免孤儿进程）。 */
@@ -62,7 +58,7 @@ function childEnv(configured: Record<string, string>): NodeJS.ProcessEnv {
 export class McpManager implements McpSessionResolver {
   readonly #ws: Workspace;
   readonly #options: McpManagerOptions;
-  #snapshot: McpSnapshot = { sources: [] };
+  #snapshot: McpSnapshot = { source: { file: "", servers: [], invalid: [], errors: [] } };
   #runtimes: Runtime[] = [];
   #errors: string[] = [];
   #needsToolSearch = false;
@@ -78,33 +74,26 @@ export class McpManager implements McpSessionResolver {
   }
 
   async start(): Promise<void> {
-    this.#snapshot = loadMcpSnapshot(this.#ws, {
-      ...(this.#options.systemFile === undefined ? {} : { systemFile: this.#options.systemFile }),
-    });
-    for (const source of this.#snapshot.sources) {
-      for (const error of source.errors) {
-        this.#errors.push(error);
-        this.#log(`[mcp] ${error}`);
-      }
+    this.#snapshot = loadMcpSnapshot(this.#ws);
+    for (const error of this.#snapshot.source.errors) {
+      this.#errors.push(error);
+      this.#log(`[mcp] ${error}`);
     }
 
     this.#runtimes = [];
-    for (const source of this.#snapshot.sources) {
-      for (const config of source.servers) {
-        this.#runtimes.push({
-          key: mcpExtensionName(source.scope, config.name),
-          serverName: config.name,
-          scope: source.scope,
-          selection: { name: config.name, scope: source.scope, config },
-          tools: [],
-          ready: false,
-          reconnectAttempts: 0,
-          stopping: false,
-          inflight: 0,
-          pinging: false,
-          heartbeatFailures: 0,
-        });
-      }
+    for (const config of this.#snapshot.source.servers) {
+      this.#runtimes.push({
+        key: mcpExtensionName(config.name),
+        serverName: config.name,
+        selection: { name: config.name, config },
+        tools: [],
+        ready: false,
+        reconnectAttempts: 0,
+        stopping: false,
+        inflight: 0,
+        pinging: false,
+        heartbeatFailures: 0,
+      });
     }
 
     await Promise.all(
@@ -126,7 +115,7 @@ export class McpManager implements McpSessionResolver {
   #ensureExtension(runtime: Runtime): void {
     if (runtime.tools.length === 0 || runtime.extension !== undefined) return;
     runtime.extension = createMcpExtension({
-      scopeKey: mcpScopeKey(runtime.scope),
+      scopeKey: "global",
       serverName: runtime.serverName,
       tools: runtime.tools,
       deferred: this.#needsToolSearch,
@@ -279,14 +268,14 @@ export class McpManager implements McpSessionResolver {
     return this.#runtimes.flatMap((runtime) => (runtime.extension === undefined ? [] : [runtime.extension]));
   }
 
-  extensionsFor(relation: Relation, speakerId: string): string[] {
+  extensionsFor(names: readonly string[]): string[] {
     const byKey = new Map(this.#runtimes.map((runtime) => [runtime.key, runtime]));
-    const names: string[] = [];
-    for (const selection of resolveMcpServers(this.#snapshot, relation, speakerId).selections) {
-      const runtime = byKey.get(mcpExtensionName(selection.scope, selection.name));
-      if (runtime?.extension !== undefined) names.push(runtime.extension.name);
+    const out: string[] = [];
+    for (const selection of resolveMcpServers(this.#snapshot, names).selections) {
+      const runtime = byKey.get(mcpExtensionName(selection.name));
+      if (runtime?.extension !== undefined) out.push(runtime.extension.name);
     }
-    return names;
+    return out;
   }
 
   needsToolSearch(): boolean {

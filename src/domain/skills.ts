@@ -55,19 +55,22 @@ function skillDirNames(dir: string): string[] {
 }
 
 /**
- * 扫描若干「技能根目录」下的 `<技能>/SKILL.md`。
- * 返回顺序 = dirs 顺序（群技能在前）→ 目录内按名字排序；同名去重（先出现者胜）。
+ * 扫描技能：`dirs` 既可以是「技能根目录」（其下每个子目录是一个技能），
+ * 也可以直接是「某个技能目录」（其中含 `SKILL.md`）——后者供按名引用（D17）已解析出的目录复用。
+ * 返回顺序 = dirs 顺序（根内按目录名排序）→ 技能目录；同名去重（先出现者胜）。
  */
 export function listSkills(dirs: string[]): Skill[] {
   const skills: Skill[] = [];
   const seen = new Set<string>();
   for (const dir of dirs) {
-    for (const entry of skillDirNames(dir)) {
-      const skillDir = path.join(dir, entry);
+    const contained = fs.existsSync(path.join(dir, "SKILL.md"))
+      ? [dir]
+      : skillDirNames(dir).map((entry) => path.join(dir, entry));
+    for (const skillDir of contained) {
       const skillFile = path.join(skillDir, "SKILL.md");
       if (!fs.existsSync(skillFile)) continue;
       const meta = readFrontmatter(skillFile);
-      const name = meta.name ?? entry;
+      const name = meta.name ?? path.basename(skillDir);
       if (seen.has(name)) continue;
       seen.add(name);
       skills.push({ name, description: meta.description ?? "", dir: skillDir });

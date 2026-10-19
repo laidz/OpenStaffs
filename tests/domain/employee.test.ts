@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
-import { listEmployees, loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
+import { listEmployees, loadEmployee, memoryOf, renderInstructions } from "../../src/domain/employee.ts";
 import { loadPerson } from "../../src/domain/org.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-"));
@@ -77,6 +77,37 @@ describe("loadEmployee（org 薄适配层，B1）", () => {
     const ws = createWorkspace(tmp);
     write("grace", JSON.stringify({ alias: "  阿草  " }));
     expect(loadEmployee(ws, "grace").alias).toBe("阿草");
+  });
+});
+
+describe("memoryOf（D27：优先 work/<id>/MEMORY.md，旧位置回落）", () => {
+  function writeFile(rel: string, content: string): void {
+    const file = path.join(tmp, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+
+  it("读 work/<id>/MEMORY.md", () => {
+    const ws = createWorkspace(tmp);
+    write("alice", JSON.stringify({ prompt: "你是 alice。" }));
+    writeFile(path.join("work", "alice", "MEMORY.md"), "新记忆。");
+    expect(memoryOf(ws, "alice")).toBe("新记忆。");
+  });
+
+  it("work 下为空/缺失时回落到旧位置 agents/<id>/MEMORY.md", () => {
+    const ws = createWorkspace(tmp);
+    write("alice", JSON.stringify({ prompt: "你是 alice。" }));
+    writeFile(path.join("agents", "alice", "MEMORY.md"), "旧记忆。");
+    expect(memoryOf(ws, "alice")).toBe("旧记忆。");
+    // work 下写了空白 → 视为无，继续回落
+    writeFile(path.join("work", "alice", "MEMORY.md"), "   \n");
+    expect(memoryOf(ws, "alice")).toBe("旧记忆。");
+  });
+
+  it("两处都没有 → 空串（不崩）", () => {
+    const ws = createWorkspace(tmp);
+    write("bob", JSON.stringify({ prompt: "" }));
+    expect(memoryOf(ws, "bob")).toBe("");
   });
 });
 

@@ -52,11 +52,17 @@ describe("授权请求存储", () => {
     expect(readPermissionRequests(ws)).toEqual([]);
   });
 
-  it("findDuplicate：同 agent + 路径集合相同（顺序无关）；顺序不同命中、路径不同不命中", () => {
+  it("findDuplicate：同 agent + 同工具 + 路径集合相同（顺序无关）；工具不同 = 不同申请；工具缺省/空串 = write", () => {
     const ws = createWorkspace(root);
     const store = new PermissionRequestStore(ws);
-    store.add({ agentId: "alice", roomKey: "dm:alice", paths: ["/a", "/b"], reason: "r" });
-    expect(store.findDuplicate("alice", ["/b", "/a"])?.agentId).toBe("alice");
+    store.add({ agentId: "alice", roomKey: "dm:alice", paths: ["/a", "/b"], reason: "r" }); // 旧档形态：无 tool = write
+    store.add({ agentId: "alice", roomKey: "dm:alice", tool: "read", paths: ["/a", "/b"], reason: "r" });
+    expect(store.findDuplicate("alice", ["/b", "/a"])?.agentId).toBe("alice"); // 缺省查询 = write → 命中无 tool 那条
+    expect(store.findDuplicate("alice", ["/b", "/a"])?.tool).toBeUndefined();
+    expect(store.findDuplicate("alice", ["/b", "/a"], "write")?.tool).toBeUndefined(); // 显式 write 同一条
+    expect(store.findDuplicate("alice", ["/b", "/a"], "read")?.tool).toBe("read"); // 工具不同 → 各自一条
+    expect(store.findDuplicate("alice", ["/b", "/a"], " read ")?.tool).toBe("read"); // 工具名 trim 后比较
+    expect(store.findDuplicate("alice", ["/b", "/a"], "")?.tool).toBeUndefined(); // 空串 = write
     expect(store.findDuplicate("alice", ["/a"])).toBeUndefined();
     expect(store.findDuplicate("bob", ["/a", "/b"])).toBeUndefined();
   });

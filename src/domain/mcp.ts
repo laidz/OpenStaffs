@@ -1,18 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { readMcpCredentials, type McpCredentials } from "./config.ts";
-import { projectDir, spaceDir, type Workspace } from "./paths.ts";
-import { listProjects } from "./project.ts";
-import type { Relation } from "./types.ts";
+import { spaceDir, type Workspace } from "./paths.ts";
 
-/** 系统级 mcp.json（本文件在 src/domain → src/mcp.json）。 */
-export const SYSTEM_MCP_FILE = fileURLToPath(new URL("../mcp.json", import.meta.url));
+/** 全局 MCP 定义文件名（落在空间附属目录 `openstaffs/mcps.json`，D16）。 */
+export const MCP_DEFINITIONS_FILE_NAME = "mcps.json";
 export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 60_000;
 export const MCP_DEFERRED_THRESHOLD = 20;
 
 export type McpServerConfig = {
-  /** mcp.json 里的 key；也是工具前缀、扩展名、凭据引用使用的名字。 */
+  /** mcps.json 里的 key；也是工具前缀、扩展名、凭据引用使用的名字。 */
   name: string;
   command: string;
   args: string[];
@@ -21,44 +18,24 @@ export type McpServerConfig = {
   timeoutMs: number;
 };
 
-export type McpScope =
-  | { kind: "system" }
-  | { kind: "space" }
-  | { kind: "employee"; id: string }
-  | { kind: "project"; id: string };
+export type McpSource = { file: string; servers: McpServerConfig[]; invalid: string[]; errors: string[] };
 
-export type McpSource = {
-  scope: McpScope;
-  file: string;
-  servers: McpServerConfig[];
-  invalid: string[];
-  errors: string[];
-};
+export type McpSnapshot = { source: McpSource };
 
-export type McpSnapshot = { sources: McpSource[] };
-
-export type McpSelection = { name: string; scope: McpScope; config: McpServerConfig };
+export type McpSelection = { name: string; config: McpServerConfig };
 
 /** 会话装配层需要的查询接口（实现见 McpManager，测试可注入假实现）。 */
 export type McpSessionResolver = {
-  extensionsFor(relation: Relation, speakerId: string): string[];
+  extensionsFor(names: readonly string[]): string[];
 };
 
-export function mcpScopeKey(scope: McpScope): string {
-  switch (scope.kind) {
-    case "system":
-      return "system";
-    case "space":
-      return "space";
-    case "employee":
-      return `employee:${scope.id}`;
-    case "project":
-      return `project:${scope.id}`;
-  }
+/** 全局定义文件路径（D16：全空间唯一，按名引用）。 */
+export function mcpDefinitionsFile(ws: Workspace): string {
+  return path.join(spaceDir(ws), MCP_DEFINITIONS_FILE_NAME);
 }
 
-export function mcpExtensionName(scope: McpScope, server: string): string {
-  return `mcp:${mcpScopeKey(scope)}:${server}`;
+export function mcpExtensionName(server: string): string {
+  return `mcp:global:${server}`;
 }
 
 function safeSegment(value: string): string {
@@ -140,7 +117,7 @@ function parseServer(
     }
   }
 
-  // 相对 cwd 相对该 mcp.json 所在目录；缺省也是该目录。
+  // 相对 cwd 相对该 mcps.json 所在目录；缺省也是该目录。
   let cwd = path.dirname(file);
   if (value.cwd !== undefined) {
     if (typeof value.cwd !== "string" || value.cwd.trim() === "") return { error: "cwd 必须是非空字符串" };
@@ -160,9 +137,9 @@ function parseServer(
   return { config: { name, command, args, env, cwd, timeoutMs } };
 }
 
-/** 读一个 mcp.json：缺失视为空；坏 JSON / 坏 server 记在 source.errors。 */
-export function readMcpSource(scope: McpScope, file: string, credentials: McpCredentials): McpSource {
-  const source: McpSource = { scope, file, servers: [], invalid: [], errors: [] };
+/** 读全局定义文件：缺失视为空；坏 JSON / 坏 server 记在 source.errors。 */
+export function readMcpSource(file: string, credentials: McpCredentials): McpSource {
+  const source: McpSource = { file, servers: [], invalid: [], errors: [] };
   let raw = "";
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -206,49 +183,32 @@ export function readMcpSource(scope: McpScope, file: string, credentials: McpCre
   return source;
 }
 
-/** 启动快照：三层全部读一次（系统 / 空间 / 全部项目）；此后新增 / 修改需重启。 */
-export function loadMcpSnapshot(ws: Workspace, options?: { systemFile?: string }): McpSnapshot {
+/** 启动快照：只读 `openstaffs/mcps.json`（D16）；此后新增 / 修改需重启。 */
+export function loadMcpSnapshot(ws: Workspace): McpSnapshot {
   const credentials = readMcpCredentials(ws);
-  const sources: McpSource[] = [];
-  sources.push(readMcpSource({ kind: "system" }, options?.systemFile ?? SYSTEM_MCP_FILE, credentials));
-  sources.push(readMcpSource({ kind: "space" }, path.join(spaceDir(ws), "mcp.json"), credentials));
-  // 员工层 mcp.json 随「人 = 文件」取消；P3 用 agent.config.json 的 `mcp` 名引用恢复
-  for (const project of listProjects(ws)) {
-    sources.push(
-      readMcpSource({ kind: "project", id: project.id }, path.join(projectDir(ws, project.id), "mcp.json"), credentials),
-    );
-  }
-  return { sources };
+  return { source: readMcpSource(mcpDefinitionsFile(ws), credentials) };
 }
 
-function sourcesFor(snapshot: McpSnapshot, relation: Relation, speakerId: string): McpSource[] {
-  const out = snapshot.sources.filter((source) => source.scope.kind === "system" || source.scope.kind === "space");
-  // 员工层分支保留：P2 起 loadMcpSnapshot 不再产出 employee 来源（人 = 文件），P3 用配置的 `mcp` 名引用恢复
-  for (const source of snapshot.sources) {
-    if (source.scope.kind === "employee" && source.scope.id === speakerId) out.push(source);
-  }
-  if (relation.kind === "group") {
-    for (const source of snapshot.sources) {
-      if (source.scope.kind === "project" && source.scope.id === relation.project) out.push(source);
-    }
-  }
-  return out;
-}
-
-/** 某会话的 server 集：宽 → 窄覆盖；窄层非法定义遮蔽同名宽层定义。 */
+/** 按名解析（引用顺序即装配顺序）；未定义 → missing，非法定义 → 跳过（errors 已记录）。 */
 export function resolveMcpServers(
   snapshot: McpSnapshot,
-  relation: Relation,
-  speakerId: string,
-): { selections: McpSelection[] } {
-  const merged = new Map<string, McpSelection | "invalid">();
-  for (const source of sourcesFor(snapshot, relation, speakerId)) {
-    for (const name of source.invalid) merged.set(name, "invalid");
-    for (const config of source.servers) {
-      merged.set(config.name, { name: config.name, scope: source.scope, config });
+  names: readonly string[],
+): { selections: McpSelection[]; missing: string[] } {
+  const byName = new Map(snapshot.source.servers.map((config) => [config.name, config]));
+  const selections: McpSelection[] = [];
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const rawName of names) {
+    const name = rawName.trim();
+    if (name === "" || seen.has(name)) continue;
+    seen.add(name);
+    if (snapshot.source.invalid.includes(name)) continue;
+    const config = byName.get(name);
+    if (config === undefined) {
+      missing.push(name);
+      continue;
     }
+    selections.push({ name, config });
   }
-  return {
-    selections: [...merged.values()].filter((value): value is McpSelection => value !== "invalid"),
-  };
+  return { selections, missing };
 }

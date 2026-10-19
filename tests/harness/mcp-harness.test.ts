@@ -33,8 +33,8 @@ function fauxModels() {
 
 describe("MCP 端到端", () => {
   it("模型能通过会话调用真实 MCP server 的工具", async () => {
-    const systemFile = path.join(root, "system-mcp.json");
-    writeJson(systemFile, {
+    const definitionsFile = path.join(root, "openstaffs", "mcps.json");
+    writeJson(definitionsFile, {
       mcpServers: {
         fixture: {
           command: process.execPath,
@@ -43,7 +43,7 @@ describe("MCP 端到端", () => {
         },
       },
     });
-    const manager = new McpManager({ ws: createWorkspace(root), systemFile, log: () => {} });
+    const manager = new McpManager({ ws: createWorkspace(root), log: () => {} });
     await manager.start();
     expect(manager.errors()).toEqual([]);
 
@@ -62,8 +62,8 @@ describe("MCP 端到端", () => {
         cwd,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [cwd] },
-        mcpExtensions: manager.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice"),
+        access: { root, cwd, selfId: "alice", permissions: {} },
+        mcpExtensions: manager.extensionsFor(["fixture"]),
       });
       const reply = await harness.send(convId, "调用工具");
       expect(reply.text).toBe("done");

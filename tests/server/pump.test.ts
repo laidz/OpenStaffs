@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWorkspace, messagesDbFile, type Workspace } from "../../src/domain/paths.ts";
+import { seedOffice } from "../helpers/office.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import type { ServerEvent, SseHub } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
@@ -26,17 +27,11 @@ afterEach(() => {
 });
 
 function seedEmployee(id: string): void {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "agents", `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
-  );
+  seedOffice(root, { agents: [{ id, model: "faux/faux-model", prompt: `你是 ${id}。` }] });
 }
 
 function seedGroup(project: string, members: string[]): void {
-  const dir = path.join(root, "projects", project);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "members.md"), `# 成员\n${members.map((id) => `- ${id}\n`).join("")}`);
+  seedOffice(root, { projects: [{ id: project, members }] });
 }
 
 /**

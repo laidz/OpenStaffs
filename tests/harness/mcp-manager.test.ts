@@ -33,22 +33,25 @@ function fixtureServer(extra: Record<string, string> = {}) {
   };
 }
 
+/** 全局定义文件（D16）：`<space>/mcps.json`。 */
+function definitionsFile(): string {
+  return path.join(root, "openstaffs", "mcps.json");
+}
+
 function manager(options?: {
   server?: unknown;
-  systemFile?: string;
   connectTimeoutMs?: number;
   reconnectBaseMs?: number;
   heartbeatMs?: number;
   pingTimeoutMs?: number;
   log?: (line: string) => void;
-}): { instance: McpManager; systemFile: string } {
-  const systemFile = options?.systemFile ?? path.join(root, "system-mcp.json");
+}): { instance: McpManager; definitionsFile: string } {
+  const file = definitionsFile();
   if (options?.server !== undefined) {
-    writeJson(systemFile, { mcpServers: { fixture: options.server } });
+    writeJson(file, { mcpServers: { fixture: options.server } });
   }
   const instance = new McpManager({
     ws: createWorkspace(root),
-    systemFile,
     log: options?.log ?? (() => {}),
     connectTimeoutMs: options?.connectTimeoutMs ?? 2000,
     heartbeatMs: options?.heartbeatMs ?? 10_000,
@@ -57,36 +60,43 @@ function manager(options?: {
     reconnectMaxAttempts: 3,
   });
   managers.push(instance);
-  return { instance, systemFile };
+  return { instance, definitionsFile: file };
 }
 
 describe("MCP 管理器", () => {
-  it("正常启动生成扩展，群聊 / 私聊的 server 集不同", async () => {
-    writeJson(path.join(root, "agents", "alice.agent.config.json"), { prompt: "你是 alice。" });
-    writeJson(path.join(root, "projects", "p1", "mcp.json"), {
-      mcpServers: { projectOnly: fixtureServer() },
+  it("正常启动生成扩展；按名引用只为被点名的 server 装配", async () => {
+    writeJson(definitionsFile(), {
+      mcpServers: { fixture: fixtureServer(), projectOnly: fixtureServer() },
     });
-    const { instance } = manager({ server: fixtureServer() });
+    const { instance } = manager();
     await instance.start();
 
-    const dm = instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice");
-    expect(dm).toContain("mcp:system:fixture");
-    expect(dm).not.toContain("mcp:project:p1:projectOnly");
+    const only = instance.extensionsFor(["fixture"]);
+    expect(only).toContain("mcp:global:fixture");
+    expect(only).not.toContain("mcp:global:projectOnly");
 
-    const group = instance.extensionsFor({ kind: "group", project: "p1" }, "alice");
-    expect(group).toContain("mcp:project:p1:projectOnly");
+    const both = instance.extensionsFor(["projectOnly", "fixture"]);
+    expect(both).toContain("mcp:global:projectOnly");
+    expect(both).toContain("mcp:global:fixture");
+    expect(instance.errors()).toEqual([]);
+  });
+
+  it("引用未定义的 mcp 名：跳过、不崩，已定义的照常装配（Focus #5）", async () => {
+    const { instance } = manager({ server: fixtureServer() });
+    await instance.start();
+    expect(instance.extensionsFor(["fixture", "nope"])).toEqual(["mcp:global:fixture"]);
     expect(instance.errors()).toEqual([]);
   });
 
   it("server 名含点号时明确报错、不注册", async () => {
-    const { instance, systemFile } = manager();
-    writeJson(systemFile, {
+    const { instance } = manager();
+    writeJson(definitionsFile(), {
       mcpServers: { "my.server": fixtureServer() },
     });
     await instance.start();
     expect(instance.errors().join("\n")).toContain("名字不合法");
     expect(instance.extensions()).toEqual([]);
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).toEqual([]);
+    expect(instance.extensionsFor(["my.server"])).toEqual([]);
   });
 
   it("凭据缺失：明确错误、server 不注册、start 不抛", async () => {
@@ -95,7 +105,7 @@ describe("MCP 管理器", () => {
     });
     await expect(instance.start()).resolves.toBeUndefined();
     expect(instance.errors().join("\n")).toContain("fixture.token");
-    expect(instance.extensionsFor({ kind: "dm", employeeId: "alice" }, "alice")).toEqual([]);
+    expect(instance.extensionsFor(["fixture"])).toEqual([]);
   });
 
   it("命令不存在：start 在超时内返回，不拖死会话", async () => {
@@ -209,18 +219,15 @@ describe("MCP 管理器", () => {
     expect(instance.errors().join("\n")).toContain("启动失败");
   });
 
-  it("项目自挂 server 只进入该项目自己的会话（不串到别的项目）", async () => {
-    writeJson(path.join(root, "projects", "p1", "mcp.json"), {
-      mcpServers: { p1Only: fixtureServer() },
-    });
-    writeJson(path.join(root, "projects", "p2", "mcp.json"), {
-      mcpServers: { p2Only: fixtureServer() },
+  it("按名引用：只装配被点名的 server（不串到别的名字）", async () => {
+    writeJson(definitionsFile(), {
+      mcpServers: { p1Only: fixtureServer(), p2Only: fixtureServer() },
     });
     const { instance } = manager();
     await instance.start();
-    expect(instance.extensionsFor({ kind: "group", project: "p1" }, "alice")).toContain("mcp:project:p1:p1Only");
-    expect(instance.extensionsFor({ kind: "group", project: "p2" }, "alice")).toContain("mcp:project:p2:p2Only");
-    expect(instance.extensionsFor({ kind: "group", project: "p2" }, "alice")).not.toContain("mcp:project:p1:p1Only");
-    expect(instance.extensionsFor({ kind: "group", project: "p1" }, "alice")).not.toContain("mcp:project:p2:p2Only");
+    expect(instance.extensionsFor(["p1Only"])).toContain("mcp:global:p1Only");
+    expect(instance.extensionsFor(["p2Only"])).toContain("mcp:global:p2Only");
+    expect(instance.extensionsFor(["p2Only"])).not.toContain("mcp:global:p1Only");
+    expect(instance.extensionsFor(["p1Only"])).not.toContain("mcp:global:p2Only");
   });
 });

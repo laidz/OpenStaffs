@@ -5,6 +5,7 @@ import { type AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WorkspaceConfig } from "../../src/domain/config.ts";
 import { createWorkspace, messagesDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
+import { seedOffice } from "../helpers/office.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
@@ -30,11 +31,7 @@ afterEach(() => {
 });
 
 function seedEmployee(id: string): void {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "agents", `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
-  );
+  seedOffice(root, { agents: [{ id, model: "faux/faux-model", prompt: `你是 ${id}。` }] });
 }
 
 /** 桩 harness：只实现 HTTP 发送路径会用到的面（开会话 + 提交，不跑真模型）。 */
@@ -108,9 +105,7 @@ describe("自有消息库接线（HTTP 发送 → 唯一注入的库实例）", 
   it("群聊 @投递：落 1 行且归属该房间（projectId/toIds 正确）", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
-    const projectDir = path.join(root, "projects", "yt");
-    fs.mkdirSync(projectDir, { recursive: true });
-    fs.writeFileSync(path.join(projectDir, "members.md"), "# 成员\n- alice\n- bob\n");
+    seedOffice(root, { projects: [{ id: "yt", members: ["alice", "bob"] }] });
     const { base, close } = await start();
     try {
       const res = await post(base, "group:yt", "@bob 请收尾");

@@ -27,7 +27,7 @@
 - **人不可写任何 `<名字>.agent.config.json`（含自己的）**（§6 硬规则）。
 - **不做迁移**（D30）：允许破坏性更新，不写任何兼容旧格式的读取分支。
 - **浏览器 bundle 边界**：`web/` 不得值导入 `src/config/`、`src/permissions/`、`src/capabilities/`、`src/tools/`（这些模块带 `node:` 内置导入）。`tests/web/bundle.test.ts` 是守卫。
-- TDD：每任务**先写失败测试**；提交信息用简体中文祈使句；每任务独立验收、独立提交。
+- TDD：每任务**先写失败测试**；提交信息用 `<type>(<scope>): <简体中文描述>`（scope 用英文小写，如 `feat(config)` / `refactor(conv)`；改动多时空行后加正文）；每任务独立验收、独立提交。
 - **中间态约定**：Task 7–10 会改掉一批旧夹具依赖的 API（项目目录 / `AGENTS.md` / `permission.json` / 四层 MCP）。这些任务**只跑自己任务列出的定向测试**；**不要**在中间态追全量绿。Task 11 负责把剩余夹具一次性迁完，并让 `npm test` + `npm run typecheck` 全绿。若在 Task 7–10 跑全量时看到红，先看它是否属于「未迁移的旧夹具」，不要为了让旧夹具变绿而保留旧机制。
 
 ## Review Focus
@@ -67,7 +67,7 @@
 - `src/domain/paths.ts` —— **不自建工作目录函数**（统一 import P2 的 `workDir(ws, id)`，见 B3）；`groupConversationIdsFile` 改到 `stateDir/chains/`；删 `membersFile` / `projectDir`。
 - `src/domain/project.ts` —— 项目改为**扁平 config 文件**（`projects/<id>.project.config.json`），成员进 `members` 字段。
 - `src/domain/access-control.ts` —— `parseMembers` / `projectsOf` 走项目 config；`AccessContext` 改为「有效权限表」；删 `isWriteAllowed`。
-- `src/domain/employee.ts` —— 增 `memoryOf`（`work/<id>/MEMORY.md`，回落旧位置）；删 `entry` / `profile` / `renderInstructions` 的 `AGENTS.md` / `profile.md` 读取。
+- `src/domain/employee.ts` —— P2 已是薄适配层；P3 只**追加** `memoryOf`（用 `node:fs` 直接读 `work/<id>/MEMORY.md`，回落旧位置），**不删** `renderInstructions` / `Employee` / `loadEmployee` / `listEmployees`（彻底收口归 P5）。
 - `src/domain/mcp.ts` —— 四层 → **`openstaffs/mcps.json` 全局定义 + 按名引用**。
 - `src/harness/mcp-manager.ts` —— 快照单一来源；`extensionsFor(names)`。
 - `src/harness/access-extension.ts` —— 改用 `gateToolCall`。
@@ -120,7 +120,7 @@ export function managedSubtreeOf(ws: Workspace, agentId: string): { departmentDi
 
 2. `workDir(ws, id): string`（P2 在 `src/domain/paths.ts` 提供，`= <root>/work/<id>`）：本计划**不自建** `employeeWorkDir`，一律 **import P2 的 `workDir(ws, id)`**（跨计划裁定 B3）。
 
-3. `loadEmployee(ws, id)`（P2 按跨计划裁定 B1 **保留**的 `src/domain/employee.ts` 薄适配层）仍返回 `{ id, dir, alias?, model: ModelChoice }`，且员工定义文件是 `<dir>/<名字>.agent.config.json`；`employeeDir(ws, id)` 也仍然可用。
+3. `loadEmployee(ws, id)`（P2 按跨计划裁定 B1 **保留**的 `src/domain/employee.ts` 薄适配层）仍返回 `Employee = OrgPerson`（`{ id, dir, departmentPath, file, alias?, model: ModelChoice, prompt }`），且员工定义文件是 `<dir>/<名字>.agent.config.json`；`employeeDir(ws, id)` 也仍然可用（`agents/<id>`，现仅作 `memoryOf` 的旧位置回落）。
 
 **若 P2 的实现与之不同**：
 - 只有 `src/capabilities/scopes.ts` 的 `scopesForOrg()` 与 `src/permissions/runtime.ts` 的 `runtimeGrantsFor()` 需要改（换函数名 / 换取值方式）；其余模块与全部测试不受影响。
@@ -921,7 +921,7 @@ Expected: PASS（2 个文件全绿）。
 
 ```bash
 git add src/permissions tests/permissions
-git commit -m "feat(permissions): 新增按工具权限的默认值、解析、累加与路径匹配"
+git commit -m "feat(perm): 新增按工具权限的默认值、解析、累加与路径匹配"
 ```
 
 ---
@@ -1117,7 +1117,7 @@ Expected: PASS（4 个文件全绿）。
 
 ```bash
 git add src/permissions tests/permissions
-git commit -m "feat(permissions): 有效权限（运行时授予）与 attenuation 校验"
+git commit -m "feat(perm): 有效权限（运行时授予）与 attenuation 校验"
 ```
 
 ---
@@ -1407,7 +1407,7 @@ Expected: PASS（3 个文件全绿）。`scopes.test.ts` 只测 `scopeChain`、�
 
 ```bash
 git add src/capabilities tests/capabilities
-git commit -m "feat(capabilities): 作用域链累加装配与 skills 按名引用解析"
+git commit -m "feat(cap): 作用域链累加装配与 skills 按名引用解析"
 ```
 
 ---
@@ -1604,7 +1604,7 @@ Expected: PASS。若 `mcp-manager` 里还有 `scope` 相关断言残留，一并
 
 ```bash
 git add src/domain/mcp.ts src/harness/mcp-manager.ts src/server/main.ts tests/domain/mcp.test.ts tests/harness/mcp-manager.test.ts tests/harness/mcp-harness.test.ts
-git commit -m "refactor(mcp): MCP 改全局定义 openstaffs/mcps.json + 按名引用"
+git commit -m "feat(mcp): MCP 改全局定义 openstaffs/mcps.json + 按名引用"
 ```
 
 ---
@@ -1645,7 +1645,7 @@ describe("路径", () => {
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run tests/domain/paths.test.ts`
-Expected: FAIL —— `workDir` 未导出（P2 未落地）。
+Expected: FAIL —— `groupConversationIdsFile` 仍落在项目目录（`workDir` 由 P2 已提供，本计划只 import）。
 
 - [ ] **Step 3: 实现 `src/domain/paths.ts` 的增删**
 
@@ -1809,11 +1809,13 @@ export function relationCwd(ws: Workspace, relation: Relation, speakerId: string
 
 ```ts
 function roomExists(ws: Workspace, relation: Relation): boolean {
-  return relation.kind === "dm" ? fs.existsSync(employeeDir(ws, relation.employeeId)) : loadProjectConfig(ws, relation.project) !== undefined;
+  return relation.kind === "dm"
+    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined  // dm 分支 P2 已落地，保持不动
+    : loadProjectConfig(ws, relation.project) !== undefined;      // 仅群聊分支改判扁平 config
 }
 ```
 
-（补 `import { loadProjectConfig } from "../config/load.ts";`；`conversations.ts` 补 `import { workDir } from "../domain/paths.ts";`；`relationCwd` 在 http.ts 若有调用点，补 `speakerId` 实参。）
+（`http.ts` 补 `import { loadProjectConfig } from "../config/load.ts";`——`findPerson` / `loadOrg` 已 import；`conversations.ts` 已 import `workDir`（P2 落地），无需再补；`relationCwd` 在 http.ts 若有调用点，补 `speakerId` 实参。）
 
 - [ ] **Step 7: 新建 `tests/helpers/office.ts`（后续任务共用夹具）**
 
@@ -1879,7 +1881,7 @@ Expected: PASS。
 
 ```bash
 git add src/domain/paths.ts src/domain/project.ts src/domain/access-control.ts src/app/conversations.ts src/server/http.ts tests/helpers/office.ts tests/domain/paths.test.ts tests/domain/project.test.ts tests/domain/access-control.test.ts
-git commit -m "refactor(project): 项目改扁平 config + 成员进 config；群会话链迁到 stateDir"
+git commit -m "refactor(proj): 项目改扁平 config + 成员进 config；群会话链迁到 stateDir"
 ```
 
 ---
@@ -1897,29 +1899,37 @@ git commit -m "refactor(project): 项目改扁平 config + 成员进 config；�
   - `accessFor(ws, relation, speaker): AccessContext`
   - `relationCwd(ws, relation, speakerId): string`
   - `memoryOf(ws, id): string`（`src/domain/employee.ts`）
-- 删除：`permissionFilesFor`、`skillDirsFor`、`Employee.entry` / `Employee.profile` / `renderInstructions`（`AGENTS.md` / `profile.md` 退出运行时）
+- 删除：`permissionFilesFor`、`skillDirsFor`（`AGENTS.md` / `profile.md` 退出运行时）
+- 保留：`src/domain/employee.ts` 的 `renderInstructions` / `Employee` / `loadEmployee` / `listEmployees`（P2 薄适配层，P5 才收口）；本任务的 `instructionsFor` **不再调用** `renderInstructions`（改用 capabilities）
 
 - [ ] **Step 1: 改 `src/domain/employee.ts`**
 
+`employee.ts` 在 P2 已是薄适配层（`type Employee = OrgPerson`、`loadEmployee`、`listEmployees`、`renderInstructions`；**无 `node:fs` 导入、无 `readText`**）。本步**只追加** `memoryOf`，不动既有导出、不新增 `Employee` 定义：
+
 ```ts
-export type Employee = {
-  id: EmployeeId;
-  dir: string;
-  model: ModelChoice;
-  alias?: string;
-};
+// 在现有文件顶部补 import（既有导出保持原样）：
+import fs from "node:fs";
+import path from "node:path";
+import { employeeDir, workDir, type Workspace } from "./paths.ts";
+
+/** 本文件当前没有 fs / readText，P3 自己加这个私有 helper。 */
+function readText(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
 
 /** 记忆（D27）：优先 work/<id>/MEMORY.md；旧位置回落由 P5 删除。 */
-export function memoryOf(ws: Workspace, id: EmployeeId): string {
+export function memoryOf(ws: Workspace, id: string): string {
   const work = readText(path.join(workDir(ws, id), "MEMORY.md"));
   if (work.trim() !== "") return work;
   return readText(path.join(employeeDir(ws, id), "MEMORY.md"));
 }
 ```
 
-删除 `entry` / `profile` / `renderInstructions`（以及 `readText` 之外的 `AGENTS.md` / `profile.md` 读取）；`loadEmployee` 保留 `dir` / `model` / `alias`（P2 已把 model / alias 来源切到 config）。
-
-> `memoryOf` 的 `readText` 已存在（模块内私有函数），直接复用。
+`renderInstructions` / `Employee` / `loadEmployee` / `listEmployees` **保持不动**（P2 薄适配层；彻底删除由 P5 收口）。
 
 - [ ] **Step 2: 写失败测试（instructions / access）**
 
@@ -2057,7 +2067,7 @@ Expected: PASS（夹具已全部换成 `seedOffice`）。
 
 ```bash
 git add src/app/conversations.ts src/domain/employee.ts src/domain/prompt-vars.ts src/tools/registry.ts tests/app/conversations.test.ts tests/domain/employee.test.ts tests/domain/prompt-vars.test.ts tests/domain/prompt.test.ts tests/tools/registry.test.ts
-git commit -m "refactor(conversations): 装配改走 capabilities/permissions；AGENTS.md/profile.md 退出运行时"
+git commit -m "refactor(conv): 装配改走 capabilities/permissions；AGENTS.md/profile.md 退出运行时"
 ```
 
 ---
@@ -2294,7 +2304,7 @@ Expected: PASS。
 
 ```bash
 git add src/tools/gate.ts src/harness/access-extension.ts tests/tools/gate.test.ts tests/harness/access-extension.test.ts tests/harness/pi-durable.test.ts
-git commit -m "feat(tools): 按工具路径的权限闸门（attenuation / 员工配置保护 / bash 近似检查）"
+git commit -m "feat(gate): 按工具路径的权限闸门（attenuation / 员工配置保护 / bash 近似检查）"
 ```
 
 ---
@@ -2395,7 +2405,7 @@ Expected: PASS。
 
 ```bash
 git add src/domain/permission-requests.ts src/app/permission-flow.ts src/tools/registry.ts tests/app/permission-flow.test.ts tests/tools/registry.test.ts
-git commit -m "refactor(permission): 授权落盘改为往 agent config 的 permissions[tool] 追加"
+git commit -m "refactor(perm): 授权落盘改为往 agent config 的 permissions[tool] 追加"
 ```
 
 ---
@@ -2459,7 +2469,7 @@ Expected: PASS（`web/` 未值导入任何新模块）。
 
 ```bash
 git add tests
-git commit -m "test: 全量测试夹具迁到 *.config.json 新形态，旧机制退出运行时"
+git commit -m "test(config): 全量测试夹具迁到 *.config.json 新形态，旧机制退出运行时"
 ```
 
 ---
@@ -2505,7 +2515,7 @@ Expected: 测试与类型全绿；grep 只剩明确讲「旧机制已退役」�
 
 ```bash
 git add src/skills/openstaffs/SKILL.md src/skills/openstaffs-ops/SKILL.md README.md docs/产品规划.md
-git commit -m "docs: 同步统一配置与按工具权限（能力 / 运维 / 上手 / 产品规划）"
+git commit -m "docs(config): 同步统一配置与按工具权限（能力 / 运维 / 上手 / 产品规划）"
 ```
 
 ---
@@ -2555,3 +2565,7 @@ git commit -m "docs: 同步统一配置与按工具权限（能力 / 运维 / �
 - **B5**：写死「P5 不得重写 `capabilities/scopes.ts` / `capabilities/skills.ts`，只能 import 并按需追加导出」。
 - **N2**：`spaceConfigFile` 按执行顺序 P3 在前 → 由 **P4 re-export 本计划的定义**（仅加说明，未动 P4 文件）。
 - **P1 对齐**：在「跨阶段假设」新增「P1 已落地事实」小节（`mergeRoomMessages` 已删除、房间条目键为 `store:<seq>`、库实例唯一不得另开），确保不误假设旧行为。
+- **R-P3-1（`employee.ts` 收口）**：保持 P2 薄适配层，P3 只**追加** `memoryOf`（自行 `import fs from "node:fs"` + 本地 `readText`），**不删** `renderInstructions` / `Employee` / `loadEmployee` / `listEmployees`；`instructionsFor` 只是**不再调用** `renderInstructions`（改用 capabilities）。删除理由里早已不存在的 `Employee.entry` / `Employee.profile` 引用。
+- **R-P3-2（提交规范）**：全局约束与各任务 `git commit -m` 统一为 `<type>(<scope>): <简体中文描述>`（Task 1/2 `feat(config)`、Task 3/4 `feat(perm)`、Task 5 `feat(cap)`、Task 6 `feat(mcp)`、Task 7 `refactor(proj)`、Task 8 `refactor(conv)`、Task 9 `feat(gate)`、Task 10 `refactor(perm)`、Task 11 `test(config)`、Task 12 `docs(config)`）。
+- **R-P3-3（分支）**：本计划在本地新分支 `feat/unified-config` 上执行（非 `feat/org-hierarchy`、非 `master`）；**不 push**。计划正文原本未指定分支，故无需改动，只在此记录口径。
+- **P2 落地对齐（`roomExists` / `workDir`）**：Task 7 的 `roomExists` dm 分支保持 P2 已落地的 `findPerson(loadOrg(ws), id)` 不动，**仅群聊分支**改判扁平 config（不再用 `employeeDir`）；`workDir(ws, id)` 已随 P2 落地，Task 7 只 import。

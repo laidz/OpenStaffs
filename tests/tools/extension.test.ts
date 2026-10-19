@@ -5,6 +5,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
+import { seedOffice } from "../helpers/office.ts";
 import { PermissionRequestStore } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
@@ -32,9 +33,9 @@ describe("OpenStaffs 工具扩展", () => {
   });
 
   it("execute 经 sessionInfo 解析身份/关系；未注册会话 → isError", async () => {
-    const dir = path.join(root, "agents", "alice");
+    seedOffice(root, { agents: [{ id: "alice", model: "faux/faux-model", prompt: "你是 alice。" }] });
+    const dir = path.join(root, "work", "alice");
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
 
     const ws = createWorkspace(root);
     let harness: ReturnType<typeof createPiHarness>;
@@ -46,7 +47,7 @@ describe("OpenStaffs 工具扩展", () => {
         cwd: dir,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [dir] },
+        access: { root, cwd: dir, selfId: "alice", permissions: {} },
       };
       const convId = await harness.startSession(spec);
       const officeList = (ext.tools ?? []).find((t) => t.name === "office_list")!;
@@ -62,9 +63,9 @@ describe("OpenStaffs 工具扩展", () => {
   });
 
   it("注入 permissions 后 request_permission 可用：落库一条请求、无错误", async () => {
-    const dir = path.join(root, "agents", "alice");
+    seedOffice(root, { agents: [{ id: "alice", model: "faux/faux-model", prompt: "你是 alice。" }] });
+    const dir = path.join(root, "work", "alice");
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "AGENTS.md"), "你是 alice。");
 
     const ws = createWorkspace(root);
     const store = new PermissionRequestStore(ws);
@@ -81,7 +82,7 @@ describe("OpenStaffs 工具扩展", () => {
         cwd: dir,
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
-        access: { root, cwd: dir, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [dir] },
+        access: { root, cwd: dir, selfId: "alice", permissions: {} },
       };
       const convId = await harness.startSession(spec);
       const tool = (ext.tools ?? []).find((t) => t.name === "request_permission")!;

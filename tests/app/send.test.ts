@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
+import { seedOffice } from "../helpers/office.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom, triggerFromGroupReply } from "../../src/app/send.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
 import { openMessageStore } from "../../src/store/messages.ts";
@@ -21,18 +22,14 @@ afterEach(() => {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-send-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
+/** 人 = 一份 `<id>.agent.config.json`（新形态夹具，经 seedOffice）。 */
 function seedEmployee(id: string, alias?: string) {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "agents", `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。`, ...(alias === undefined ? {} : { alias }) }),
-  );
+  seedOffice(root, { agents: [{ id, alias, model: "faux/faux-model", prompt: `你是 ${id}。` }] });
 }
 
+/** 群 = 一份 `<项目>.project.config.json`（成员写进 config 的 members）。 */
 function seedGroup(project: string, members: string[]) {
-  const dir = path.join(root, "projects", project);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...members.map((m) => `- ${m}`), ""].join("\n"));
+  seedOffice(root, { projects: [{ id: project, members }] });
 }
 
 class FakePort implements HarnessPort {
@@ -292,8 +289,7 @@ describe("发送编排", () => {
   });
 
   it("空成员群：抛 EmptyGroupError", async () => {
-    fs.mkdirSync(path.join(root, "projects", "empty"), { recursive: true });
-    fs.writeFileSync(path.join(root, "projects", "empty", "members.md"), "# 成员\n");
+    seedOffice(root, { projects: [{ id: "empty" }] });
     const ws = createWorkspace(root);
     await expect(
       sendToRoom(ws, new FakePort(), { kind: "group", project: "empty" }, "在吗", { queue: new KeyedQueue(), defaults }),

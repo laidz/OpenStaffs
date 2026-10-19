@@ -8,7 +8,7 @@ export type PromptKind = "dm" | "group";
 /** 系统内置模板目录（本文件在 src/domain → src/prompts）。 */
 const FRAMEWORK_PROMPT_DIR = fileURLToPath(new URL("../prompts/", import.meta.url));
 
-/** 模板路径：固定指向系统内置（环境段属系统级，不可被空间覆盖；要加规矩写空间 AGENTS.md）。 */
+/** 模板路径：固定指向系统内置（环境段属系统级，不可被空间覆盖；要加规矩写空间 config 的 prompt）。 */
 export function promptTemplatePath(kind: PromptKind): string {
   return path.join(FRAMEWORK_PROMPT_DIR, `${kind}.md`);
 }

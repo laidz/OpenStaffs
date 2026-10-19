@@ -18,12 +18,12 @@ function spec(cwd: string): ConversationSpec {
     cwd,
     instructions: "你是测试员工。",
     model: { provider: "faux", modelId: "faux-model" },
-    access: { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [cwd] },
+    access: { root, cwd, selfId: "alice", permissions: { write: [cwd], read: [cwd], bash: [cwd] } },
   };
 }
 
 function access(cwd: string): AccessContext {
-  return { root, cwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [cwd] };
+  return { root, cwd, selfId: "alice", permissions: { write: [cwd], read: [cwd], bash: [cwd] } };
 }
 
 function fauxModels(

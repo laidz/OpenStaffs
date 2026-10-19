@@ -1,64 +1,60 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
-import { parseMembers } from "../../src/domain/access-control.ts";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { createWorkspace, projectsDir } from "../../src/domain/paths.ts";
 import { createProject, listProjects, loadProject } from "../../src/domain/project.ts";
+import { parseMembers, projectsOf } from "../../src/domain/access-control.ts";
+import { defaultPermissionTable } from "../../src/permissions/defaults.ts";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-proj-"));
-beforeEach(() => { fs.rmSync(root, { recursive: true, force: true }); fs.mkdirSync(root, { recursive: true }); });
+let root = "";
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-project-"));
+});
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
-const ws = createWorkspace(root);
 
-describe("createProject", () => {
-  it("创建项目目录（AGENTS.md + data/ + members.md + project.json）", () => {
-    createProject(ws, "yt-001", ["alice", "bob"], "YouTube 增长");
-    const dir = path.join(root, "projects", "yt-001");
-    expect(fs.existsSync(path.join(dir, "AGENTS.md"))).toBe(true);
-    expect(fs.statSync(path.join(dir, "data")).isDirectory()).toBe(true);
-    expect(fs.existsSync(path.join(dir, "members.md"))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8"))).toEqual({ alias: "YouTube 增长" });
-    expect(parseMembers(ws, "yt-001")).toEqual(["alice", "bob"]);
+test("建群 = 写扁平 config：alias / members / prompt / 默认 permissions（D14/D22/D26）", () => {
+  const ws = createWorkspace(root);
+  createProject(ws, "yt", ["alice", "bob"], "YouTube 增长");
+  const file = path.join(projectsDir(ws), "yt.project.config.json");
+  expect(fs.existsSync(file)).toBe(true);
+  expect(fs.existsSync(path.join(root, "projects", "yt"))).toBe(false);
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+    alias: "YouTube 增长",
+    members: ["alice", "bob"],
+    permissions: defaultPermissionTable(),
   });
-
-  it("alias 缺省 = id", () => {
-    createProject(ws, "xhs-01", []);
-    expect(JSON.parse(fs.readFileSync(path.join(root, "projects", "xhs-01", "project.json"), "utf8"))).toEqual({ alias: "xhs-01" });
-    expect(parseMembers(ws, "xhs-01")).toEqual([]);
-  });
-
-  it("alias 两端空白被 trim（含写进 AGENTS.md 标题）", () => {
-    createProject(ws, "trim-p", [], "  YouTube  ");
-    const dir = path.join(root, "projects", "trim-p");
-    expect(JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8"))).toEqual({ alias: "YouTube" });
-    expect(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8").split("\n")[0]).toBe("# YouTube");
-  });
-
-  it("项目已存在时报错", () => {
-    createProject(ws, "dup", []);
-    expect(() => createProject(ws, "dup", [])).toThrow("项目已存在");
-  });
-
-  it("非法 id 报错（含内部空白/制表符）", () => {
-    for (const bad of ["", "  ", "a/b", "a\\b", "..", ".", ".hidden", "a/../b", "a b ", "a b", "a\tb"]) {
-      expect(() => createProject(ws, bad, [])).toThrow("项目 id");
-    }
-  });
+  expect(parseMembers(ws, "yt")).toEqual(["alice", "bob"]);
+  expect(projectsOf(ws, "alice")).toEqual(["yt"]);
 });
 
-it("loadProject / listProjects：读 alias、坏 JSON 回落 id、排序", () => {
-  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-projects-"));
-  try {
-    const ws = createWorkspace(root2);
-    createProject(ws, "beta", ["alice"]);
-    createProject(ws, "alpha", ["bob"], "阿尔法");
-    fs.writeFileSync(path.join(root2, "projects", "beta", "project.json"), "{坏");
-    expect(loadProject(ws, "alpha").alias).toBe("阿尔法");
-    expect(loadProject(ws, "beta").alias).toBe("beta");
-    expect(listProjects(ws).map((p) => p.id)).toEqual(["alpha", "beta"]);
-    expect(listProjects(ws).map((p) => p.alias)).toEqual(["阿尔法", "beta"]);
-  } finally {
-    fs.rmSync(root2, { recursive: true, force: true });
+test("alias 缺省 = id；重复立项抛错；缺失/坏 JSON → 成员为空、列表里也不出现", () => {
+  const ws = createWorkspace(root);
+  createProject(ws, "xhs-01", []);
+  expect(loadProject(ws, "xhs-01").alias).toBe("xhs-01");
+  expect(() => createProject(ws, "xhs-01", [])).toThrow();
+  expect(parseMembers(ws, "nope")).toEqual([]);
+  expect(listProjects(ws).map((project) => project.id)).toEqual(["xhs-01"]);
+  fs.writeFileSync(path.join(projectsDir(ws), "broken.project.config.json"), "{坏");
+  expect(listProjects(ws).map((project) => project.id)).toEqual(["xhs-01"]);
+  expect(parseMembers(ws, "broken")).toEqual([]);
+});
+
+test("alias 两端空白被 trim；非法 id 抛错（含内部空白/制表符）", () => {
+  const ws = createWorkspace(root);
+  createProject(ws, "trim-p", [], "  YouTube  ");
+  expect(loadProject(ws, "trim-p").alias).toBe("YouTube");
+  for (const bad of ["", "  ", "a/b", "a\\b", "..", ".", ".hidden", "a/../b", "a b ", "a b", "a\tb"]) {
+    expect(() => createProject(ws, bad, [])).toThrow("项目 id");
   }
+});
+
+test("列表按 id 排序；坏 JSON 跳过，其余照读", () => {
+  const ws = createWorkspace(root);
+  createProject(ws, "beta", ["alice"]);
+  createProject(ws, "alpha", ["bob"], "阿尔法");
+  expect(listProjects(ws).map((project) => project.id)).toEqual(["alpha", "beta"]);
+  expect(listProjects(ws).map((project) => project.alias)).toEqual(["阿尔法", "beta"]);
+  fs.writeFileSync(path.join(projectsDir(ws), "beta.project.config.json"), "{坏");
+  expect(listProjects(ws).map((project) => project.id)).toEqual(["alpha"]);
 });

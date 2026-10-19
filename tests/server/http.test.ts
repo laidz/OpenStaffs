@@ -7,6 +7,8 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { projectConfigFile } from "../../src/config/naming.ts";
+import { seedOffice, writeJsonFile } from "../helpers/office.ts";
 import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
@@ -89,16 +91,13 @@ describe("HTTP 骨架", () => {
   });
 
   it("status 永不回显 apiKey；org/projects 列表（含 alias 与模型兜底）", async () => {
-    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "agents", "alice.agent.config.json"),
-      JSON.stringify({ alias: "爱丽丝", model: "anthropic/claude-x", prompt: "你是 alice。" }),
-    );
-    fs.writeFileSync(path.join(root, "agents", "carol.agent.config.json"), JSON.stringify({ prompt: "你是 carol。" }));
-    const projectDir = path.join(root, "projects", "yt");
-    fs.mkdirSync(projectDir, { recursive: true });
-    fs.writeFileSync(path.join(projectDir, "members.md"), "# 成员\n- alice\n- ghost\n");
-    fs.writeFileSync(path.join(projectDir, "project.json"), JSON.stringify({ alias: "油管项目" }));
+    seedOffice(root, {
+      agents: [
+        { id: "alice", alias: "爱丽丝", model: "anthropic/claude-x", prompt: "你是 alice。" },
+        { id: "carol", prompt: "你是 carol。" },
+      ],
+      projects: [{ id: "yt", alias: "油管项目", members: ["alice", "ghost"] }],
+    });
 
     const ws = createWorkspace(root);
     const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
@@ -125,12 +124,14 @@ describe("HTTP 骨架", () => {
   });
 
   it("GET /api/org：部门树 + 人（含模型兜底）；/api/employees 已移除", async () => {
-    fs.mkdirSync(path.join(root, "agents", "eng"), { recursive: true });
-    fs.writeFileSync(path.join(root, "agents", "eng", "department.config.json"), JSON.stringify({ alias: "研发部", head: ["alice"] }));
-    fs.writeFileSync(path.join(root, "agents", "eng", "alice.agent.config.json"), JSON.stringify({ alias: "爱丽丝", model: "anthropic/claude-x", prompt: "你是 alice。" }));
-    fs.mkdirSync(path.join(root, "agents", "eng", "platform"), { recursive: true });
-    fs.writeFileSync(path.join(root, "agents", "eng", "platform", "bob.agent.config.json"), JSON.stringify({ prompt: "你是 bob。" }));
-    fs.writeFileSync(path.join(root, "agents", "staff0.agent.config.json"), JSON.stringify({ prompt: "管家" }));
+    seedOffice(root, {
+      departments: [{ path: "eng", alias: "研发部", head: ["alice"] }],
+      agents: [
+        { id: "alice", department: "eng", alias: "爱丽丝", model: "anthropic/claude-x", prompt: "你是 alice。" },
+        { id: "bob", department: "eng/platform", prompt: "你是 bob。" },
+        { id: "staff0", prompt: "管家" },
+      ],
+    });
 
     const ws = createWorkspace(root);
     const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
@@ -197,18 +198,10 @@ async function startWithFaux(
   groupMembers: string[],
   options: { bossName?: string; thinkingLevel?: string; reasoning?: boolean } = {},
 ): Promise<{ base: string; close: () => Promise<void>; store: PermissionRequestStore; events: ServerEvent[] }> {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  for (const id of employeeIds) {
-    fs.writeFileSync(
-      path.join(root, "agents", `${id}.agent.config.json`),
-      JSON.stringify({ alias: id === "alice" ? "爱丽丝" : id, model: "faux/faux-model", prompt: `你是 ${id}。` }),
-    );
-  }
-  if (groupMembers.length > 0) {
-    const dir = path.join(root, "projects", "yt");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "members.md"), ["# 成员", ...groupMembers.map((m) => `- ${m}`), ""].join("\n"));
-  }
+  seedOffice(root, {
+    agents: employeeIds.map((id) => ({ id, alias: id === "alice" ? "爱丽丝" : id, model: "faux/faux-model", prompt: `你是 ${id}。` })),
+    ...(groupMembers.length > 0 ? { projects: [{ id: "yt", members: groupMembers }] } : {}),
+  });
   const config = {
     ...configured,
     ...(options.bossName === undefined ? {} : { bossName: options.bossName }),
@@ -324,7 +317,8 @@ describe("房间 API", () => {
       });
       expect(bossOnly.status).toBe(400);
 
-      fs.rmSync(path.join(root, "projects", "yt", "members.md"));
+      // 群成员清空（重写 config 的 members）：仍是合法群 → 400「群还没有成员」
+      writeJsonFile(projectConfigFile(createWorkspace(root), "yt"), { members: [] });
       const empty = await fetch(`${base}/api/rooms/group:yt/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -833,7 +827,10 @@ describe("授权请求 API", () => {
       expect(resolve.status).toBe(200);
       expect(await resolve.json()).toEqual({ ok: true });
 
-      expect(JSON.parse(fs.readFileSync(path.join(root, "agents", "alice.permission.json"), "utf8"))).toEqual([target]);
+      expect(
+        (JSON.parse(fs.readFileSync(path.join(root, "agents", "alice.agent.config.json"), "utf8")) as { permissions?: { write?: string[] } })
+          .permissions?.write,
+      ).toEqual([target]);
       await waitFor(async () => {
         const body = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { speaker: { kind: string }; text: string }[] };
         return body.messages.some((m) => m.speaker.kind === "boss" && m.text === "已完成授权") ? body : undefined;
@@ -875,7 +872,10 @@ describe("授权请求 API", () => {
         body: JSON.stringify({ decision: "reject" }),
       });
       expect(reject.status).toBe(200);
-      expect(fs.existsSync(path.join(root, "agents", "alice.permission.json"))).toBe(false);
+      expect(
+        (JSON.parse(fs.readFileSync(path.join(root, "agents", "alice.agent.config.json"), "utf8")) as { permissions?: unknown })
+          .permissions,
+      ).toBeUndefined();
 
       const bad = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
         method: "POST",

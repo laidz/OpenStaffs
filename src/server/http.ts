@@ -1,12 +1,13 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { loadProjectConfig } from "../config/load.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { findPerson, loadOrg, type OrgDepartment, type OrgTree } from "../domain/org.ts";
-import { projectDir, type Workspace } from "../domain/paths.ts";
+import type { Workspace } from "../domain/paths.ts";
 import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage } from "../app/rooms.ts";
 import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
@@ -119,8 +120,8 @@ function resolveStatic(publicDir: string, pathname: string): string | undefined 
 
 function roomExists(ws: Workspace, relation: Relation): boolean {
   return relation.kind === "dm"
-    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined
-    : fs.existsSync(projectDir(ws, relation.project));
+    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined // dm 分支 P2 已落地，保持不动
+    : loadProjectConfig(ws, relation.project) !== undefined; // 仅群聊分支改判扁平 config
 }
 
 async function handleRooms(

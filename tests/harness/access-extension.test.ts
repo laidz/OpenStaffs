@@ -3,10 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { ToolTask, type HookRegistration } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import { writeBlockMessage } from "../../src/harness/access-extension.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { ConversationSpec } from "../../src/harness/port.ts";
+import { createAccessExtension } from "../../src/harness/access-extension.ts";
+import { writeBlockMessage } from "../../src/tools/gate.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-hook-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -17,7 +19,7 @@ function spec(): ConversationSpec {
     cwd: aliceCwd,
     instructions: "你是 alice。",
     model: { provider: "faux", modelId: "faux-model" },
-    access: { root, cwd: aliceCwd, selfId: "alice", memberProjects: [], permissionFiles: [], writableDirs: [aliceCwd] },
+    access: { root, cwd: aliceCwd, selfId: "alice", permissions: { write: [aliceCwd], read: [aliceCwd], bash: [aliceCwd] } },
   };
 }
 
@@ -65,6 +67,22 @@ describe("访问控制钩子", () => {
       await harness.close();
     }
     expect(fs.existsSync(path.join(aliceCwd, "made-by-bash.txt"))).toBe(true);
+  });
+});
+
+describe("未注册会话", () => {
+  it("beforeTool 直接返回 block（未注册 = 不跑工具）", () => {
+    const extension = createAccessExtension(() => undefined);
+    const registration = (extension.hooks ?? []).find((item: HookRegistration) => item.task === ToolTask.definition.name);
+    const handlers = registration?.handlers as { beforeTool?: (call: { name: string; arguments?: unknown }, api: { conversationId: string }) => unknown };
+    const beforeTool = handlers?.beforeTool;
+    expect(beforeTool).toBeTypeOf("function");
+    if (beforeTool === undefined) throw new Error("未安装 beforeTool 钩子");
+    const verdict = beforeTool(
+      { name: "write", arguments: { path: "note.md", content: "x" } },
+      { conversationId: "conv-unknown" },
+    ) as { block?: string } | undefined;
+    expect(verdict?.block).toContain("未注册的会话");
   });
 });
 

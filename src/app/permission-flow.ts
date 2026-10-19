@@ -1,13 +1,14 @@
-import path from "node:path";
 import { readBossName } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { findPerson, loadOrg } from "../domain/org.ts";
-import { agentsDir, type Workspace } from "../domain/paths.ts";
-import { appendPermissionPaths } from "../domain/permissions.ts";
-import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
+import type { Workspace } from "../domain/paths.ts";
+import { agentConfigFile } from "../config/naming.ts";
+import { appendPermissionPaths } from "../config/write.ts";
+import { loadEmployee, type Employee } from "../domain/employee.ts";
+import { normalizeTool, type PermissionRequest, type PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { MessageStore } from "../store/messages.ts";
-import { agentPermissionFileOf, type SessionDefaults } from "./conversations.ts";
+import type { SessionDefaults } from "./conversations.ts";
 import { parseRoomKey, toRoomMessage, type RoomMessage } from "./rooms.ts";
 import { sendToRoom, type KeyedQueue } from "./send.ts";
 
@@ -20,14 +21,6 @@ export type PermissionRequestView = PermissionRequest & { agentName: string };
 export function permissionRequestView(ws: Workspace, request: PermissionRequest): PermissionRequestView {
   const alias = findPerson(loadOrg(ws), request.agentId)?.alias;
   return { ...request, agentName: alias ?? request.agentId };
-}
-
-/** 人级授权文件（人 = 文件后，授权与定义同目录、同主干；找不到人 → 回落 agents/ 根）。 */
-export function permissionFilePath(ws: Workspace, agentId: string): string {
-  const person = findPerson(loadOrg(ws), agentId);
-  return person === undefined
-    ? path.join(agentsDir(ws), `${agentId}.permission.json`)
-    : agentPermissionFileOf(person);
 }
 
 export type PermissionFlowDeps = {
@@ -53,7 +46,7 @@ const inFlight = new Set<string>();
 
 /**
  * 处理一条授权请求：
- * accept → 写发起者人级 permission.json（`<人所在目录>/<id>.permission.json`）；随后（两种决策）以老板消息投递结果、清请求、广播。
+ * accept → 把路径追加进发起者 agent config 的 `permissions[tool]`（tool 缺省 write）；随后（两种决策）以老板消息投递结果、清请求、广播。
  * 写盘失败会抛出且请求保留；投递失败不抛（授权已生效），返回带 warning 的结果。
  */
 export async function resolvePermissionRequest(
@@ -68,10 +61,14 @@ export async function resolvePermissionRequest(
     if (request === undefined) throw new PermissionRequestNotFoundError(`授权请求不存在或已处理：${id}`);
 
     if (decision === "accept") {
-      if (findPerson(loadOrg(deps.ws), request.agentId) === undefined) {
+      // 接受即框架/负责人代写发起者的 agent config（R-P3-11：不经过工具闸门）。
+      let employee: Employee;
+      try {
+        employee = loadEmployee(deps.ws, request.agentId);
+      } catch {
         throw new PermissionRequestNotFoundError(`发起者已不存在：${request.agentId}（可点「拒绝」清除该请求）`);
       }
-      appendPermissionPaths(permissionFilePath(deps.ws, request.agentId), request.paths);
+      appendPermissionPaths(agentConfigFile(employee.dir, request.agentId), normalizeTool(request.tool), request.paths);
     }
 
     const relation = parseRoomKey(request.roomKey);

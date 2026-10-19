@@ -5,6 +5,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { seedOffice } from "../helpers/office.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
@@ -31,11 +32,11 @@ afterEach(() => {
 });
 
 function seedEmployee(id: string): void {
-  fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, "agents", `${id}.agent.config.json`),
-    JSON.stringify({ model: "faux/faux-model", prompt: `你是 ${id}。` }),
-  );
+  seedOffice(root, { agents: [{ id, model: "faux/faux-model", prompt: `你是 ${id}。` }] });
+}
+
+function seedGroup(project: string, members: string[]): void {
+  seedOffice(root, { projects: [{ id: project, members }] });
 }
 
 async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 15000): Promise<T> {
@@ -51,9 +52,7 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 15000): 
 describe("群回复 @触发（pump 集成）", () => {
   it("alice 回复 @bob @carol → 两人都被触发并开工；新会话被订阅（有广播）；副本不重复显示；无 @ 的回复补 @老板", async () => {
     for (const id of ["alice", "bob", "carol"]) seedEmployee(id);
-    const groupDir = path.join(root, "projects", "yt");
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, "members.md"), "# 成员\n- alice\n- bob\n- carol\n");
+    seedGroup("yt", ["alice", "bob", "carol"]);
 
     const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
     // 三个响应：alice 的回复（触发两人）、bob/carol 的回复（内容相同，避免并发消费顺序影响断言）
@@ -119,9 +118,7 @@ describe("群回复 @触发（pump 集成）", () => {
 
   it("称谓自定义：pump 广播的 fallback 文本用真称谓（读 config）", async () => {
     seedEmployee("alice");
-    const groupDir = path.join(root, "projects", "yt");
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, "members.md"), "# 成员\n- alice\n");
+    seedGroup("yt", ["alice"]);
     fs.mkdirSync(path.join(root, ".openstaffs"), { recursive: true });
     fs.writeFileSync(path.join(root, ".openstaffs", "config.json"), JSON.stringify({ bossName: "掌柜" }));
 
