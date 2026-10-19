@@ -16,7 +16,7 @@
 - 权限**只管控写**（读、bash 全开，未配置化）。
 - 空间有**两个近名目录**：`.openstaffs/`（机器私有）与 `openstaffs/`（老板资产）。
 
-本设计要落六件事：
+本设计要落**七件事**：
 
 1. **组织架构**：文件夹 = 部门（可嵌套），`<名字>.agent.config.json` = 人；部门/项目有**可选负责人**。
 2. **项目负责人（群主）**：与部门主管**完全同构**。
@@ -24,8 +24,9 @@
 4. **按工具权限**：写 / 读 / bash / 未来工具，**同一套权限配置**（每工具 = 路径列表）。
 5. **空间目录合并**：`.openstaffs/` 并入 `openstaffs/`（机器私有进 `openstaffs/.data/`）。
 6. **0 号员工（Staff0）**：首次启动自动创建的空间管家。
+7. **会话记录进自有数据库**：脱离基座（Pi）transcript，消息 / 会话归框架。
 
-**一句话**：*文件夹是部门、文件是人；负责人可选、只管本级；四类能力一种形状；权限按工具、配置同名同构。*
+**一句话**：*文件夹是部门、文件是人；负责人可选、**从本级成员里选**；四类能力一种形状；权限按工具、配置同名同构。*
 
 **非目标：**
 
@@ -39,7 +40,7 @@
 | # | 决策 | 说明 |
 |---|---|---|
 | D1 | **文件夹 = 部门，文件 = 人** | 人 = `<名字>.agent.config.json`；**id = 文件名主干，全局唯一** |
-| D2 | **人由单一 config 定义** | 原 `AGENTS.md`/`profile.md`/`config.json`/`mcp.json`/`permission.json` 并入；技能改**引用**；记忆移 `work/<id>/memory.md` |
+| D2 | **人由单一 config 定义** | 原 `AGENTS.md`/`profile.md`/`config.json`/`mcp.json`/`permission.json` 并入；技能改**引用**；记忆移 `work/<id>/MEMORY.md` |
 | D3 | **配置统一命名 `*.config.json`** | `space.config.json` / `project.config.json` / `department.config.json` / `<名字>.agent.config.json`；**内容同构** |
 | D4 | **统一字段** | 各层共有 `{ alias?, avatar?, prompt?, skills?, mcp?, permissions? }`；层特有：员工 `model`、部门 `head`、项目 `owner` / `members`、空间无 |
 | D5 | **`prompt` = 内联字符串** | **取消所有层级的 `AGENTS.md`**（空间/项目/部门/员工一体） |
@@ -48,7 +49,7 @@
 | D8 | **主管不能写自己的配置** | "人不可写自己"的延伸；自己的定义只能由上级主管 / 老板写 |
 | D9 | **权限 = 按工具** | `permissions = { write, read, bash, … }`；每个工具的值 = **路径列表**（`["/"]` = 任意）|
 | D10 | **合并 = 累加，不做覆盖** | 所有能力 / 权限一律**累加**、**接受同值重复**，**无优先级 / 覆盖逻辑** |
-| D11 | **权限累加路线（配置内）** | `project.config.json` + `agent 工作目录` + `agent.config.json`（**项目无工作目录**）；再加**运行时权限**（见 D13）|
+| D11 | **权限累加路线（落盘）** | `project.config.json` + `agent.config.json`；工作目录与主管写权走**运行时**（D13）|
 | D12 | **能力累加路线** | `space` + `department`（从上到下递归）+ `project` + `agent`；`skills`/`mcp` 归全局定义、**不撞名**；`prompt` 累加（换行分割）|
 | D13 | **运行时权限（非显性，不落盘）** | ① agent 自己的工作目录（所有工具）；② **主管对管理子树的写权**；均由**运行时**授予，不写进 config |
 | D14 | **新建默认值** | agent：`write:[]`、`read:["./"]`、`bash:["./"]`；**新工具默认空**；新建项目同理 |
@@ -57,7 +58,7 @@
 | D17 | **`skills` = 按名引用** | 解析到 **`openstaffs/skills/<技能名>/`**；不内联技能正文 |
 | D18 | **头像可选** | `avatar?` = 图片路径；缺省**前端**取**名称首字** + **名称派生色**作底色 |
 | D19 | **空间目录合并** | `.openstaffs/` + `openstaffs/` → **单一 `openstaffs/`**；机器私有（全局 `config.json`、数据库、状态）进 **`openstaffs/.data/`** |
-| D20 | **工作树平铺** | `work/<名字>/` 各自独立（含 `memory.md`），与定义树分离 |
+| D20 | **工作树平铺** | `work/<名字>/` 各自独立（含 `MEMORY.md`），与定义树分离 |
 | D21 | **单归属** | 一个人只属于其 config 所在的部门 |
 | D22 | **项目成员名单放 config** | `project.config.json.members`（不用 `members.md`）|
 | D23 | **老板最高** | 全可写；`request_permission`（向老板申请）保留；**唯一例外**：Staff0 拿到空间管理权 |
@@ -103,8 +104,8 @@
 ```
 
 - 定义树：**只有 `department.config.json`（部门）与 `<名字>.agent.config.json`（人）两类文件**；其余是子部门文件夹。
-- 根下仅有门面：`agents/`、`projects/`、`work/`、`openstaffs/`（`AGENTS.md` 取消）。
-- 系统作用域声明由框架内置（`src/`），非用户编辑。
+- 根下仅有门面：`agents/`、`projects/`、`work/`、`openstaffs/`（不使用 `AGENTS.md`）。
+- **系统作用域**：框架内置（`src/`），非用户编辑；**新建空间时把内置 prompt 物化进 `space.config.json`**（D32），此后运行时无关。
 
 ---
 
@@ -120,7 +121,7 @@
 | `skills?` | string[]（名） | ✔ | ✔ | ✔ | ✔ | ✔ |
 | `mcp?` | string[]（名） | ✔ | ✔ | ✔ | ✔ | ✔ |
 | `permissions?` | 按工具 → 路径列表 | ✔ | ✔ | ✔ | ✔ | ✔ |
-| `model?` | `供应商/模型 id` | — | 全局默认（落点待定 §11） | — | — | ✔（覆盖） |
+| `model?` | `供应商/模型 id` | — | — | — | — | ✔（覆盖全局默认） |
 | `head?` | string[]（本级成员） | — | — | — | ✔ | — |
 | `owner?` | string[]（本群成员） | — | — | ✔ | — | — |
 | `members?` | string[] | — | — | ✔ | — | — |
@@ -129,9 +130,9 @@
 
 | 作用域 | 文件 |
 |---|---|
-| 系统 | 框架内置（`src/`） |
+| 系统 | 框架内置（`src/`）；**新建空间时物化进 `space.config.json`**（D32） |
 | 空间 | `openstaffs/space.config.json` |
-| 项目 | `projects/<id>/project.config.json` |
+| 项目 | `projects/<名字>.project.config.json`（扁平） |
 | 部门 | `<部门>/department.config.json` |
 | 员工 | `<部门>/<名字>.agent.config.json` |
 
@@ -164,10 +165,10 @@
 "permissions": { "write": ["."], "read": ["/"], "bash": ["/"] }
 ```
 
-**累加路线**（D11）：`项目工作目录` + `project.config.json` + `agent 工作目录` + `agent.config.json`——**累加**，接受同值重复，不做覆盖。
-> ⚠️ **待确认**：是否还含 **`space` / `department`** 的 `permissions`（你给的路线只有"项目 + agent"，但早先 `department.config.json` 设计里带"通用权限"）。
+**累加路线**（D11，**落盘**）：`project.config.json` + `agent.config.json`——**累加**，接受同值重复，不做覆盖。
+> `space` / `department` **不进**配置权限路线（"默认不补"）；工作目录与主管写权走**运行时**（下）。
 
-**运行时自动授权（非显性，D13）**：agent 自己的工作区、项目会话的项目工作区 → **所有工具**由**运行时自动授予**，不写进任何 config。
+**运行时授权（非显性，D13）**：① agent 自己的工作目录 → **所有工具**由**运行时自动授予**；② **主管对管理子树的写权**。均不写进任何 config。
 
 **新建默认值**（D14）：`write: []`、`read: ["./"]`、`bash: ["./"]`；**新工具默认空**；新建项目同理。
 
@@ -175,7 +176,7 @@
 
 - **人不可写任何 `<名字>.agent.config.json`（含自己的）**——防自授权（主管的写入是"写下级"）。
 - **`permissions` 写入 = attenuation**（D15/D28）：写任何层的 `permissions` 时，**每个工具的值 ⊆ 写者该工具的有效集（含继承）**。**全管**——对所有工具一视同仁，**与工具实际语义无关**（写/读/bash/未来工具都是同一套逻辑；未知工具按默认空）。
-- **读**：与写同机制的路径列表（D9/D12）。
+- **读**：与写同机制的路径列表（D9）。
 
 **与现有机制的关系：**
 
@@ -190,7 +191,7 @@
 
 | 类别 | 累加路线 |
 |---|---|
-| `permissions`（落盘） | `project.config.json` + `agent 工作目录` + `agent.config.json` |
+| `permissions`（落盘） | `project.config.json` + `agent.config.json` |
 | `permissions`（**运行时**，不落盘） | agent 自己的工作目录（所有工具）+ **主管对管理子树的写权**（D13）|
 | `skills` / `mcp` | `space` + `department`（从上到下递归）+ `project` + `agent` |
 | `prompt` | `space` + `department`（从上到下递归）+ `project` + `agent` |
@@ -240,7 +241,7 @@
 | **P2 组织 + 负责人 + 权限骨架** | `agents/` 部门嵌套；`department.config.json` / `<名字>.agent.config.json` 发现与解析（人先支持 `alias`/`model`/`prompt`）；`head` 与穿透管理权；侧栏**可折叠树** | 先把"部门 + 人 + 负责人"的结构与权限跑通 |
 | **P3 配置统一 + 按工具权限** | 四类能力统一为 `*.config.json`（空间/项目/部门/员工）；**一套解析器**；权限升级为**按工具路径列表** | 去掉旧机制的格式分叉 |
 | **P4 空间目录合并 + Staff0** | `.openstaffs/` → `openstaffs/.data/`；路径解析、启动探测、引导页、`.gitignore`；首次启动自动建 Staff0 | 影响面广，需回归 |
-| **P5 定义模型迁移** | `.agent.config.json` 全面取代多文件；`prompt` 渲染；记忆迁 `work/<id>/memory.md`；技能库集中；`AGENTS.md` 取消 | 破坏性：需迁移工具 + 兼容期 |
+| **P5 定义模型落地** | `.agent.config.json` 全面取代多文件；`prompt` 渲染；记忆放 `work/<id>/MEMORY.md`；技能库集中；不使用 `AGENTS.md` | 破坏性更新（**不做迁移**，D30）|
 
 ---
 
