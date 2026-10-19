@@ -1,12 +1,14 @@
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createWorkspace } from "../domain/paths.ts";
+import { createWorkspace, messagesDbFile, stateDir } from "../domain/paths.ts";
 import { DEFAULT_PORT, readConfig } from "../domain/config.ts";
 import { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView } from "../app/permission-flow.ts";
 import { sessionDefaults } from "../app/conversations.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
+import { openMessageStore, type MessageStore } from "../store/messages.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
 import { McpManager } from "../harness/mcp-manager.ts";
 import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
@@ -38,6 +40,17 @@ async function main(): Promise<void> {
   // 与 HTTP 端点共享：排队中的老板消息（前端展示「排队中」与单条撤回）。
   const outbox = new Outbox();
   const permissionRequests = new PermissionRequestStore(ws);
+  // 自有消息库（P1）：全进程唯一实例，注入 pump 与 HTTP 发送路径。
+  // openMessageStore 现在会自建父目录；这里仍先确保 stateDir 存在（state.sqlite 等也落在同目录）。
+  // 开库失败（坏库 / 非 SQLite 文件 / 权限）走与下方一致的「启动失败」提示后退出，而不是裸崩未处理 rejection。
+  fs.mkdirSync(stateDir(ws), { recursive: true });
+  let store: MessageStore;
+  try {
+    store = openMessageStore(messagesDbFile(ws));
+  } catch (error) {
+    console.error(`[openstaffs] 启动失败：${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   let pump: Pump | undefined;
   let mcp: McpManager | undefined;
 
@@ -58,6 +71,8 @@ async function main(): Promise<void> {
           store: permissionRequests,
           notify: (request) => hub.broadcast({ type: "permission.request", request: permissionRequestView(ws, request) }),
         },
+        // 员工发言（send_message）落库后广播库行（R-P1-12「谁写谁广播」）。
+        broadcast: (roomKey, message) => hub.broadcast({ type: "room.message", roomKey, message }),
       });
       harness = createPiHarness({
         root,
@@ -74,6 +89,7 @@ async function main(): Promise<void> {
         hub,
         queue,
         outbox,
+        store,
         mcp,
         getDefaults: () => sessionDefaults(getConfig()),
       });
@@ -89,6 +105,7 @@ async function main(): Promise<void> {
   const port = startup.port ?? config?.port ?? DEFAULT_PORT;
   const server = createHttpServer({
     ws,
+    store,
     getConfig,
     getHarness: () => harness,
     queue,
@@ -116,6 +133,7 @@ async function main(): Promise<void> {
     console.log(`[openstaffs] 收到 ${signal}，正在退出…`);
     await mcp?.close().catch(() => undefined);
     await harness?.close().catch(() => undefined);
+    store.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };

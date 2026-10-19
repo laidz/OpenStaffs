@@ -6,19 +6,33 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, conversationIdsFile, employeeDir } from "../../src/domain/paths.ts";
+import { createWorkspace, conversationIdsFile, employeeDir, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
 import { startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { Outbox } from "../../src/app/outbox.ts";
 import { openDm } from "../../src/app/conversations.ts";
+import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
 import { createHttpServer } from "../../src/server/http.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-sse-"));
+
+// 接线前提（对齐 main.ts）：stateDir 先建；每个用例一套库，afterEach 关闭并清目录。
+let store: MessageStore | undefined;
+function getStore(): MessageStore {
+  if (store === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    store = openMessageStore(messagesDbFile(createWorkspace(root)));
+  }
+  return store;
+}
+
 afterEach(() => {
+  store?.close();
+  store = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(root, ".openstaffs"), { recursive: true, force: true });
@@ -125,9 +139,10 @@ describe("SSE 全链路", () => {
     await harness.open();
 
     const hub = new SseHub();
-    const pump = new Pump({ ws, harness, hub });
+    const pump = new Pump({ ws, harness, hub, store: getStore() });
     const server = createHttpServer({
       ws,
+      store: getStore(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -217,9 +232,10 @@ describe("待发队列全链路（Pi submission 事件驱动）", () => {
 
     const hub = new SseHub();
     const outbox = new Outbox();
-    const pump = new Pump({ ws, harness, hub, outbox });
+    const pump = new Pump({ ws, harness, hub, outbox, store: getStore() });
     const server = createHttpServer({
       ws,
+      store: getStore(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -273,8 +289,8 @@ describe("待发队列全链路（Pi submission 事件驱动）", () => {
         const body = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[]; queued: unknown[] };
         return body.messages.some((m) => m.text === "第二轮回复") ? body : undefined;
       });
-      // 排队的输入在轮次边界落盘 → 排在上一轮回复之后（entryId 顺序即时间顺序）
-      expect(merged.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复", "第二条", "第二轮回复"]);
+      // 排队的输入在发送时即落自有库（seq = 发送顺序）→ 房间视图按序显示：第一轮、第二条、第一轮回复、第二轮回复
+      expect(merged.messages.map((m) => m.text)).toEqual(["第一轮", "第二条", "第一轮回复", "第二轮回复"]);
       expect(merged.queued).toEqual([]);
     } finally {
       release();
@@ -308,6 +324,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await harness.open();
     const server = createHttpServer({
       ws,
+      store: getStore(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -325,10 +342,11 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         body: JSON.stringify({ text: "你好" }),
       });
       expect(post.status).toBe(202);
+      // pump.register 抛错 → 没有订阅，agent 回复不入自有库；但老板消息已落库（admission 不受订阅失败影响）。
       const merged = await waitFor(async () => {
         const res = await fetch(`http://127.0.0.1:${port}/api/rooms/dm:alice/messages`);
         const body = (await res.json()) as { messages: { speaker: { kind: string }; text: string }[] };
-        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
+        return body.messages.some((m) => m.speaker.kind === "boss" && m.text === "你好") ? body : undefined;
       });
       expect(merged.messages.some((m) => m.speaker.kind === "boss" && m.text === "你好")).toBe(true);
     } finally {
@@ -353,7 +371,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub });
+    const pump = new Pump({ ws, harness, hub, store: getStore() });
     let convId: string | undefined;
     try {
       convId = await openDm(ws, harness, "alice", { model: "faux/faux-model" });
@@ -387,7 +405,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         };
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
     const first = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     const second = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     release();
@@ -415,7 +433,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         };
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
     const inFlight = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     await pump.unregister("c1"); // watch 尚未建立：占位被清
     release();
@@ -439,7 +457,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         return async () => {};
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
     await expect(pump.register("c1", { roomKey: "dm:alice", memberId: "alice" })).rejects.toThrow("会话不存在");
     fail = false;
     await pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
@@ -454,6 +472,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     await harness.open();
     const server = createHttpServer({
       ws,
+      store: getStore(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -497,8 +516,8 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub, outbox });
-    const item = { roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗", convId: "c1" };
+    const pump = new Pump({ ws, harness, hub, outbox, store: getStore() });
+    const item = { roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗", convId: "c1", storeSeq: 1 };
     try {
       outbox.add({ ...item, submissionId: "11" });
       outbox.add({ ...item, submissionId: "12" });
@@ -546,7 +565,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       errors.push(args.map((arg) => String(arg)).join(" "));
     });
-    const pump = new Pump({ ws, harness, hub: new SseHub() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
     try {
       await expect(pump.registerAll()).resolves.toBeUndefined();
       expect(watched).toEqual(["good-session"]); // 坏链之后的会话照常订阅

@@ -1,13 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadEmployee } from "../domain/employee.ts";
+import { readBossName } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { employeeDir, type Workspace } from "../domain/paths.ts";
 import { appendPermissionPaths } from "../domain/permissions.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
+import type { MessageStore } from "../store/messages.ts";
 import type { SessionDefaults } from "./conversations.ts";
-import { parseRoomKey } from "./rooms.ts";
+import { parseRoomKey, toRoomMessage, type RoomMessage } from "./rooms.ts";
 import { sendToRoom, type KeyedQueue } from "./send.ts";
 
 /** 请求不存在，或已在处理中（并发防重）。 */
@@ -38,10 +40,14 @@ export type PermissionFlowDeps = {
   defaults?: SessionDefaults;
   /** MCP 扩展选择（随发送时的新会话装配）。 */
   mcp?: McpSessionResolver;
+  /** 自有消息库（P1）：审批结果也是老板投递，一并落库，房间视图才看得到（缺省不落库）。 */
+  messages?: MessageStore;
   /** best-effort 订阅新触发的会话（与 HTTP 发送同口径）。 */
   register?: (convId: string, ref: { roomKey: string; memberId: string }) => Promise<void>;
   /** 处理完成广播（SSE permission.resolved）。 */
   broadcast?: (id: string) => void;
+  /** 房间消息广播（R-P1-12）：审批结果落库后广播库行，老板实时可见（缺省不广播）。 */
+  broadcastMessage?: (roomKey: string, message: RoomMessage) => void;
 };
 
 /** 同 id 并发防重（进程内单例）。 */
@@ -81,8 +87,17 @@ export async function resolvePermissionRequest(
         queue: deps.queue,
         ...(deps.defaults === undefined ? {} : { defaults: deps.defaults }),
         ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
+        ...(deps.messages === undefined ? {} : { store: deps.messages }),
         requestId: `permission:${id}`,
       });
+      // 广播刚落的库行（R-P1-12）：审批结果是老板可见的发言，写路径自持广播（键 store:<seq>）。
+      // 与 HTTP 发送同口径：附一个仅 UI 用的 roomMessageId 副本（不入库），前端「排队中」占位据此贴真气泡。
+      if (result.recorded !== undefined) {
+        deps.broadcastMessage?.(request.roomKey, {
+          ...toRoomMessage(result.recorded, readBossName(deps.ws), deps.ws),
+          roomMessageId: result.roomMessageId,
+        });
+      }
       for (const delivery of result.deliveries) {
         try {
           await deps.register?.(delivery.convId, { roomKey: request.roomKey, memberId: delivery.memberId });

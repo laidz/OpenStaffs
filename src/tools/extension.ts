@@ -4,6 +4,7 @@ import type { Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
+import type { RoomMessage } from "../app/rooms.ts";
 
 /**
  * 把 OpenStaffs 统一注册表适配成 Pi Extension（装进 harness registry）。
@@ -16,6 +17,8 @@ export function createOpenStaffsToolsExtension(options: {
   mcp?: McpSessionResolver;
   /** 授权请求依赖（装配层注入；缺省时 request_permission 不可用）。 */
   permissions?: { store: PermissionRequestStore; notify: (request: PermissionRequest) => void };
+  /** 房间消息广播（R-P1-12）：员工发言（send_message）落库后广播库行；缺省不广播。 */
+  broadcast?: (roomKey: string, message: RoomMessage) => void;
 }): Extension {
   return defineExtension({
     name: "openstaffs-tools",
@@ -37,6 +40,7 @@ export function createOpenStaffsToolsExtension(options: {
             relation: info.relation,
             ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
             ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
+            ...(options.broadcast === undefined ? {} : { broadcast: options.broadcast }),
           };
           try {
             return { output: [{ type: "text", text: await def.run(args as Record<string, unknown>, ctx) }] };

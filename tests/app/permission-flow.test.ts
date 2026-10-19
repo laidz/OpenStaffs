@@ -2,14 +2,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
+import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { PermissionRequestNotFoundError, permissionFilePath, permissionRequestView, resolvePermissionRequest } from "../../src/app/permission-flow.ts";
+import type { RoomMessage } from "../../src/app/rooms.ts";
+import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-flow-"));
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+/** 用例里开的自有消息库实例（afterEach 关闭，避免句柄泄漏）。 */
+const stores: MessageStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 function seedEmployee(id: string, alias?: string): void {
   const dir = path.join(root, "agents", id);
@@ -56,8 +63,13 @@ function setup() {
   const port = new FakePort();
   const register = vi.fn(async () => {});
   const broadcast = vi.fn();
-  const deps = { ws, harness: port, store, queue: new KeyedQueue(), defaults, register, broadcast };
-  return { ws, store, port, register, broadcast, deps };
+  const broadcastMessage = vi.fn<(roomKey: string, message: RoomMessage) => void>();
+  // 自有消息库（P1）：审批结果也落库（对齐 http.ts 注入）。openMessageStore 不建父目录 → 先建 stateDir。
+  fs.mkdirSync(stateDir(ws), { recursive: true });
+  const messages = openMessageStore(messagesDbFile(ws));
+  stores.push(messages);
+  const deps = { ws, harness: port, store, queue: new KeyedQueue(), defaults, register, broadcast, messages, broadcastMessage };
+  return { ws, store, port, register, broadcast, broadcastMessage, messages, deps };
 }
 
 describe("授权请求处理", () => {
@@ -79,6 +91,40 @@ describe("授权请求处理", () => {
     expect(broadcast).toHaveBeenCalledWith(request.id);
     expect(store.list()).toEqual([]);
     expect(readPermissionRequests(ws)).toEqual([]);
+  });
+
+  it("accept：审批结果消息落库并广播库行（老板形态、键 store:<seq>）", async () => {
+    seedEmployee("alice", "爱丽丝");
+    const { store, messages, broadcastMessage, deps } = setup();
+    const request = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [path.join(root, "outside")], reason: "r" });
+
+    await resolvePermissionRequest(deps, request.id, "accept");
+
+    const rows = messages.listByRoom("dm:alice");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ room: "dm:alice", projectId: null, fromId: "__boss", toIds: ["alice"], text: "已完成授权" });
+    expect(broadcastMessage).toHaveBeenCalledTimes(1);
+    const [roomKey, message] = broadcastMessage.mock.calls[0]!;
+    expect(roomKey).toBe("dm:alice");
+    expect(message).toMatchObject({ convId: "store", entryId: String(rows[0]!.seq), speaker: { kind: "boss" }, text: "已完成授权" });
+    // 与 HTTP 发送同口径：广播附仅 UI 用的 roomMessageId（不入库），「排队中」占位据此贴真气泡。
+    expect(message.roomMessageId).toMatch(/^rm_/u);
+    expect(rows[0]).not.toHaveProperty("roomMessageId");
+  });
+
+  it("群聊 accept：库行广播带重建头部 @（@alice 已完成授权）", async () => {
+    seedEmployee("alice");
+    seedGroup("yt", ["alice"]);
+    const { store, messages, broadcastMessage, deps } = setup();
+    const request = store.add({ agentId: "alice", roomKey: "group:yt", paths: [path.join(root, "x")], reason: "r" });
+
+    await resolvePermissionRequest(deps, request.id, "accept");
+
+    const rows = messages.listByRoom("group:yt");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ projectId: "yt", fromId: "__boss", toIds: ["alice"], text: "已完成授权" });
+    expect(broadcastMessage).toHaveBeenCalledTimes(1);
+    expect(broadcastMessage.mock.calls[0]![1]).toMatchObject({ convId: "store", text: "@alice 已完成授权" });
   });
 
   it("reject：不写任何文件、投递「已拒绝授权」", async () => {
@@ -141,7 +187,7 @@ describe("授权请求处理", () => {
 
   it("投递失败：授权已生效、请求仍移除、返回 warning", async () => {
     seedEmployee("alice");
-    const { ws, store, port, broadcast, deps } = setup();
+    const { ws, store, port, broadcast, broadcastMessage, deps } = setup();
     port.submit = async () => {
       throw new Error("投递炸了");
     };
@@ -154,6 +200,7 @@ describe("授权请求处理", () => {
     expect(JSON.parse(fs.readFileSync(permissionFilePath(ws, "alice"), "utf8"))).toEqual([target]);
     expect(store.list()).toEqual([]);
     expect(broadcast).toHaveBeenCalledWith(request.id);
+    expect(broadcastMessage).not.toHaveBeenCalled(); // 没落库就没有库行可广播
   });
 });
 

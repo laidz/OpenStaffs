@@ -1,5 +1,8 @@
 import type { ChatMessage } from "../harness/port.ts";
+import { loadEmployee } from "../domain/employee.ts";
 import { BOSS_ID, leadingMentionLength, parseMentions } from "../domain/mention.ts";
+import type { Workspace } from "../domain/paths.ts";
+import { BOSS_PARTICIPANT, SYSTEM_PARTICIPANT, type StoredMessage } from "../store/row.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
 import type { Relation } from "./conversations.ts";
 
@@ -132,31 +135,60 @@ export function normalizeChatMessage(
   return undefined;
 }
 
-/** 合并各成员活跃会话的 transcript：按 entryId 排序；老板消息按 roomMessageId 去重取最小 entryId。 */
-export function mergeRoomMessages(
+/**
+ * 单条会话的原文视图：会话 transcript 直接归一化（**不合并、不去重**）；合成条目（pi.compaction 等）跳过。
+ * 「某条会话的原文」端点专用——房间视图已改读自有库（见 toRoomMessage）。
+ */
+export function roomMessagesOfTranscript(
   roomKey: string,
-  members: MemberTranscript[],
+  member: MemberTranscript,
   memberIds: string[] = [],
   bossNames: string[] = ["老板", "boss"],
 ): RoomMessage[] {
-  const all: RoomMessage[] = [];
-  for (const member of members) {
-    for (const chat of member.messages) {
-      const message = normalizeChatMessage(roomKey, member, chat, memberIds, bossNames);
-      if (message !== undefined) all.push(message);
-    }
+  const out: RoomMessage[] = [];
+  for (const chat of member.messages) {
+    const message = normalizeChatMessage(roomKey, member, chat, memberIds, bossNames);
+    if (message !== undefined) out.push(message);
   }
-  const deduped = new Map<string, RoomMessage>();
-  const plain: RoomMessage[] = [];
-  for (const message of all) {
-    if (message.roomMessageId === undefined) {
-      plain.push(message);
-      continue;
-    }
-    const existing = deduped.get(message.roomMessageId);
-    if (existing === undefined || Number(message.entryId) < Number(existing.entryId)) {
-      deduped.set(message.roomMessageId, message);
-    }
+  return out;
+}
+
+/** 员工 alias 项；未给工作区 / 取不到 → 空对象（不带 alias，也不抛）。 */
+function aliasOf(ws: Workspace | undefined, id: string): { alias?: string } {
+  if (ws === undefined) return {};
+  try {
+    const alias = loadEmployee(ws, id).alias;
+    return alias === undefined ? {} : { alias };
+  } catch {
+    return {};
   }
-  return [...plain, ...deduped.values()].sort((a, b) => Number(a.entryId) - Number(b.entryId));
+}
+
+/**
+ * 自有库一行 → 房间消息（UI 形态，RoomMessage 不变，故 pins / web / 去重链路零改动）。
+ * - 键：convId="store"、entryId=String(seq) → `"store:<seq>"`（seq 全局单调，全库唯一）。旧 `convId:entryId`
+ *   pin 键失效属 D30 允许的破坏性更新（不做迁移）。
+ * - 群聊按 toIds 重建头部 @（spec §13：text 已剥离头部，展示时由收件人重建）；私聊不加头。
+ * - speaker：`__boss` / `__system` → 老板形态（系统消息也按老板显示，不引入第三种 speaker）；否则员工 + alias。
+ * - bossDirected：私聊恒 true；群聊看 toIds 是否含 `__boss`。
+ * - 不带 roomMessageId（那是「排队中」的 UI 概念，由 outbox / SSE 那条链路单独携带）。
+ */
+export function toRoomMessage(stored: StoredMessage, bossName: string, ws?: Workspace): RoomMessage {
+  const isGroup = stored.room.startsWith("group:");
+  const nameOf = (id: string): string =>
+    id === BOSS_PARTICIPANT ? bossName : id === SYSTEM_PARTICIPANT ? "系统" : id;
+  // 群聊按 toIds 逐人重建头部 @ 块（与发送侧 `stripLeadingMentions` 严格互逆，多人也要各自带 @）。
+  const text = isGroup && stored.toIds.length > 0 ? `${stored.toIds.map((id) => `@${nameOf(id)}`).join(" ")} ${stored.text}` : stored.text;
+  const speaker: RoomSpeaker =
+    stored.fromId === BOSS_PARTICIPANT || stored.fromId === SYSTEM_PARTICIPANT
+      ? { kind: "boss" }
+      : { kind: "employee", id: stored.fromId, ...aliasOf(ws, stored.fromId) };
+  return {
+    convId: "store",
+    entryId: String(stored.seq),
+    roomKey: stored.room,
+    speaker,
+    text,
+    bossDirected: isGroup ? stored.toIds.includes(BOSS_PARTICIPANT) : true,
+  };
 }

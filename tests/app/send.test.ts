@@ -5,6 +5,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom, triggerFromGroupReply } from "../../src/app/send.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
+import { openMessageStore } from "../../src/store/messages.ts";
+
+/** 每个用例一个独立的自有消息库文件（与临时空间夹具同源）。 */
+const storeDirs: string[] = [];
+function tempStore() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "os-store-"));
+  storeDirs.push(dir);
+  return openMessageStore(path.join(dir, "m.db"));
+}
+afterEach(() => {
+  for (const dir of storeDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-send-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -149,6 +161,120 @@ describe("发送编排", () => {
     expect(rids).toEqual(new Set([both.roomMessageId]));
   });
 
+  it("群聊一次 @ 两人：落一行、toIds 两人、text 已剥离 @", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("seo", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
+      const rows = store.listByRoom("group:seo");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.fromId).toBe("__boss");
+      expect(rows[0]!.toIds).toEqual(["alice", "bob"]);
+      expect(rows[0]!.text).toBe("开工");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("私聊：落一行、projectId 为 null、toIds 只该员工、text 已剥离 @", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@老板 在吗", { queue: new KeyedQueue(), store });
+      const rows = store.listByRoom("dm:alice");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.projectId).toBeNull();
+      expect(rows[0]!.fromId).toBe("__boss");
+      expect(rows[0]!.toIds).toEqual(["alice"]);
+      expect(rows[0]!.text).toBe("在吗");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("群聊 @ 到成员 + 老板：落一行、toIds 保留 __boss（头部 @ 据此重建）、text 已剥离", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("seo", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @老板 开工", { queue: new KeyedQueue(), store });
+      const rows = store.listByRoom("group:seo");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.fromId).toBe("__boss");
+      expect(rows[0]!.toIds).toEqual(["alice", "__boss"]);
+      expect(rows[0]!.text).toBe("开工");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("空正文不落库（私聊只剩 @ 前缀，剥完为空）：不落行", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      const result = await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
+      expect(result.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
+      expect(store.listByRoom("dm:alice")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("不传 store：不落库（行为与既有完全一致）、recorded 为 undefined", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("seo", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      const result = await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue() });
+      expect(result.deliveries.map((d) => d.memberId).sort()).toEqual(["alice", "bob"]);
+      expect(result.recorded).toBeUndefined();
+      expect(store.listByRoom("group:seo")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("传 store：返回值带回刚落的行（recorded），供调用方广播库行；只落 1 行（N 份投递不落 N 行）", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("seo", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      const result = await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
+      const rows = store.listByRoom("group:seo");
+      expect(rows).toHaveLength(1);
+      expect(result.recorded).toBeDefined();
+      expect(result.recorded).toEqual(rows[0]);
+      expect(result.recorded!.seq).toBe(rows[0]!.seq);
+      expect(result.recorded!.room).toBe("group:seo");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("空正文（剥头后为空）：不落行，recorded 为 undefined", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    try {
+      const result = await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
+      expect(result.recorded).toBeUndefined();
+      expect(store.listByRoom("dm:alice")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("群聊不 @ 到任何成员（含只 @老板）：抛 NoTargetsError，不 submit", async () => {
     seedEmployee("alice");
     seedGroup("yt", ["alice"]);
@@ -237,6 +363,31 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     expect(data.author).toBe("alice");
     expect(data.source).toBe("conv-a:42");
     expect(port.submits[0]!.meta?.requestId).toBe("mention:conv-a:42");
+  });
+
+  it("不落库：触发副本不再是「一次投递」的记录（同一句话由 pump 的 message 分支落一行）", async () => {
+    seedEmployee("alice", "爱丽丝");
+    seedEmployee("bob");
+    seedGroup("yt", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const port = new FakePort();
+    const store = tempStore();
+    try {
+      const reports = await triggerFromGroupReply(ws, port, {
+        queue: new KeyedQueue(),
+        defaults,
+        project: "yt",
+        senderId: "alice",
+        convId: "conv-a",
+        entryId: "42",
+        text: "@bob 请评审框架",
+      });
+      expect(reports.map((r) => r.memberId)).toEqual(["bob"]);
+      expect(port.submits).toHaveLength(1);
+      expect(store.listByRoom("group:yt")).toEqual([]);
+    } finally {
+      store.close();
+    }
   });
 
   it("无 alias 用 id 标注；无 @ 开头 / 只 @老板 / @非成员 / 只 @自己 → 不投递", async () => {

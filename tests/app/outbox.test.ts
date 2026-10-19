@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Outbox, queuedItemView, newRoomMessageId } from "../../src/app/outbox.ts";
 
 function delivery(submissionId: string, roomKey: string, roomMessageId: string, memberId = "alice") {
-  return { submissionId, roomKey, memberId, roomMessageId, text: `给 ${memberId} 的话`, convId: `conv-${submissionId}` };
+  return { submissionId, roomKey, memberId, roomMessageId, text: `给 ${memberId} 的话`, convId: `conv-${submissionId}`, storeSeq: 0 };
 }
 
 describe("待发表（Outbox）", () => {
@@ -53,6 +53,17 @@ describe("待发表（Outbox）", () => {
       roomMessageId: "rm_1",
       text: "给 alice 的话",
     });
+  });
+
+  it("roomMessageIdByStoreSeq：本房间仍在排队的库行 seq → roomMessageId；他房 / 未排队不入表", () => {
+    const outbox = new Outbox();
+    outbox.add({ ...delivery("s1", "dm:alice", "rm_1"), storeSeq: 7 });
+    outbox.add({ ...delivery("s2", "group:yt", "rm_2"), storeSeq: 9 });
+    expect([...outbox.roomMessageIdByStoreSeq("dm:alice")]).toEqual([[7, "rm_1"]]);
+    expect(outbox.roomMessageIdByStoreSeq("dm:bob").size).toBe(0);
+    // 出队后不再回填（真气泡已落库）
+    outbox.take("s1");
+    expect(outbox.roomMessageIdByStoreSeq("dm:alice").size).toBe(0);
   });
 
   it("newRoomMessageId：rm_ 前缀且不重复", () => {

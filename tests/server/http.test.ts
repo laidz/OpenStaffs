@@ -6,12 +6,17 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
+import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
 import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { Outbox } from "../../src/app/outbox.ts";
+import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import type { QueuedItemView } from "../../src/app/outbox.ts";
+import type { RoomMessage } from "../../src/app/rooms.ts";
+import { messagesHtml } from "../../web/render.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
+import { Pump } from "../../src/server/pump.ts";
 import type { WorkspaceConfig } from "../../src/domain/config.ts";
 import { PermissionRequestStore } from "../../src/domain/permission-requests.ts";
 
@@ -21,14 +26,26 @@ fs.mkdirSync(publicDir, { recursive: true });
 fs.writeFileSync(path.join(publicDir, "index.html"), "<html>Office</html>");
 fs.writeFileSync(path.join(root, "secret.txt"), "top-secret");
 
+// 接线前提（对齐 main.ts）：stateDir 先建，库实例注入 HTTP；每个用例一套，afterEach 关闭并清目录。
+let messageStore: MessageStore | undefined;
+function getStore(): MessageStore {
+  if (messageStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    messageStore = openMessageStore(messagesDbFile(createWorkspace(root)));
+  }
+  return messageStore;
+}
+
 afterEach(() => {
+  messageStore?.close();
+  messageStore = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(root, ".openstaffs"), { recursive: true, force: true });
 });
 
-function start(deps: ServerDeps): Promise<{ base: string; close: () => Promise<void> }> {
-  const server = createHttpServer(deps);
+function start(deps: Omit<ServerDeps, "store">): Promise<{ base: string; close: () => Promise<void> }> {
+  const server = createHttpServer({ ...deps, store: getStore() });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -152,7 +169,7 @@ async function startWithFaux(
   employeeIds: string[],
   groupMembers: string[],
   options: { bossName?: string; thinkingLevel?: string; reasoning?: boolean } = {},
-): Promise<{ base: string; close: () => Promise<void>; store: PermissionRequestStore }> {
+): Promise<{ base: string; close: () => Promise<void>; store: PermissionRequestStore; events: ServerEvent[] }> {
   for (const id of employeeIds) {
     const dir = path.join(root, "agents", id);
     fs.mkdirSync(dir, { recursive: true });
@@ -186,7 +203,16 @@ async function startWithFaux(
   await harness.open();
   const ws = createWorkspace(root);
   const store = new PermissionRequestStore(ws);
-  const server = createHttpServer({ ws, getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319, permissionRequests: store });
+  // 房间视图改读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
+  // hub 收事件（断言「谁写谁广播」的广播条数与库行键）。
+  const events: ServerEvent[] = [];
+  const hub = {
+    broadcast: (event: ServerEvent) => events.push(event),
+    add: () => ({ pending: 0, close: () => {} }),
+    size: 0,
+  } as unknown as SseHub;
+  const pump = new Pump({ ws, harness, hub, store: getStore() });
+  const server = createHttpServer({ ws, store: getStore(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319, permissionRequests: store, pump, hub });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
@@ -196,6 +222,7 @@ async function startWithFaux(
       await harness.close();
     },
     store,
+    events,
   };
 }
 
@@ -227,7 +254,7 @@ describe("房间 API", () => {
         const body = (await res.json()) as { messages: { speaker: unknown; text: string; roomMessageId?: string }[] };
         return body.messages.some((m) => (m.speaker as { kind?: string }).kind === "employee") ? body : undefined;
       });
-      expect(merged.messages[0]).toMatchObject({ speaker: { kind: "boss" }, text: "你好", roomMessageId: accepted.roomMessageId });
+      expect(merged.messages[0]).toMatchObject({ speaker: { kind: "boss" }, text: "你好" });
       expect(merged.messages[1]).toMatchObject({ speaker: { kind: "employee", id: "alice", alias: "爱丽丝" }, text: "收到0" });
     } finally {
       await close();
@@ -281,6 +308,60 @@ describe("房间 API", () => {
     }
   });
 
+  it("群聊 @alice @bob：写路径恰广播 1 条库行（store:<seq>），不再按成员会话 N 份回显", async () => {
+    const { base, close, events } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
+    try {
+      const post = await fetch(`${base}/api/rooms/group:yt/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "@alice @bob 全体汇报" }),
+      });
+      expect(post.status).toBe(202);
+
+      await waitFor(async () => (events.some((e) => e.type === "room.message" && e.message.speaker.kind === "boss") ? true : undefined));
+      // 「谁写谁广播」：老板一句 @ 多人 = 1 行 = 1 条广播（旧行为是每个成员会话各回显一条 room.message）。
+      const bossEvents = events.filter((e) => e.type === "room.message" && e.message.speaker.kind === "boss");
+      expect(bossEvents).toHaveLength(1);
+      const seq = getStore().listByRoom("group:yt")[0]!.seq;
+      const broadcast = bossEvents[0];
+      if (broadcast?.type !== "room.message") throw new Error("缺少老板广播");
+      // 键与 GET 房间视图 / pin 校验同源（store:<seq>），不是 conv:entry（否则 pin 404）。
+      expect(broadcast.message.convId).toBe("store");
+      expect(broadcast.message.entryId).toBe(String(seq));
+      expect(broadcast.message.text).toBe("@alice @bob 全体汇报");
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("老板库行广播附 UI 用 roomMessageId（排队占位据此贴真气泡）；GET 房间视图不带", async () => {
+    const { base, close, events } = await startWithFaux(["alice"], []);
+    try {
+      const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "第一句" }),
+      });
+      expect(post.status).toBe(202);
+      const accepted = (await post.json()) as { roomMessageId: string };
+
+      // 广播先于响应：此刻已有老板库行广播。
+      const broadcast = events.find((event) => event.type === "room.message" && event.message.speaker.kind === "boss");
+      if (broadcast?.type !== "room.message") throw new Error("缺少老板广播");
+      // R-P1-11：roomMessageId 不入库；广播时附一个仅 UI 用的副本，
+      // 让 web 的「排队中」占位（web/render.ts 按 roomMessageId 匹配）能贴到这条真气泡上。
+      expect(broadcast.message.roomMessageId).toBe(accepted.roomMessageId);
+      expect(broadcast.message.entryId).toBe("1");
+
+      // GET 返回的是库行：刷新后排队条已消失，无需匹配 → 不带 roomMessageId。
+      const view = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string; roomMessageId?: string }[] };
+      expect(view.messages[0]).toMatchObject({ text: "第一句" });
+      expect(view.messages[0]!.roomMessageId).toBeUndefined();
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
   it("新开会话（发送时 newSession）：投递那一刻才建会话、视线随之清空；sessions / 历史 / pins 形状", async () => {
     const { base, close } = await startWithFaux(["alice"], ["alice"]);
     try {
@@ -317,10 +398,20 @@ describe("房间 API", () => {
       });
       expect(fresh.status).toBe(202);
 
-      const after = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string; convId: string }[] };
-      expect(after.messages[0]!.text).toBe("重新开始");
-      expect(after.messages[0]!.convId).not.toBe(firstConv);
-      expect(after.messages.some((m) => m.text === "第一轮")).toBe(false); // 新会话视线里没有旧内容
+      // 房间视图改读自有库 → 它是「房间历史」：新开会话不再清空它（会话视线改由 sessions/<convId>/messages 承载）。
+      const roomView = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[] };
+      expect(roomView.messages.map((m) => m.text)).toContain("第一轮"); // 历史保留（自有库）
+      expect(roomView.messages.map((m) => m.text)).toContain("重新开始");
+
+      // 会话视线：链增长到 2 条，新会话里没有旧内容、只有新一轮
+      const chainsAfter = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
+      const rows = chainsAfter.chains[0]!.rows;
+      expect(rows).toHaveLength(2);
+      const freshConv = rows.at(-1)!.id;
+      expect(freshConv).not.toBe(firstConv);
+      const freshView = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${freshConv}/messages`)).json()) as { messages: { text: string }[] };
+      expect(freshView.messages.map((m) => m.text)).toContain("重新开始");
+      expect(freshView.messages.some((m) => m.text === "第一轮")).toBe(false); // 新会话视线里没有旧内容
 
       const history = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${firstConv}/messages`)).json()) as { memberId: string; messages: unknown[] };
       expect(history.memberId).toBe("alice");
@@ -547,13 +638,17 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
+    // 房间视图改读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
+    const pump = new Pump({ ws, harness, hub, store: getStore() });
     const server = createHttpServer({
       ws,
+      store: getStore(),
       getConfig: () => configured,
       getHarness: () => harness,
       queue: new KeyedQueue(),
       outbox: new Outbox(),
       hub,
+      pump,
       publicDir,
       port: 4319,
     });
@@ -603,10 +698,10 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
         text: "第二条",
       });
 
-      // 消息区拿得到排队态（刷新 / 换标签页一致）
+      // 消息区拿得到排队态（刷新 / 换标签页一致）；老板消息发送即落自有库 → 房间视图里也在
       const withQueued = await room(base);
       expect(withQueued.queued.map((item) => item.text)).toEqual(["第二条"]);
-      expect(withQueued.messages.map((m) => m.text)).not.toContain("第二条");
+      expect(withQueued.messages.map((m) => m.text)).toEqual(["第一轮", "第二条"]);
 
       // 单条撤回：撤掉这条消息里还没开始的投递，广播出队
       const cancel = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
@@ -621,16 +716,45 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
       const cleared = await room(base);
       expect(cleared.queued).toEqual([]);
 
-      // 撤回的输入绝不投递：放开第一轮后，链里只有第一轮与其回复
+      // 撤回的输入绝不投递：放开第一轮后，**会话 transcript** 里只有第一轮与其回复
+      // （自有库里那条老板行只是「发送记录」，不代表已投递）。
       release();
-      await waitFor(async () => {
-        const body = await room(base);
-        return body.messages.some((m) => m.text === "第一轮回复") ? body : undefined;
-      });
+      await waitFor(async () => ((await room(base)).messages.some((m) => m.text === "第一轮回复") ? true : undefined));
+      const chains = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
+      const convId = chains.chains[0]!.rows.at(-1)!.id;
+      const history = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/messages`)).json()) as { messages: { text: string }[] };
+      expect(history.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复"]);
       const after = await room(base);
-      expect(after.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复"]);
       expect(after.queued).toEqual([]);
     } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("GET 房间：仍在排队的库行回填 roomMessageId（与 SSE 同口径），渲染不出重复气泡", async () => {
+    const { base, close, release } = await startQueued();
+    try {
+      await post(base, { text: "第一轮" });
+      const second = await post(base, { text: "第二条" });
+      const accepted = (await second.json()) as { roomMessageId: string; deliveries: { status: string }[] };
+      expect(accepted.deliveries[0]!.status).toBe("queued"); // 员工在跑 → 该条投递仍在排队
+
+      const view = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as {
+        messages: RoomMessage[];
+        pinned: string[];
+        queued: QueuedItemView[];
+      };
+      // F1：刷新 / 换标签页 / 首次进房走 GET，仍在排队的库行要回填 roomMessageId（此前不带 →
+      // 真气泡 + `msg boss queued` 灰占位两条）；没有排队的库行（第一轮已投递）不带。
+      expect(view.messages.find((m) => m.text === "第二条")!.roomMessageId).toBe(accepted.roomMessageId);
+      expect(view.messages.find((m) => m.text === "第一轮")!.roomMessageId).toBeUndefined();
+
+      // 等价断言：拿 GET 载荷交给 UI 渲染，老板气泡恰两个（第一轮 + 第二条），无独立灰占位。
+      const html = messagesHtml(view.messages, "老板", view.pinned, view.queued);
+      expect(html.match(/class="msg boss/g)).toHaveLength(2);
+      expect(html).not.toContain('class="msg boss queued"');
+    } finally {
+      release(); // 放行卡住的第一轮，否则 harness.close() 挂着
       await close();
     }
   }, 30_000);

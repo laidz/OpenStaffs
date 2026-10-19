@@ -4,15 +4,31 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
+import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
 import { openGroup, sessionChains } from "../../src/app/conversations.ts";
-import { mergeRoomMessages, type MemberTranscript } from "../../src/app/rooms.ts";
+import { toRoomMessage } from "../../src/app/rooms.ts";
+import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-trigger-"));
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+// 接线前提（对齐 main.ts）：stateDir 先建；每个用例一套库，afterEach 关闭后再删目录。
+let store: MessageStore | undefined;
+function getStore(): MessageStore {
+  if (store === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    store = openMessageStore(messagesDbFile(createWorkspace(root)));
+  }
+  return store;
+}
+
+afterEach(() => {
+  store?.close();
+  store = undefined;
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 function seedEmployee(id: string): void {
   const dir = path.join(root, "agents", id);
@@ -53,7 +69,7 @@ describe("群回复 @触发（pump 集成）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub });
+    const pump = new Pump({ ws, harness, hub, store: getStore() });
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
@@ -87,17 +103,9 @@ describe("群回复 @触发（pump 集成）", () => {
         ).toBe(true);
       }
 
-      // 房间合并视图：原回复只出现一次（触发副本不显示）；没写 @ 的回复被补 @老板
-      const chains = sessionChains(ws, { kind: "group", project: "yt" });
-      const transcripts: MemberTranscript[] = [];
-      for (const chain of chains) {
-        const active = chain.rows.filter((row) => row.ended === null).at(-1);
-        if (active === undefined) continue;
-        transcripts.push({ memberId: chain.memberId, convId: active.id, messages: await harness.transcript(active.id) });
-      }
-      const merged = mergeRoomMessages("group:yt", transcripts, ["alice", "bob", "carol"]);
+      // 房间合并视图（自有库）：原回复只出现一份（触发副本不落库）；没写 @ 的回复补 @老板
+      const merged = getStore().listByRoom("group:yt").map((m) => toRoomMessage(m, "老板"));
       expect(merged.map((m) => m.text)).toEqual([
-        "请安排一下收尾",
         "@bob @carol 都来收尾",
         "@老板 收到！",
         "@老板 收到！",
@@ -130,7 +138,7 @@ describe("群回复 @触发（pump 集成）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub });
+    const pump = new Pump({ ws, harness, hub, store: getStore() });
     try {
       const aliceConv = await openGroup(ws, harness, "yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });

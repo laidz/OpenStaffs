@@ -25,15 +25,18 @@ describe("前端状态归约", () => {
     expect(state.bossName).toBe("掌柜");
   });
 
-  it("room.message 增量合并：幂等（复合键/roomMessageId 双去重）、保持排序", () => {
+  it("room.message 增量合并：只按消息键去重（幂等）、保持排序；不再按 roomMessageId 去重", () => {
     let state = inRoom();
-    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("10", "c1", "boss", "任务", "rm_1") } });
-    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("11", "c1", "employee", "回答") } });
-    // 重复投递：应被忽略
-    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("10", "c1", "boss", "任务", "rm_1") } });
-    // 其他成员会话的同一次多投递副本：也应被忽略（roomMessageId 已见）
-    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("12", "c2", "boss", "任务", "rm_1") } });
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("10", "store", "boss", "任务", "rm_1") } });
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("11", "store", "employee", "回答") } });
+    // 重复投递同一条（同键 store:<seq>）：应被忽略
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("10", "store", "boss", "任务", "rm_1") } });
     expect(state.messages.map((m) => m.entryId)).toEqual(["10", "11"]);
+
+    // 消息真相已归自有库（一次投递 = 一行 = 唯一键），roomMessageId 只服务「排队中」占位匹配（web/render.ts），
+    // 不再是读侧去重依据：键不同就是不同消息。
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("12", "store", "boss", "另一条", "rm_1") } });
+    expect(state.messages.map((m) => m.entryId)).toEqual(["10", "11", "12"]);
   });
 
   it("delta 聚合到 live 气泡；员工正式消息到达后清除 live", () => {

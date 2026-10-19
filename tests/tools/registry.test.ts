@@ -4,12 +4,14 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, type Workspace } from "../../src/domain/paths.ts";
+import { createWorkspace, messagesDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { openDm, openGroup } from "../../src/app/conversations.ts";
+import type { RoomMessage } from "../../src/app/rooms.ts";
+import { openMessageStore } from "../../src/store/messages.ts";
 import { openStaffsToolDefs, type ToolContext } from "../../src/tools/registry.ts";
 import type { Relation } from "../../src/domain/types.ts";
 
@@ -48,6 +50,30 @@ function ctxFor(ws: Workspace, selfId: string, relation: Relation, harness = {} 
   return { ws, harness, selfId, relation };
 }
 
+/** 往自有消息库塞行（room_history 读库）：先建 stateDir，开库写完即关。 */
+function seedStore(
+  ws: Workspace,
+  rows: { projectId: string | null; fromId: string; toIds: string[]; text: string }[],
+): void {
+  fs.mkdirSync(stateDir(ws), { recursive: true });
+  const store = openMessageStore(messagesDbFile(ws));
+  try {
+    for (const row of rows) store.append({ sendTime: new Date().toISOString(), ...row });
+  } finally {
+    store.close();
+  }
+}
+
+/** 读自有库某房间的行（写完即关；调用方保证 stateDir 已存在）。 */
+function rowsOf(ws: Workspace, room: string) {
+  const store = openMessageStore(messagesDbFile(ws));
+  try {
+    return store.listByRoom(room);
+  } finally {
+    store.close();
+  }
+}
+
 const dm = (employeeId: string): Relation => ({ kind: "dm", employeeId });
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -83,27 +109,22 @@ describe("member_profile", () => {
 });
 
 describe("room_history", () => {
-  it("读指定房间的合并记录，标注发言人", async () => {
+  it("读指定房间的历史（自有库），群聊按 toIds 重建头部 @、标注发言人", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
     seedProject("demo", ["alice", "bob"], "演示项目");
     const ws = createWorkspace(root);
-    const harness = fauxHarness();
-    await harness.open();
-    try {
-      const aliceConv = await openGroup(ws, harness, "demo", "alice");
-      await harness.submit(aliceConv, "任务X", { kind: "chat.message", data: { author: "boss" } });
-      await waitFor(async () => (await harness.transcript(aliceConv)).some((m) => m.role === "assistant"));
-      const out = await tool("room_history").run({ room: "group:demo" }, ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness));
-      expect(out).toContain("老板：任务X");
-      // 没以 @ 开头的群回复：显示层补 @老板（第三人回看历史时不会误读为自己）
-      expect(out).toContain("alice：@老板 答0");
-    } finally {
-      await harness.close();
-    }
+    seedStore(ws, [
+      { projectId: "demo", fromId: "__boss", toIds: ["alice"], text: "任务X" },
+      { projectId: "demo", fromId: "alice", toIds: ["__boss"], text: "答0" },
+    ]);
+    const out = await tool("room_history").run({ room: "group:demo" }, ctxFor(ws, "alice", { kind: "group", project: "demo" }));
+    // 群聊展示时由收件人重建头部 @（任务X 是 @alice 的）
+    expect(out).toContain("老板：@alice 任务X");
+    expect(out).toContain("alice：@老板 答0");
   });
 
-  it("room 缺省 = 当前房间；非法键报错", async () => {
+  it("limit 取最近若干条；room 缺省 = 当前房间；非法键报错", async () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const harness = fauxHarness();
@@ -112,8 +133,26 @@ describe("room_history", () => {
       const out = await tool("room_history").run({}, ctxFor(ws, "alice", dm("alice"), harness));
       expect(out).toBe("（暂无消息）");
       await expect(tool("room_history").run({ room: "bogus" }, ctxFor(ws, "alice", dm("alice"), harness))).rejects.toThrow("房间键");
+
+      seedStore(ws, [
+        { projectId: null, fromId: "__boss", toIds: ["alice"], text: "一" },
+        { projectId: null, fromId: "alice", toIds: ["__boss"], text: "二" },
+        { projectId: null, fromId: "__boss", toIds: ["alice"], text: "三" },
+      ]);
+      expect(await tool("room_history").run({ limit: 2 }, ctxFor(ws, "alice", dm("alice"), harness))).toBe("alice：二\n老板：三");
     } finally {
       await harness.close();
+    }
+  });
+
+  it("`.openstaffs` 尚未创建（stateDir 不存在）→ 返回「（暂无消息）」，不抛「unable to open database file」", async () => {
+    const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-tools-nostate-"));
+    try {
+      expect(fs.existsSync(stateDir(createWorkspace(freshRoot)))).toBe(false);
+      const out = await tool("room_history").run({}, ctxFor(createWorkspace(freshRoot), "alice", dm("alice")));
+      expect(out).toBe("（暂无消息）");
+    } finally {
+      fs.rmSync(freshRoot, { recursive: true, force: true });
     }
   });
 });
@@ -171,6 +210,100 @@ describe("send_message", () => {
   it("无法识别的 target → 报错", async () => {
     seedEmployee("alice");
     await expect(tool("send_message").run({ target: "wat", text: "x" }, ctxFor(createWorkspace(root), "alice", dm("alice")))).rejects.toThrow("target");
+  });
+
+  it("target=boss：落一行到 dm:<自己>（不是 dm:）并广播库行（键 store:<seq>）", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    seedStore(ws, []); // 建 stateDir（openMessageStore 不建父目录）
+    const harness = fauxHarness();
+    await harness.open();
+    const broadcasts: { roomKey: string; message: RoomMessage }[] = [];
+    try {
+      const ctx = { ...ctxFor(ws, "alice", dm("alice"), harness), broadcast: (roomKey: string, message: RoomMessage) => broadcasts.push({ roomKey, message }) };
+      await tool("send_message").run({ target: "boss", text: "@老板 汇报进展" }, ctx);
+
+      const rows = rowsOf(ws, "dm:alice");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ room: "dm:alice", projectId: null, fromId: "alice", toIds: ["__boss"], text: "汇报进展" });
+      expect(rows[0]!.room).not.toBe("dm:"); // 私聊房间必须带上自己（不得退化成 dm:）
+
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]!.roomKey).toBe("dm:alice");
+      expect(broadcasts[0]!.message).toMatchObject({
+        convId: "store",
+        entryId: String(rows[0]!.seq),
+        speaker: { kind: "employee", id: "alice" },
+        text: "汇报进展",
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("target=member：在群房间落一行并广播库行", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedProject("demo", ["alice", "bob"], "演示项目");
+    const ws = createWorkspace(root);
+    seedStore(ws, []);
+    const harness = fauxHarness();
+    await harness.open();
+    const broadcasts: { roomKey: string; message: RoomMessage }[] = [];
+    try {
+      const ctx = { ...ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness), broadcast: (roomKey: string, message: RoomMessage) => broadcasts.push({ roomKey, message }) };
+      await tool("send_message").run({ target: "member:bob", text: "@bob 帮我看下" }, ctx);
+
+      const rows = rowsOf(ws, "group:demo");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ room: "group:demo", projectId: "demo", fromId: "alice", toIds: ["bob"], text: "帮我看下" });
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]!.roomKey).toBe("group:demo");
+      expect(broadcasts[0]!.message).toMatchObject({ convId: "store", entryId: String(rows[0]!.seq), text: "@bob 帮我看下" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("target=project：在该项目群房间落一行（toIds 空，不伪造收件人）并广播库行", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedProject("demo", ["alice", "bob"], "演示项目");
+    const ws = createWorkspace(root);
+    seedStore(ws, []);
+    const harness = fauxHarness();
+    await harness.open();
+    const broadcasts: { roomKey: string; message: RoomMessage }[] = [];
+    try {
+      const ctx = { ...ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness), broadcast: (roomKey: string, message: RoomMessage) => broadcasts.push({ roomKey, message }) };
+      await tool("send_message").run({ target: "project:demo", text: "同步一下进度" }, ctx);
+
+      const rows = rowsOf(ws, "group:demo");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ room: "group:demo", projectId: "demo", fromId: "alice", toIds: [], text: "同步一下进度" });
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]!.roomKey).toBe("group:demo");
+      expect(broadcasts[0]!.message).toMatchObject({ convId: "store", entryId: String(rows[0]!.seq), text: "同步一下进度" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("空正文（剥头后为空）不落行、不广播", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    seedStore(ws, []);
+    const harness = fauxHarness();
+    await harness.open();
+    const broadcasts: unknown[] = [];
+    try {
+      const ctx = { ...ctxFor(ws, "alice", dm("alice"), harness), broadcast: (roomKey: string, message: RoomMessage) => broadcasts.push({ roomKey, message }) };
+      await tool("send_message").run({ target: "boss", text: "@老板" }, ctx);
+      expect(rowsOf(ws, "dm:alice")).toEqual([]);
+      expect(broadcasts).toEqual([]);
+    } finally {
+      await harness.close();
+    }
   });
 });
 
@@ -276,9 +409,7 @@ describe("称谓消费", () => {
       const out = await tool("send_message").run({ target: "boss", text: "汇报一下" }, ctxFor(ws, "alice", dm("alice"), harness));
       expect(out).toContain("掌柜");
 
-      const dmConv = await openDm(ws, harness, "alice");
-      await harness.submit(dmConv, "任务Y", { kind: "chat.message", data: { author: "boss" } });
-      await waitFor(async () => (await harness.transcript(dmConv)).some((m) => m.role === "assistant"));
+      seedStore(ws, [{ projectId: null, fromId: "__boss", toIds: ["alice"], text: "任务Y" }]);
       const history = await tool("room_history").run({}, ctxFor(ws, "alice", dm("alice"), harness));
       expect(history).toContain("掌柜：任务Y");
     } finally {

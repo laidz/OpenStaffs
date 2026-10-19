@@ -7,15 +7,16 @@ import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { employeeDir, projectDir, type Workspace } from "../domain/paths.ts";
-import { mergeRoomMessages, parseRoomKey } from "../app/rooms.ts";
-import { pinCounts, readPins, setPin } from "../app/pins.ts";
+import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage } from "../app/rooms.ts";
+import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  findSessionOwner, interruptRoom, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults, type Relation,
+  findSessionOwner, interruptRoom, roomSessionInfo, sessionChains, sessionDefaults, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView, resolvePermissionRequest, PermissionRequestNotFoundError } from "../app/permission-flow.ts";
+import type { MessageStore } from "../store/messages.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { SseHub } from "./sse.ts";
 
@@ -29,6 +30,8 @@ export type ServerDeps = {
   getConfig: () => WorkspaceConfig | undefined;
   getHarness: () => HarnessPort | undefined;
   queue: KeyedQueue;
+  /** 自有消息库（P1）：全进程唯一实例，由 main.ts 创建并注入；老板发消息时落一行。 */
+  store: MessageStore;
   publicDir: string;
   /** 实际监听端口（启动参数 / config / 默认值解析后的结果）；status 展示用。 */
   port: number;
@@ -134,15 +137,23 @@ async function handleRooms(
   // 群聊归一化需要成员表（判定 @ 对象是否有效、决定“视为发给老板”的兜底）。
   const memberIds = relation.kind === "group" ? parseMembers(deps.ws, relation.project) : [];
   const bossNames = bossNamesFor(deps.ws);
+  const bossName = readBossName(deps.ws);
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
-    const members = await roomTranscripts(deps.ws, harness, relation);
-    const merged = mergeRoomMessages(roomKey, members, memberIds, bossNames);
+    // 房间视图改读自有消息库（P1）：一次投递 = 一行，按 seq 排序；不再合并各成员 transcript。
+    // 仍在排队的库行回填 roomMessageId（与 SSE 广播同口径）：刷新 / 换标签页 / 首次进房时，
+    // 前端「排队中」占位据此贴到真气泡上，不出「真气泡 + 灰占位」两条；没有排队的库行不带。
+    const queuedByStoreSeq = outbox.roomMessageIdByStoreSeq(roomKey);
+    const messages = deps.store.listByRoom(roomKey).map((m) => {
+      const view = toRoomMessage(m, bossName, deps.ws);
+      const roomMessageId = queuedByStoreSeq.get(m.seq);
+      return roomMessageId === undefined ? view : { ...view, roomMessageId };
+    });
     // pinned 只回当前视图里可见的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
     const pinnedKeys = new Set(readPins(deps.ws).pins[roomKey] ?? []);
-    const pinned = merged.filter((m) => pinnedKeys.has(`${m.convId}:${m.entryId}`)).map((m) => `${m.convId}:${m.entryId}`);
+    const pinned = messages.filter((m) => pinnedKeys.has(messageKey(m))).map(messageKey);
     // queued：还没投递给员工的老板消息（排队中）；刷新 / 重连 / 换标签页都能拿到真值。
-    json(res, 200, { roomKey, messages: merged, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
+    json(res, 200, { roomKey, messages, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
     return;
   }
 
@@ -158,19 +169,34 @@ async function handleRooms(
     try {
       const result = await sendToRoom(deps.ws, harness, relation, text, {
         queue: deps.queue,
+        store: deps.store,
         defaults,
         newSession,
         ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
         ...(requestId === undefined ? {} : { requestId }),
       });
+      // 老板发言的实时气泡：广播刚落的库行（键 store:<seq>，与 GET 房间视图 / pin 校验同源）。
+      // 不靠各成员会话回显（user 条目已不广播）→ 一句 N 投 = 1 条气泡，pin 也能点。
+      // 另附一个**仅 UI 用**的 roomMessageId 副本（不入库，R-P1-11）：前端「排队中」占位据此贴到这条真气泡上
+      // （web/render.ts 按 roomMessageId 匹配）。GET 返回的库行默认不带；但仍在排队的那条由 outbox 回填同一 roomMessageId
+      // （见 GET 分支），故刷新 / 换标签页也与实时广播同口径、不出重复气泡。
+      if (result.recorded !== undefined) {
+        deps.hub?.broadcast({
+          type: "room.message",
+          roomKey,
+          message: { ...toRoomMessage(result.recorded, bossName, deps.ws), roomMessageId: result.roomMessageId },
+        });
+      }
       for (const delivery of result.deliveries) {
         // 排队中（员工在跑）：记进待发表 + 广播，前端在消息区显示「排队中」并允许单条撤回。
+        // storeSeq 记下这次发送落的库行 seq：GET 房间时据此把排队标识贴回真气泡（无库行 = 0，永不命中）。
         if (delivery.status === "queued") {
           const item = outbox.add({
             submissionId: delivery.submissionId,
             roomKey,
             memberId: delivery.memberId,
             roomMessageId: result.roomMessageId,
+            storeSeq: result.recorded?.seq ?? 0,
             text: text.trim(),
             convId: delivery.convId,
           });
@@ -236,15 +262,14 @@ async function handleRooms(
       json(res, 400, { error: "convId / entryId / pinned 必填" });
       return;
     }
-    const members = await roomTranscripts(deps.ws, harness, relation);
-    const merged = mergeRoomMessages(roomKey, members, memberIds, bossNames);
+    const messages = deps.store.listByRoom(roomKey).map((m) => toRoomMessage(m, bossName, deps.ws));
     // 只允许 pin 房间视图里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
-    if (!merged.some((m) => m.convId === convId && m.entryId === entryId)) {
+    if (!messages.some((m) => m.convId === convId && m.entryId === entryId)) {
       json(res, 404, { error: "消息不存在" });
       return;
     }
     const state = setPin(deps.ws, roomKey, `${convId}:${entryId}`, body.pinned);
-    const count = pinCounts([{ key: roomKey, messages: merged }], state).rooms[roomKey] ?? 0;
+    const count = pinCounts([{ key: roomKey, messages }], state).rooms[roomKey] ?? 0;
     deps.hub?.broadcast({ type: "room.pins", roomKey, count });
     json(res, 200, { ok: true, count });
     return;
@@ -279,9 +304,9 @@ async function handleRooms(
     } catch {
       alias = undefined;
     }
-    const messages = mergeRoomMessages(roomKey, [
-      { memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId) },
-    ], memberIds, bossNames);
+    const messages = roomMessagesOfTranscript(roomKey, {
+      memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId),
+    }, memberIds, bossNames);
     json(res, 200, { convId, memberId: owner, messages });
     return;
   }
@@ -382,11 +407,13 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                     ws: deps.ws,
                     harness,
                     store,
+                    messages: deps.store,
                     queue: deps.queue,
                     defaults: sessionDefaults(config)!,
                     ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
                     ...(deps.pump === undefined ? {} : { register: (convId, ref) => deps.pump!.register(convId, ref) }),
                     ...(deps.hub === undefined ? {} : { broadcast: (rid) => deps.hub!.broadcast({ type: "permission.resolved", id: rid }) }),
+                    ...(deps.hub === undefined ? {} : { broadcastMessage: (roomKey, message) => deps.hub!.broadcast({ type: "room.message", roomKey, message }) }),
                   },
                   id,
                   decision,
@@ -403,15 +430,15 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             }
           }
           if (segments[1] === "pins" && method === "GET" && harness !== undefined) {
-            const bossNames = bossNamesFor(deps.ws);
-            const rooms: { key: string; messages: ReturnType<typeof mergeRoomMessages> }[] = [];
+            const bossName = readBossName(deps.ws);
+            const rooms: { key: string; messages: RoomMessage[] }[] = [];
             for (const employee of listEmployees(deps.ws)) {
               const key = `dm:${employee.id}`;
-              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "dm", employeeId: employee.id }), [], bossNames) });
+              rooms.push({ key, messages: deps.store.listByRoom(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
             }
             for (const project of listProjects(deps.ws)) {
               const key = `group:${project.id}`;
-              rooms.push({ key, messages: mergeRoomMessages(key, await roomTranscripts(deps.ws, harness, { kind: "group", project: project.id }), [], bossNames) });
+              rooms.push({ key, messages: deps.store.listByRoom(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
             }
             json(res, 200, pinCounts(rooms, readPins(deps.ws)));
             return;

@@ -94,8 +94,13 @@ function renderDynamic(event: UiEvent): void {
 }
 
 /**
- * 出队（投递开始）后的兜底：待发占位撤下时，真气泡可能还没到（服务端 pump 订阅晚于提交 / 事件丢失）。
- * 重拉当前房间补齐——已经有这条消息的话重喂会被去重，零副作用。
+ * 出队（投递开始）后的兜底：**诚实结论——当前不可达**。
+ * 时序：`dispatch` 先 `reduce` 再 `renderDynamic`；而 `room.dequeued` 的 reducer 分支
+ * （web/state.ts）已把该项从 `state.queued` 移除 → 这里 `find` 必为 `undefined` → 提前 return，
+ * 其后的 roomMessageId 比对与重拉（`syncRoomMessages`）**从不执行**（该时序问题非本 diff 引入，属既有代码）。
+ * 等价保障（不依赖本分支）：① 写路径「谁写谁广播」——发言落库后即以 `room.message` 推达库行
+ * （老板侧附**仅 UI 用**的 roomMessageId 副本），真气泡据此出现；② 进房间 / 重连时 `GET /messages` 全量重拉。
+ * 代码保留不动：修正时序（让 reducer 保留该项后再判）属既有 `reduce`→`renderDynamic` 顺序的重构，不在本任务范围。
  */
 async function syncAfterDelivered(roomKey: string, submissionId: string): Promise<void> {
   if (state.roomKey !== roomKey) return;

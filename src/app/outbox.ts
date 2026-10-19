@@ -10,6 +10,13 @@ export type QueuedDelivery = {
   roomMessageId: string;
   text: string;
   convId: string;
+  /**
+   * 这次发送对应的库行 seq（`sendToRoom` 落库那一行）。
+   * GET 房间视图据此把仍在排队的库行回填 roomMessageId —— 与 SSE 广播同口径，
+   * 刷新 / 换标签页时「排队中」贴到真气泡上，不出「真气泡 + 灰占位」两条。
+   * 无对应库行（正文为空没落行）时为 0（seq 从 1 起，永不命中）。
+   */
+  storeSeq: number;
   /** 入队序（跨 submission 单调递增）：前端按投递顺序排列。 */
   seq: number;
 };
@@ -68,6 +75,18 @@ export class Outbox {
   /** 某房间同一次发送的待发条目（撤回 = 整条消息所有还没开始的投递）。 */
   byRoomMessage(roomKey: string, roomMessageId: string): QueuedDelivery[] {
     return this.list(roomKey).filter((item) => item.roomMessageId === roomMessageId);
+  }
+
+  /**
+   * 某房间仍在排队的投递：库行 seq → roomMessageId（GET 房间视图回填用）。
+   * 同一行 seq 命中的 N 份投递共享同一 roomMessageId，值一致。
+   */
+  roomMessageIdByStoreSeq(roomKey: string): Map<number, string> {
+    const map = new Map<number, string>();
+    for (const item of this.#items.values()) {
+      if (item.roomKey === roomKey) map.set(item.storeSeq, item.roomMessageId);
+    }
+    return map;
   }
 
   /** 当前待发总数（排障 / 测试用）。 */

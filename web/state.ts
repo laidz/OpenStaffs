@@ -79,12 +79,11 @@ function messageKey(message: RoomMessage): string {
   return `${message.convId}:${message.entryId}`;
 }
 
-/** 增量合并：复合键去重；同 roomMessageId 的多投递副本已见则不重复（先到先显，历史不动）。 */
+/** 增量合并：按消息键（convId:entryId，房间视图里即 `store:<seq>`）去重，保持排序。
+ *  消息真相已归自有库（一次投递 = 一行 = 唯一键），不再按 roomMessageId 去重——
+ *  那只是「排队中」占位的匹配键（见 web/render.ts），不是读侧去重依据。 */
 function appendMessage(messages: RoomMessage[], incoming: RoomMessage): RoomMessage[] {
   if (messages.some((m) => messageKey(m) === messageKey(incoming))) return messages;
-  if (incoming.roomMessageId !== undefined && messages.some((m) => m.roomMessageId === incoming.roomMessageId)) {
-    return messages;
-  }
   return [...messages, incoming].sort((a, b) => Number(a.entryId) - Number(b.entryId));
 }
 

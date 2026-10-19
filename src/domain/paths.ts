@@ -48,3 +48,8 @@ export function spaceDir(ws: Workspace): string {
 export function spaceSkillsDir(ws: Workspace): string {
   return path.join(spaceDir(ws), "skills");
 }
+
+/** 自有消息库（P1）；`stateDir` 的迁移（P4）不影响本函数语义。 */
+export function messagesDbFile(ws: Workspace): string {
+  return path.join(stateDir(ws), "messages.sqlite");
+}

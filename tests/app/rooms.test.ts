@@ -1,10 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { mergeRoomMessages, normalizeChatMessage, parseRoomKey, roomKeyOf, type MemberTranscript } from "../../src/app/rooms.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { normalizeChatMessage, parseRoomKey, roomKeyOf, roomMessagesOfTranscript, toRoomMessage, type MemberTranscript } from "../../src/app/rooms.ts";
+import { createWorkspace } from "../../src/domain/paths.ts";
+import type { StoredMessage } from "../../src/store/row.ts";
 import type { ChatMessage } from "../../src/harness/port.ts";
 
 function chat(id: string, role: "user" | "assistant", text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
   return { id, role, text, ...extra };
 }
+
+/** 库行夹具（默认 dm:alice 的老板一句）；toRoomMessage 的用例可覆盖任意字段。 */
+function stored(over: Partial<StoredMessage>): StoredMessage {
+  return {
+    id: "m_1", seq: 1, sendTime: "2026-10-19T00:00:00.000Z", room: "dm:alice",
+    projectId: null, fromId: "__boss", toIds: ["alice"], text: "你好", ...over,
+  };
+}
+
+// toRoomMessage 要解析员工 alias：造一个最小工作区（alice 有 alias）。
+const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-rooms-"));
+fs.mkdirSync(path.join(wsRoot, "agents", "alice"), { recursive: true });
+fs.writeFileSync(path.join(wsRoot, "agents", "alice", "AGENTS.md"), "你是 alice。");
+fs.writeFileSync(path.join(wsRoot, "agents", "alice", "config.json"), JSON.stringify({ alias: "Alice" }));
+const ws = createWorkspace(wsRoot);
+afterEach(() => fs.rmSync(path.join(wsRoot, ".openstaffs"), { recursive: true, force: true }));
 
 describe("房间合并视图", () => {
   it("roomKeyOf / parseRoomKey 往返与非法键", () => {
@@ -36,67 +57,72 @@ describe("房间合并视图", () => {
     expect(parseRoomKey("group:demo")).toEqual({ kind: "group", project: "demo" });
   });
 
-  it("按 entryId 数值升序合并各成员会话", () => {
-    const members: MemberTranscript[] = [
-      {
-        memberId: "bob", convId: "c2",
-        messages: [chat("20", "assistant", "bob 答")],
-      },
-      {
-        memberId: "alice", alias: "Alice", convId: "c1",
-        messages: [
-          chat("10", "user", "任务", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_1" } }),
-          chat("30", "assistant", "alice 答"),
-        ],
-      },
-    ];
-    const merged = mergeRoomMessages("group:demo", members);
-    expect(merged.map((m) => m.entryId)).toEqual(["10", "20", "30"]);
-    expect(merged[0]!.speaker).toEqual({ kind: "boss" });
-    expect(merged[1]!.speaker).toEqual({ kind: "employee", id: "bob" });
-    expect(merged[2]!.speaker).toEqual({ kind: "employee", id: "alice", alias: "Alice" });
+  it("toRoomMessage：库里行还原为房间消息（键 store:<seq>、说话人、不带 roomMessageId）", () => {
+    const boss = toRoomMessage(stored({ seq: 1, fromId: "__boss", toIds: ["alice"], text: "任务" }), "老板", ws);
+    expect(boss).toMatchObject({
+      convId: "store", entryId: "1", roomKey: "dm:alice", speaker: { kind: "boss" }, text: "任务", bossDirected: true,
+    });
+    // 自库来源不带 roomMessageId（那是「排队中」由 outbox/SSE 单独携带的 UI 概念）。
+    expect(boss.roomMessageId).toBeUndefined();
+
+    const reply = toRoomMessage(stored({ seq: 2, fromId: "alice", toIds: ["__boss"], text: "alice 答" }), "老板", ws);
+    expect(reply).toMatchObject({ convId: "store", entryId: "2", speaker: { kind: "employee", id: "alice", alias: "Alice" } });
+
+    // 未给工作区（取不到 alias）→ 不带 alias，也不抛。
+    expect(toRoomMessage(stored({ seq: 3, fromId: "bob", toIds: ["__boss"], text: "bob 答" }), "老板").speaker).toEqual({
+      kind: "employee", id: "bob",
+    });
   });
 
-  it("老板多投递消息按 roomMessageId 去重取最小 entryId；无 roomMessageId 的不去重", () => {
-    const members: MemberTranscript[] = [
-      { memberId: "alice", convId: "c1", messages: [chat("15", "user", "广播", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_x" } })] },
-      { memberId: "bob", convId: "c2", messages: [chat("16", "user", "广播", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_x" } })] },
-    ];
-    const merged = mergeRoomMessages("group:demo", members);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]!.entryId).toBe("15");
-
-    const plain = mergeRoomMessages("dm:alice", [
-      { memberId: "alice", convId: "c1", messages: [chat("1", "user", "甲", { kind: "pi.user" }), chat("2", "user", "乙", { kind: "pi.user" })] },
-    ]);
-    expect(plain).toHaveLength(2);
+  it("一次投递 = 一行：群聊一条多收件人行还原为一条消息（去重不再是读侧职责）", () => {
+    const broadcast = toRoomMessage(
+      stored({ seq: 5, room: "group:demo", projectId: "demo", fromId: "__boss", toIds: ["alice", "bob"], text: "广播" }),
+      "老板", ws,
+    );
+    expect(broadcast.text).toBe("@alice @bob 广播");
+    expect(broadcast.bossDirected).toBe(false); // 群里没 @ 到老板 → 非「发给老板」
+    expect(broadcast.roomMessageId).toBeUndefined();
   });
 
-  it("合成条目（pi.compaction / pi.reset）不显示为老板发言，正常 chat.message 保留", () => {
-    const merged = mergeRoomMessages("group:demo", [
-      { memberId: "alice", convId: "c1", messages: [
+  it("toRoomMessage：群聊按 toIds 重建头部 @（老板 / 成员 / 系统），私聊不加头", () => {
+    const toBoss = toRoomMessage(stored({ seq: 1, room: "group:demo", projectId: "demo", fromId: "alice", toIds: ["__boss"], text: "汇报" }), "掌柜", ws);
+    expect(toBoss.text).toBe("@掌柜 汇报");
+    expect(toBoss.bossDirected).toBe(true);
+
+    const toMember = toRoomMessage(stored({ seq: 2, room: "group:demo", projectId: "demo", fromId: "alice", toIds: ["bob"], text: "给你" }), "掌柜", ws);
+    expect(toMember.text).toBe("@bob 给你");
+    expect(toMember.bossDirected).toBe(false);
+
+    const plainDm = toRoomMessage(stored({ seq: 3, fromId: "alice", toIds: ["__boss"], text: "私聊" }), "掌柜", ws);
+    expect(plainDm.text).toBe("私聊");
+    expect(plainDm.bossDirected).toBe(true); // 私聊恒 true
+
+    // 系统消息按老板形态显示（不引入第三种 speaker，UI / 键机制零改动）。
+    const system = toRoomMessage(stored({ seq: 4, fromId: "__system", toIds: ["alice"], text: "已重启" }), "老板", ws);
+    expect(system.speaker).toEqual({ kind: "boss" });
+  });
+
+  it("roomMessagesOfTranscript：合成条目（pi.compaction / pi.reset）不显示为老板发言，正常 chat.message 保留", () => {
+    const messages = roomMessagesOfTranscript("group:demo", {
+      memberId: "alice", convId: "c1", messages: [
         chat("3", "user", "压缩摘要", { kind: "pi.compaction" }),
         chat("4", "user", "会话重置", { kind: "pi.reset" }),
         chat("5", "user", "老板问", { kind: "chat.message", data: { author: "boss" } }),
         chat("6", "assistant", "员工答"),
-      ] },
-    ]);
-    expect(merged.map((m) => m.entryId)).toEqual(["5", "6"]);
-    expect(merged[0]!.speaker).toEqual({ kind: "boss" });
-    expect(merged[1]!.speaker).toEqual({ kind: "employee", id: "alice" });
+      ],
+    });
+    expect(messages.map((m) => m.entryId)).toEqual(["5", "6"]);
+    expect(messages[0]!.speaker).toEqual({ kind: "boss" });
+    expect(messages[1]!.speaker).toEqual({ kind: "employee", id: "alice" });
   });
 
-  it("员工主动发言 / 工具投递（历史形态 user + data.author = 员工 id）归属该员工，而非老板（向后兼容）", () => {
-    const merged = mergeRoomMessages("group:demo", [
-      { memberId: "alice", convId: "c1", messages: [
-        chat("7", "user", "我主动汇报", { kind: "chat.message", data: { author: "alice" } }),
-      ] },
-      { memberId: "bob", convId: "c2", messages: [
-        chat("8", "user", "alice 对 bob 说", { kind: "chat.message", data: { author: "alice" } }),
-      ] },
-    ]);
-    expect(merged.map((m) => m.speaker)).toEqual([
+  it("roomMessagesOfTranscript：员工主动发言 / 工具投递（历史形态 user + data.author = 员工 id）归属该员工，而非老板", () => {
+    const alice: MemberTranscript = { memberId: "alice", convId: "c1", messages: [chat("7", "user", "我主动汇报", { kind: "chat.message", data: { author: "alice" } })] };
+    const bob: MemberTranscript = { memberId: "bob", convId: "c2", messages: [chat("8", "user", "alice 对 bob 说", { kind: "chat.message", data: { author: "alice" } })] };
+    expect(roomMessagesOfTranscript("group:demo", alice, ["alice", "bob"]).map((m) => m.speaker)).toEqual([
       { kind: "employee", id: "alice" },
+    ]);
+    expect(roomMessagesOfTranscript("group:demo", bob, ["alice", "bob"]).map((m) => m.speaker)).toEqual([
       { kind: "employee", id: "alice" },
     ]);
   });
@@ -155,7 +181,7 @@ describe("房间合并视图", () => {
   });
 
   it("空输入、空会话不产生消息", () => {
-    expect(mergeRoomMessages("dm:alice", [])).toEqual([]);
+    expect(roomMessagesOfTranscript("dm:alice", { memberId: "alice", convId: "c1", messages: [] })).toEqual([]);
     expect(normalizeChatMessage("dm:alice", { memberId: "alice", convId: "c1", messages: [] }, chat("1", "assistant", ""))).toEqual({
       convId: "c1", entryId: "1", roomKey: "dm:alice", speaker: { kind: "employee", id: "alice" }, text: "", bossDirected: true,
     });
@@ -215,7 +241,7 @@ describe("群聊 @前缀约定（历史整洁 + 待办口径）", () => {
     expect(fallback?.text).toBe("@掌柜 好的，已完成");
     expect(fallback?.bossDirected).toBe(true);
 
-    const merged = mergeRoomMessages("group:demo", [{ memberId: "alice", convId: "c1", messages: [chat("12", "assistant", "群里说句话")] }], memberIds, bossNames);
-    expect(merged[0]!.text).toBe("@掌柜 群里说句话"); // mergeRoomMessages 透传
+    const messages = roomMessagesOfTranscript("group:demo", { memberId: "alice", convId: "c1", messages: [chat("12", "assistant", "群里说句话")] }, memberIds, bossNames);
+    expect(messages[0]!.text).toBe("@掌柜 群里说句话"); // 透传当前称谓
   });
 });

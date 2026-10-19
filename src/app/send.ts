@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { parseMembers } from "../domain/access-control.ts";
+import { bossNamesFor } from "../domain/config.ts";
 import { loadEmployee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
+import type { MessageStore } from "../store/messages.ts";
+import { BOSS_PARTICIPANT, type StoredMessage } from "../store/row.ts";
 import { openDm, openGroup, newSession, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
+import { parseAgentReply, stripLeadingMentions } from "./message-row.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
 
 /** per-key 串行队列：同 key 串行（FIFO）、异 key 并行；前序失败不连坐后续。 */
@@ -51,8 +55,9 @@ export async function sendToRoom(
     requestId?: string;
     newSession?: boolean;
     mcp?: McpSessionResolver;
+    store?: MessageStore;
   },
-): Promise<{ roomMessageId: string; deliveries: DeliveryReport[] }> {
+): Promise<{ roomMessageId: string; deliveries: DeliveryReport[]; recorded?: StoredMessage }> {
   const body = text.trim();
   if (body === "") throw new Error("消息不能为空");
 
@@ -66,6 +71,26 @@ export async function sendToRoom(
     if (deliveries.length === 0) throw new NoTargetsError("消息需要 @ 至少一位群成员");
     for (const delivery of deliveries) {
       targets.push({ memberId: delivery.to, body: delivery.body });
+    }
+  }
+
+  // 落库：一次投递 = 一行（正文已剥离头部 @；toIds 是本条消息头部 @ 块点到的参与者，含 '__boss'，可据此重建头部 @）。
+  // 返回值带回刚落的行（recorded）：调用方（http / permission-flow）据此广播库行（R-P1-12「谁写谁广播」；
+  // 广播不放这里——sendToRoom 没有 hub）。
+  let recorded: StoredMessage | undefined;
+  if (options.store !== undefined) {
+    const { toIds, text: stripped } =
+      relation.kind === "dm"
+        ? { toIds: [relation.employeeId], text: stripLeadingMentions(body) }
+        : parseAgentReply(body, parseMembers(ws, relation.project), bossNamesFor(ws));
+    if (stripped !== "") {
+      recorded = options.store.append({
+        sendTime: new Date().toISOString(),
+        projectId: relation.kind === "group" ? relation.project : null,
+        fromId: BOSS_PARTICIPANT,
+        toIds,
+        text: stripped,
+      });
     }
   }
 
@@ -90,7 +115,7 @@ export async function sendToRoom(
       }),
     ),
   );
-  return { roomMessageId, deliveries };
+  return { roomMessageId, deliveries, ...(recorded === undefined ? {} : { recorded }) };
 }
 
 /** 发送者标注：`爱丽丝（alice）`；无 alias 或与 id 相同 → 直接用 id。 */
@@ -106,7 +131,8 @@ function senderLabel(ws: Workspace, senderId: string): string {
 
 /**
  * 群成员回复里的 @前缀触发：把回复投递给被 @ 到的成员（排除发送者自己与老板——老板待办走 bossDirected 口径）。
- * 副本以 chat.mention 落盘（不参与房间/历史显示，防重复气泡），正文带发送者标注，让被触发者知道是谁在找他。
+ * 副本以 chat.mention 投递（不参与房间/历史显示，防重复气泡），正文带发送者标注，让被触发者知道是谁在找他。
+ * 不落库：同一句话由 pump 的 message 分支落一行（一次投递 = 一条记录），此处只发投递副本。
  * 不 @ 到任何成员时返回空（非错误）：没写 @ 开头的回复由显示层补 @老板、视为发给老板。
  */
 export async function triggerFromGroupReply(

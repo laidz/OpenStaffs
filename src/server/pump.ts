@@ -1,17 +1,20 @@
-import { loadEmployee, listEmployees } from "../domain/employee.ts";
+import { listEmployees } from "../domain/employee.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
-import { bossNamesFor } from "../domain/config.ts";
+import { bossNamesFor, readBossName } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { activeMemberSessions, type SessionDefaults } from "../app/conversations.ts";
-import { normalizeChatMessage, parseRoomKey, type MemberTranscript } from "../app/rooms.ts";
+import { parseRoomKey, toRoomMessage } from "../app/rooms.ts";
+import { parseAgentReply } from "../app/message-row.ts";
+import type { MessageStore } from "../store/messages.ts";
+import type { StoredMessage } from "../store/row.ts";
 import type { SseHub } from "./sse.ts";
 
-export type RoomRef = { roomKey: string; memberId: string; alias?: string };
+export type RoomRef = { roomKey: string; memberId: string };
 
 type Deps = {
   ws: Workspace;
@@ -25,6 +28,11 @@ type Deps = {
   getDefaults?: () => SessionDefaults | undefined;
   /** 群回复触发新会话时的 MCP 扩展选择。 */
   mcp?: McpSessionResolver;
+  /**
+   * 自有消息库（P1，spec §13）：agent 回复（run 结束）恰落一行。
+   * 必填：全进程唯一实例由 main.ts 创建并注入（装配层负责建 stateDir）。
+   */
+  store: MessageStore;
 };
 
 /** in-flight 注册的占位：promise 供并发复用；state.cancelled 标记 in-flight 期间的 unregister。 */
@@ -52,16 +60,9 @@ export class Pump {
     if (this.#refs.has(convId)) return;
     const inFlight = this.#pending.get(convId);
     if (inFlight !== undefined) return inFlight.promise;
-    let alias: string | undefined;
-    try {
-      alias = loadEmployee(this.#deps.ws, ref.memberId).alias;
-    } catch {
-      alias = undefined;
-    }
-    const fullRef: RoomRef = { ...ref, ...(alias === undefined ? {} : { alias }) };
     const state = { cancelled: false };
     const task = (async () => {
-      const unsubscribe = await this.#deps.harness.watch(convId, (event) => this.#onEvent(convId, fullRef, event));
+      const unsubscribe = await this.#deps.harness.watch(convId, (event) => this.#onEvent(convId, ref, event));
       // in-flight 期间被 unregister：立即退订，不写入 #refs（不留"幽灵订阅"）。
       if (state.cancelled) {
         await unsubscribe();
@@ -129,13 +130,45 @@ export class Pump {
           return;
         case "message": {
           const relation = parseRoomKey(ref.roomKey);
+          const bossNames = bossNamesFor(this.#deps.ws);
+          const bossName = readBossName(this.#deps.ws);
           const memberIds = relation?.kind === "group" ? parseMembers(this.#deps.ws, relation.project) : [];
-          const member: MemberTranscript = { memberId: ref.memberId, ...(ref.alias === undefined ? {} : { alias: ref.alias }), convId, messages: [] };
-          const message = normalizeChatMessage(ref.roomKey, member, event.message, memberIds, bossNamesFor(this.#deps.ws));
-          if (message === undefined) return;
-          hub.broadcast({ type: "room.message", roomKey: ref.roomKey, message });
-          // 群回复开头的 @触发其他成员（老板消息在发送时已路由；转发副本 kind=chat.mention 不在此列）。
-          if (event.message.role === "assistant") void this.#triggerFromReply(convId, ref, event.message);
+          if (event.message.role === "assistant") {
+            // 工具代写的「己方发言」（send_message boss/project：append 落盘为 assistant 形态 + kind=chat.message）：
+            // 由写路径自己落库 + 广播库行（R-P1-12「谁写谁广播」）；这里再落一次会同句两行 / 两气泡 → 只做 @触发。
+            if (event.message.kind === "chat.message") {
+              void this.#triggerFromReply(convId, ref, event.message);
+              return;
+            }
+            const reply = parseAgentReply(event.message.text, memberIds, bossNames);
+            // 空正文（含「只有 @ 没正文」）不落行；群聊一次 @ 多人仍 1 行（toIds 数组）。
+            if (reply.text !== "") {
+              // 落库单独自保：写库失败只记日志——不连坐本该照常的 room.message 广播与群内 @触发
+              // （整块 #onEvent 的裸 catch 会一起吞掉，且无日志）。
+              let stored: StoredMessage | undefined;
+              try {
+                stored = this.#deps.store.append({
+                  sendTime: new Date().toISOString(),
+                  projectId: relation?.kind === "group" ? relation.project : null,
+                  fromId: ref.memberId,
+                  toIds: reply.toIds,
+                  text: reply.text,
+                });
+              } catch (error) {
+                console.error(`[openstaffs] 消息落库失败（${ref.roomKey}/${ref.memberId}）：${error instanceof Error ? error.message : String(error)}`);
+              }
+              // 广播该库行（键 store:<seq>）——与 GET 房间视图 / pins 同源（否则 SSE 与历史两套键会重复、pin 失配）。
+              // 落库失败时无行可播，库里也没有这一行——GET 同样补不回该条发言（只记日志），但 @触发照旧。
+              if (stored !== undefined) {
+                hub.broadcast({ type: "room.message", roomKey: ref.roomKey, message: toRoomMessage(stored, bossName, this.#deps.ws) });
+              }
+              // 群回复开头的 @触发其他成员（老板消息在发送时已路由；转发副本 kind=chat.mention 不在此列）。
+              void this.#triggerFromReply(convId, ref, event.message);
+            }
+            return;
+          }
+          // v.s. R-P1-12：user 条目（含 pi.user）一律不再广播——那是对别处已落库 / 已广播发言的回显；
+          // 老板侧气泡与工具代写的己方发言由各自写路径（HTTP / permission-flow / send_message）广播库行。
           return;
         }
         case "run":

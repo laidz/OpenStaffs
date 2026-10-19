@@ -2,16 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { parseMembers, projectsOf } from "../domain/access-control.ts";
-import { bossNamesFor, readBossName, readConfig } from "../domain/config.ts";
+import { readBossName, readConfig } from "../domain/config.ts";
 import { listEmployees, loadEmployee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
-import type { Workspace } from "../domain/paths.ts";
+import { messagesDbFile, stateDir, type Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
 import type { HarnessPort } from "../harness/port.ts";
-import { newSession, openDm, openGroup, relationCwd, roomTranscripts, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
-import { mergeRoomMessages, parseRoomKey, roomKeyOf, type RoomSpeaker } from "../app/rooms.ts";
+import { newSession, openDm, openGroup, relationCwd, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
+import { stripLeadingMentions } from "../app/message-row.ts";
+import { parseRoomKey, roomKeyOf, toRoomMessage, type RoomMessage, type RoomSpeaker } from "../app/rooms.ts";
+import { openMessageStore } from "../store/messages.ts";
+import { BOSS_PARTICIPANT } from "../store/row.ts";
 
 /** 授权请求依赖（由装配层注入；未注入时 request_permission 报"不可用"）。 */
 export type ToolPermissions = {
@@ -28,6 +31,8 @@ export type ToolContext = {
   /** MCP 扩展选择（新建会话时按关系 / 发言人解析）。 */
   mcp?: McpSessionResolver;
   permissions?: ToolPermissions;
+  /** 房间消息广播（R-P1-12）：装配层注入 SSE 喇叭；缺省不广播（工具仍落库）。 */
+  broadcast?: (roomKey: string, message: RoomMessage) => void;
 };
 
 /** 统一注册表条目。 */
@@ -112,14 +117,48 @@ const roomHistory: ToolDef = {
     const limitRaw = args["limit"];
     const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : 50;
 
-    const transcripts = await roomTranscripts(ctx.ws, ctx.harness, relation);
-    const memberIds = relation.kind === "group" ? parseMembers(ctx.ws, relation.project) : [];
-    const merged = mergeRoomMessages(roomKeyOf(relation), transcripts, memberIds, bossNamesFor(ctx.ws));
-    const recent = merged.slice(-limit);
-    if (recent.length === 0) return "（暂无消息）";
-    return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");
+    // 读自有消息库（P1）：房间历史不再读各成员 transcript。
+    // 工具只有 ctx.ws，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）→ 自开一个实例、用完即关；
+    // SQLite 同进程多连接安全（HTTP / pump 用的是 main.ts 的唯一实例）。
+    // `.openstaffs` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
+    // 建库即空表 → 应返回「（暂无消息）」而不是报错。
+    fs.mkdirSync(stateDir(ctx.ws), { recursive: true });
+    const store = openMessageStore(messagesDbFile(ctx.ws));
+    try {
+      const messages = store.listByRoom(roomKeyOf(relation)).map((m) => toRoomMessage(m, readBossName(ctx.ws), ctx.ws));
+      const recent = messages.slice(-limit);
+      if (recent.length === 0) return "（暂无消息）";
+      return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");
+    } finally {
+      store.close();
+    }
   },
 };
+
+/**
+ * 写路径自持广播（R-P1-12「谁写谁广播」）：落一行 + 广播该库行（键 `store:<seq>`）。
+ * - 自有库实例按 `room_history` 同款处理：工具只有 `ctx.ws`，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）
+ *   → 自开一个实例、用完即关；SQLite 同进程多连接安全（HTTP / pump 用的是 main.ts 的唯一实例）。
+ * - `text` 一律剥头部 @（与发送侧 `stripLeadingMentions` 同口径）；**空正文不落行**（也就不广播）。
+ * - 房间键由 `roomKeyOfMessage` 自动推出（写库时定），广播用它 —— boss 目标落成 `dm:<自己>`，不退化成 `dm:`。
+ */
+function recordAndBroadcast(ctx: ToolContext, row: { projectId: string | null; toIds: string[]; text: string }): void {
+  const text = stripLeadingMentions(row.text);
+  if (text === "") return;
+  const store = openMessageStore(messagesDbFile(ctx.ws));
+  try {
+    const stored = store.append({
+      sendTime: new Date().toISOString(),
+      projectId: row.projectId,
+      fromId: ctx.selfId,
+      toIds: row.toIds,
+      text,
+    });
+    ctx.broadcast?.(stored.room, toRoomMessage(stored, readBossName(ctx.ws), ctx.ws));
+  } finally {
+    store.close();
+  }
+}
 
 /** 通用发消息（老板 / 群成员 / 项目）。 */
 const sendMessage: ToolDef = {
@@ -136,6 +175,8 @@ const sendMessage: ToolDef = {
     if (target === "boss") {
       const convId = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
+      // 房间可见发言：落库 + 广播（房间 = dm:<自己>，收件人 = 老板）。
+      recordAndBroadcast(ctx, { projectId: null, toIds: [BOSS_PARTICIPANT], text });
       return `已发给「${readBossName(ctx.ws)}」（会显示在其待办里）。`;
     }
     const memberMatch = /^member:(.+)$/u.exec(target);
@@ -145,6 +186,8 @@ const sendMessage: ToolDef = {
       if (!parseMembers(ctx.ws, ctx.relation.project).includes(memberId)) throw new Error(`不是本群成员：${memberId}`);
       const convId = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.submit(convId, text, { kind: "chat.message", data: { author: ctx.selfId } });
+      // 房间可见发言：落库 + 广播（房间 = group:<当前群>，收件人 = 被触发的成员）。
+      recordAndBroadcast(ctx, { projectId: ctx.relation.project, toIds: [memberId], text });
       return `已触发 ${memberId}。`;
     }
     const projectMatch = /^project:(.+)$/u.exec(target);
@@ -152,6 +195,10 @@ const sendMessage: ToolDef = {
       const projectId = projectMatch[1]!;
       const convId = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
+      // 房间可见发言：落库 + 广播（房间 = group:<该项目>）。
+      // toIds 取空：该目标只是把消息写进「自己在该项目群的会话」，没有具体投递对象（不触发任何人）；
+      // 列全部项目成员会凭空伪造头部 @ 与收件人（展示层按 toIds 重建头），故不采用。
+      recordAndBroadcast(ctx, { projectId, toIds: [], text });
       return `已投递到项目 ${projectId}。`;
     }
     throw new Error(`无法识别的 target：${target}（应为 boss | member:<id> | project:<id>）`);
