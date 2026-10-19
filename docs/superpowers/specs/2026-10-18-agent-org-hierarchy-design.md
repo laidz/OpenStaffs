@@ -229,4 +229,11 @@
   影响面：`src/domain/paths.ts`（`stateDir` 与 `spaceDir` 合一）、启动探测与首次配置引导页、`.gitignore`、`README.md`、两份 `SKILL.md`、`docs/产品规划.md`。
   待定：**含密钥的 `config.json` 放哪**——`openstaffs/.data/config.json`（整个 `.data/` 被 gitignore，最安全）**还是** `openstaffs/config.json`（可见、便于编辑，但需单独忽略该文件）。倾向前者。
 
+- **权限统一为"按工具"（讨论中；形态已定）**：写 / 读 / bash 及**未来新增工具**，统一为一套权限配置。**形态已定：每个工具的值都是「路径列表」**（写 = 可写路径、读 = 可读路径、bash = 可运行的目录；`["/"]` = 任意）。原先把「写」赋值的那套逻辑（**默认 + 继承 + attenuation**）**同样适用于每个工具**。例："全世界读" = 空间配置 `read: ["/"]`。
+  仍待定：**各工具的默认值**（写 = 自己工作空间 + 子树；读 = ?；bash = ?）——读的默认需重定（此前"读零限制"，现改为可配置）；**未来新工具如何登记**；attenuation 是否对每个工具都生效。
+  改动：修订 §6（写权限模型）→ **多工具权限模型**；§4 的 `permissions` 由"路径数组"升级为"**按工具分组的路径列表**"。
+
+- **配置文件命名统一为 `*.config.json`**：`alice.agent.config.json` / `department.config.json` / `space.config.json` / `project.config.json`；四者内容同构（**权限 / mcp / 技能 / prompt**）。项目文件由 `project.json` 改名。
+  待定：全局 `config.json`（`providers` / 密钥 / `model` / `port`）是否并入 `space.config.json`（与上面"合并 `.openstaffs/`"一条交互）。
+
 *（更多想法待续。）*
