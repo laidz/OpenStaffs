@@ -353,6 +353,7 @@ export function agentPanelHtml(
   return `<div class="layout">${sidebarHtml(state)}<section class="chat agent-panel">
     <header class="chat-head">
       <span class="title">会话上下文 · ${escapeHtml(employee.alias ?? employee.id)}</span>
+      <button id="agent-panel-reload" title="当前会话有新内容" hidden>有新内容</button>
       <button id="agent-panel-refresh">刷新</button>
       <button id="agent-panel-back">返回聊天</button>
     </header>

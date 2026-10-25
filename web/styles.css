@@ -116,6 +116,7 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .item-ctx { border: 0; background: transparent; color: #8a9099; cursor: pointer; font-size: 13px; padding: 6px 8px; border-radius: 6px; }
 .item-ctx:hover { background: #e3e5e8; color: #333; }
 /* 会话上下文面板 */
+#agent-panel-reload { border-color: #faad14; background: #fffbe6; color: #ad6800; }
 .agent-panel .tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid #e3e5e8; background: #fff; }
 .tab { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #d0d4d9; background: #fff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
 .tab.active { border-color: #1a73e8; background: #e8f0fe; }

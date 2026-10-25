@@ -1,6 +1,6 @@
 import { api, type EmployeeSession, type Status } from "./api.ts";
 import { initialState, pickAgentSession, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { agentPanelHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
+import { agentPanelHtml, agentSessionTabsHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -14,6 +14,7 @@ type AgentPanelState = { employee: { id: string; alias?: string }; sessions: Emp
 let agentPanel: AgentPanelState | undefined;
 let agentPanelSeq = 0;
 let agentPanelRenderSeq = 0;
+let agentPanelListTimer: number | undefined;
 
 function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
   const next = reduce(state, event);
@@ -394,10 +395,31 @@ function onServerEvent(event: ServerEvent): void {
   syncAgentPanelActivity(event);
 }
 
-/** 面板打开时：用 SSE 的 run 起止更新对应 Tab 的运行点（不重拉正文，避免阅读位置跳动）。 */
+/**
+ * 面板打开时的实时信号：
+ * - 正文不自动替换（避免阅读位置跳动），只显示「有新内容」按钮；
+ * - 运行点按 run 起止更新；
+ * - 该员工有新活动（可能多了新会话）时，防抖重拉 Tab 列表。
+ */
 function syncAgentPanelActivity(event: ServerEvent): void {
-  if (agentPanel === undefined || event.type !== "room.activity" || event.kind !== "run") return;
-  const session = agentPanel.sessions.find((item) => item.convId === event.convId);
+  const panel = agentPanel;
+  if (panel === undefined) return;
+  if (event.type === "room.delta") {
+    if (event.convId === panel.selected) markAgentPanelStale();
+    return;
+  }
+  if (event.type === "room.message") {
+    if (event.message.convId === panel.selected) markAgentPanelStale();
+    scheduleAgentPanelListRefresh();
+    return;
+  }
+  if (event.type !== "room.activity") return;
+
+  if (event.kind === "tool" && event.convId === panel.selected) markAgentPanelStale();
+  if (event.kind !== "run") return;
+  if (event.memberId === panel.employee.id) scheduleAgentPanelListRefresh();
+
+  const session = panel.sessions.find((item) => item.convId === event.convId);
   if (session === undefined) return;
   session.running = event.phase === "start";
   const tab = document.querySelector<HTMLElement>(`[data-agent-conv="${CSS.escape(event.convId)}"]`);
@@ -411,6 +433,50 @@ function syncAgentPanelActivity(event: ServerEvent): void {
     tab.prepend(marker);
   } else if (!session.running && dot !== null) {
     dot.remove();
+  }
+}
+
+function markAgentPanelStale(): void {
+  const button = document.getElementById("agent-panel-reload");
+  if (button !== null) button.hidden = false;
+}
+
+/** 防抖：面板打开期间新会话 / 会话结束不该高频重拉。 */
+function scheduleAgentPanelListRefresh(): void {
+  if (agentPanel === undefined || agentPanelListTimer !== undefined) return;
+  agentPanelListTimer = window.setTimeout(() => {
+    agentPanelListTimer = undefined;
+    void refreshAgentPanelSessions().catch(() => {});
+  }, 300);
+}
+
+/** 只重拉 Tab 列表；选中项仍存在时不动正文。 */
+async function refreshAgentPanelSessions(): Promise<void> {
+  const panel = agentPanel;
+  if (panel === undefined) return;
+  const { sessions } = await api.employeeSessions(panel.employee.id);
+  if (agentPanel !== panel) return;
+  panel.sessions = sessions;
+  const selected = pickAgentSession(sessions, panel.selected);
+  if (selected !== panel.selected) {
+    panel.selected = selected;
+    await renderAgentPanel();
+    return;
+  }
+  const holder = app.querySelector<HTMLElement>(".agent-panel .tabs");
+  if (holder !== null) {
+    holder.innerHTML = agentSessionTabsHtml(sessions, selected);
+    bindAgentTabs();
+  }
+}
+
+function bindAgentTabs(): void {
+  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-conv]")) {
+    element.addEventListener("click", () => {
+      if (agentPanel === undefined) return;
+      agentPanel.selected = element.dataset.agentConv!;
+      guard(renderAgentPanel());
+    });
   }
 }
 
@@ -527,13 +593,8 @@ async function renderAgentPanel(): Promise<void> {
     renderAll();
   });
   document.getElementById("agent-panel-refresh")?.addEventListener("click", () => guard(openAgentPanel(employee.id, agentPanel?.selected)));
-  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-conv]")) {
-    element.addEventListener("click", () => {
-      if (agentPanel === undefined) return;
-      agentPanel.selected = element.dataset.agentConv!;
-      guard(renderAgentPanel());
-    });
-  }
+  document.getElementById("agent-panel-reload")?.addEventListener("click", () => guard(renderAgentPanel()));
+  bindAgentTabs();
 }
 
 async function openHistory(): Promise<void> {

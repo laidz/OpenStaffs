@@ -393,6 +393,8 @@ describe("员工会话上下文面板", () => {
       context,
     );
     expect(html).toContain("会话上下文 · 爱丽丝");
+    expect(html).toContain('id="agent-panel-reload"');
+    expect(html).toContain('id="agent-panel-refresh"');
     expect(html).toContain("系统提示词");
     expect(html).toContain("你是 alice。&lt;系统&gt;");
     expect(html).toContain("工具调用：write");
