@@ -520,3 +520,46 @@ describe("提交与推流", () => {
     }
   });
 });
+
+describe("Pi 事件映射", () => {
+  it("snapshot 带 run → 补发 run start（订阅晚于投递时不漏运行态）", () => {
+    expect(mapPiEvent({ type: "snapshot", entries: [], run: { inputs: [] } } as never, "c1")).toEqual([
+      { type: "run", convId: "c1", phase: "start" },
+    ]);
+    expect(mapPiEvent({ type: "snapshot", entries: [] } as never, "c1")).toEqual([]);
+  });
+});
+
+describe("会话完整上下文（context）", () => {
+  it("返回 instructions + 模型上下文（含工具调用与工具结果）", async () => {
+    const workdir = path.join(root, "work", "alice");
+    fs.mkdirSync(workdir, { recursive: true });
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "hi" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("完成"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data/ctx.sqlite"), models });
+    await harness.open();
+    try {
+      const convId = await harness.startSession({
+        cwd: workdir,
+        instructions: "你是 alice。",
+        model: { provider: "faux", modelId: "faux-model" },
+        access: { root, cwd: workdir, selfId: "alice", permissions: { write: [workdir], read: [workdir], bash: [] } },
+      });
+      await harness.send(convId, "写个文件");
+      const ctx = await harness.context(convId);
+      expect(ctx.instructions).toContain("你是 alice。");
+      expect(ctx.items.some((item) => item.role === "user" && item.text.includes("写个文件"))).toBe(true);
+      const withTools = ctx.items.find((item) => item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0);
+      expect(withTools?.toolCalls?.[0]?.name).toBe("write");
+      expect(ctx.items.some((item) => item.role === "tool" && item.toolName === "write")).toBe(true);
+      expect(ctx.items.some((item) => item.role === "assistant" && item.text.includes("完成"))).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+});

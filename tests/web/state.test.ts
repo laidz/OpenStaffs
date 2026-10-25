@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { initialState, reduce, selectView, type State } from "../../web/state.ts";
+import { initialState, pickAgentSession, reduce, selectView, type State } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
+import type { EmployeeSession } from "../../web/api.ts";
 
 function msg(entryId: string, convId: string, kind: "boss" | "employee", text: string, roomMessageId?: string): RoomMessage {
   return kind === "boss"
@@ -271,5 +272,35 @@ describe("前端状态归约", () => {
     expect(state.collapsedDepts).toEqual(["eng", "eng/platform"]);
     state = reduce(state, { type: "toggle-dept", path: "eng" });
     expect(state.collapsedDepts).toEqual(["eng/platform"]);
+  });
+});
+
+describe("会话上下文面板选中", () => {
+  const session = (convId: string, kind: "dm" | "group", running = false): EmployeeSession => ({
+    convId,
+    kind,
+    relationKey: `${kind === "dm" ? "dm" : "group"}:${convId}`,
+    ...(kind === "group" ? { projectId: convId } : {}),
+    started: "2026-10-25T10:00:00+08:00",
+    running,
+    model: "faux/faux-model",
+    thinkingLevel: null,
+    contextUsed: 0,
+  });
+
+  it("刷新时保留当前选中的会话", () => {
+    const sessions = [session("c_dm", "dm"), session("c_group", "group", true)];
+    expect(pickAgentSession(sessions, "c_dm")).toBe("c_dm");
+  });
+
+  it("没有保留值时：运行中 → 私聊 → 第一条", () => {
+    expect(pickAgentSession([session("c_dm", "dm"), session("c_group", "group", true)])).toBe("c_group");
+    expect(pickAgentSession([session("c_dm", "dm"), session("c_group", "group")])).toBe("c_dm");
+    expect(pickAgentSession([session("c_group", "group")])).toBe("c_group");
+  });
+
+  it("保留值已不存在时回落到默认", () => {
+    expect(pickAgentSession([session("c_dm", "dm")], "gone")).toBe("c_dm");
+    expect(pickAgentSession([], "gone")).toBeUndefined();
   });
 });

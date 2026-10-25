@@ -4,11 +4,11 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
-import { readChain } from "../../src/domain/conversation-chain.ts";
+import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { readChain, startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
-  accessFor, activeMemberSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
+  accessFor, activeMemberSessions, employeeActiveSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
   relationCwd, relationKey, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults,
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
@@ -120,6 +120,23 @@ describe("应用用例", () => {
     const positions = order.map((token) => text.indexOf(token));
     expect(positions.every((index) => index >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it("员工的活跃会话：私聊 + 他所在的群；非成员不算", () => {
+    const ws = seedOffice(root, {
+      agents: [{ id: "alice" }, { id: "bob" }],
+      projects: [{ id: "yt", members: ["alice"] }, { id: "seo", members: ["bob"] }],
+    });
+    fs.mkdirSync(path.join(root, "work", "alice"), { recursive: true });
+    startNewSession(path.join(root, "work", "alice", "conversation_ids.md"), "conv_dm", "2026-10-25T10:00:00+08:00");
+    const ytDir = path.join(stateDir(ws), "chains", "group-yt");
+    startNewSession(path.join(ytDir, "alice.md"), "conv_yt", "2026-10-25T10:01:00+08:00");
+    const seoDir = path.join(stateDir(ws), "chains", "group-seo");
+    startNewSession(path.join(seoDir, "bob.md"), "conv_seo", "2026-10-25T10:02:00+08:00");
+
+    const sessions = employeeActiveSessions(ws, "alice");
+    expect(sessions.map((session) => session.convId).sort()).toEqual(["conv_dm", "conv_yt"]);
+    expect(sessions.every((session) => session.started !== "")).toBe(true);
   });
 
   it("工作目录 = work/<id>（项目没有工作目录，D25）", () => {

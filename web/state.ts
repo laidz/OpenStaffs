@@ -1,7 +1,7 @@
 import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
-import type { EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
+import type { EmployeeSession, EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
 
 export type Live = {
   convId: string;
@@ -252,4 +252,14 @@ function reduceSse(state: State, event: ServerEvent): State {
     default:
       return state;
   }
+}
+
+/** 会话上下文面板的默认选中：优先保留 keep（刷新时），否则运行中 → 私聊 → 第一条。 */
+export function pickAgentSession(sessions: readonly EmployeeSession[], keep?: string): string | undefined {
+  if (keep !== undefined && sessions.some((session) => session.convId === keep)) return keep;
+  return (
+    sessions.find((session) => session.running)?.convId ??
+    sessions.find((session) => session.kind === "dm")?.convId ??
+    sessions[0]?.convId
+  );
 }

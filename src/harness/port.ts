@@ -13,6 +13,26 @@ export type ConversationSpec = {
   mcpExtensions?: readonly string[];
 };
 
+/** 会话上下文里的一条模型消息（只读展示用）。 */
+export type ContextItem = {
+  role: "system" | "user" | "assistant" | "tool";
+  /** Pi entry kind（如 pi.user / pi.user；从模型上下文还原时可能缺省）。 */
+  kind?: string;
+  text: string;
+  thinking?: string;
+  toolCalls?: { name: string; arguments: unknown }[];
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+};
+
+/** 一条会话的完整上下文：系统提示词 + 模型实际看到的条目。 */
+export type SessionContext = {
+  instructions: string;
+  cwd?: string;
+  items: ContextItem[];
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -103,4 +123,6 @@ export interface HarnessPort {
   /** 订阅该会话的归一化事件；返回退订函数。 */
   watch(convId: string, listener: (event: HarnessEvent) => void): Promise<() => Promise<void>>;
   transcript(convId: string): Promise<ChatMessage[]>;
+  /** 完整上下文（只读）：系统提示词 + 模型实际看到的条目（含工具调用 / 结果 / 压缩摘要）。 */
+  context(convId: string): Promise<SessionContext>;
 }

@@ -1,6 +1,6 @@
-import { api, type Status } from "./api.ts";
-import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
+import { api, type EmployeeSession, type Status } from "./api.ts";
+import { initialState, pickAgentSession, reduce, selectView, type State, type UiEvent } from "./state.ts";
+import { agentPanelHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -9,6 +9,11 @@ const app = document.getElementById("app")!;
 let state: State = initialState;
 let status: Status | undefined;
 let sending = false;
+/** 员工「会话上下文」面板（打开时替换聊天区；undefined = 不在面板）。 */
+type AgentPanelState = { employee: { id: string; alias?: string }; sessions: EmployeeSession[]; selected?: string };
+let agentPanel: AgentPanelState | undefined;
+let agentPanelSeq = 0;
+let agentPanelRenderSeq = 0;
 
 function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
   const next = reduce(state, event);
@@ -20,6 +25,7 @@ function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
 }
 
 function renderAll(): void {
+  agentPanel = undefined; // 全量重画 = 离开面板；避免面板状态与 DOM 两份真相
   if (selectView(state) === "setup") {
     app.innerHTML = setupPage(status?.root ?? "", status?.port ?? 4319);
     return;
@@ -131,6 +137,7 @@ function renderSidebar(): void {
   if (sidebar === null) return;
   sidebar.outerHTML = sidebarHtml(state);
   bindRoomButtons(); // outerHTML 重建了侧栏，需重新挂载房间点击
+  bindAgentSessionButtons(); // 员工行的「会话上下文」入口
   bindDeptToggles(); // 以及部门折叠
 }
 
@@ -250,6 +257,16 @@ function bindRoomButtons(): void {
   }
 }
 
+/** 侧栏员工行右侧的「会话上下文」入口（名字按钮仍走 data-room）。 */
+function bindAgentSessionButtons(): void {
+  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-sessions]")) {
+    element.addEventListener("click", (event) => {
+      event.stopPropagation();
+      guard(openAgentPanel(element.dataset.agentSessions!));
+    });
+  }
+}
+
 /** 部门折叠（renderSidebar 重建侧栏后必须重挂）。 */
 function bindDeptToggles(): void {
   for (const button of app.querySelectorAll<HTMLElement>("[data-toggle-dept]")) {
@@ -259,6 +276,7 @@ function bindDeptToggles(): void {
 
 function bindEvents(): void {
   bindRoomButtons();
+  bindAgentSessionButtons();
   bindDeptToggles();
   document.getElementById("composer-send")?.addEventListener("click", () => void sendCurrent());
   const input = document.getElementById("composer-input");
@@ -373,6 +391,27 @@ async function refreshPins(): Promise<void> {
 
 function onServerEvent(event: ServerEvent): void {
   dispatch({ type: "sse", event });
+  syncAgentPanelActivity(event);
+}
+
+/** 面板打开时：用 SSE 的 run 起止更新对应 Tab 的运行点（不重拉正文，避免阅读位置跳动）。 */
+function syncAgentPanelActivity(event: ServerEvent): void {
+  if (agentPanel === undefined || event.type !== "room.activity" || event.kind !== "run") return;
+  const session = agentPanel.sessions.find((item) => item.convId === event.convId);
+  if (session === undefined) return;
+  session.running = event.phase === "start";
+  const tab = document.querySelector<HTMLElement>(`[data-agent-conv="${CSS.escape(event.convId)}"]`);
+  if (tab === null) return;
+  tab.classList.toggle("running", session.running);
+  const dot = tab.querySelector(".dot");
+  if (session.running && dot === null) {
+    const marker = document.createElement("span");
+    marker.className = "dot";
+    marker.title = "运行中";
+    tab.prepend(marker);
+  } else if (!session.running && dot !== null) {
+    dot.remove();
+  }
 }
 
 async function refreshAll(): Promise<void> {
@@ -398,6 +437,7 @@ async function refreshAll(): Promise<void> {
 }
 
 async function enterRoom(roomKey: string): Promise<void> {
+  agentPanel = undefined;
   const [room, info] = await Promise.all([
     api.messages(roomKey),
     api.sessionInfo(roomKey).catch(() => undefined),
@@ -457,6 +497,45 @@ async function interruptCurrent(): Promise<void> {
   await api.interrupt(state.roomKey);
 }
 
+/** 打开员工的「会话上下文」：默认选运行中的，否则私聊，再否则第一条。 */
+async function openAgentPanel(employeeId: string, keep?: string): Promise<void> {
+  const seq = ++agentPanelSeq;
+  const { employee, sessions } = await api.employeeSessions(employeeId);
+  if (seq !== agentPanelSeq) return; // 快速连点：只让最后一次请求落 DOM
+  const selected = pickAgentSession(sessions, keep ?? agentPanel?.selected);
+  agentPanel = { employee, sessions, ...(selected === undefined ? {} : { selected }) };
+  await renderAgentPanel();
+}
+
+async function renderAgentPanel(): Promise<void> {
+  if (agentPanel === undefined) {
+    renderAll();
+    return;
+  }
+  const seq = ++agentPanelRenderSeq;
+  const { employee, sessions, selected } = agentPanel;
+  const context =
+    selected === undefined ? undefined : await api.sessionContext(employee.id, selected).catch(() => undefined);
+  if (seq !== agentPanelRenderSeq || agentPanel === undefined) return; // 切 Tab / 关闭面板：丢弃过期结果
+  app.innerHTML = agentPanelHtml(state, employee, sessions, selected, context);
+  bindRoomButtons();
+  bindAgentSessionButtons();
+  bindDeptToggles();
+  bindPermCards();
+  document.getElementById("agent-panel-back")?.addEventListener("click", () => {
+    agentPanel = undefined;
+    renderAll();
+  });
+  document.getElementById("agent-panel-refresh")?.addEventListener("click", () => guard(openAgentPanel(employee.id, agentPanel?.selected)));
+  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-conv]")) {
+    element.addEventListener("click", () => {
+      if (agentPanel === undefined) return;
+      agentPanel.selected = element.dataset.agentConv!;
+      guard(renderAgentPanel());
+    });
+  }
+}
+
 async function openHistory(): Promise<void> {
   if (state.roomKey === undefined) return;
   const roomKey = state.roomKey;
@@ -476,6 +555,7 @@ async function openHistory(): Promise<void> {
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
   bindRoomButtons(); // 面板内也带一份侧栏
+  bindAgentSessionButtons(); // 侧栏员工行的会话入口
   bindDeptToggles(); // 面板内侧栏的部门折叠同样可用
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
   for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
@@ -492,6 +572,7 @@ async function loadHistoryView(roomKey: string, convId: string): Promise<void> {
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => guard(openHistory()));
   bindRoomButtons(); // 详情视图同样带一份侧栏
+  bindAgentSessionButtons(); // 侧栏员工行的会话入口
   bindDeptToggles(); // 详情视图侧栏的部门折叠同样可用
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
 }

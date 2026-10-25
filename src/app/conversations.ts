@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { conversationIdsFile, groupConversationIdsFile, workDir, type Workspace } from "../domain/paths.ts";
 import { findPerson, loadOrg } from "../domain/org.ts";
+import { listProjects } from "../domain/project.ts";
 import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
@@ -156,6 +157,26 @@ export async function newSession(
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
   return convId;
+}
+
+/** 一个员工的活跃会话（私聊 + 他所在的每个群的链尾）：供「会话上下文」面板按人聚合。 */
+export function employeeActiveSessions(
+  ws: Workspace,
+  employeeId: string,
+): { relation: Relation; convId: string; started: string }[] {
+  const relations: Relation[] = [{ kind: "dm", employeeId }];
+  for (const project of listProjects(ws)) {
+    if (parseMembers(ws, project.id).includes(employeeId)) relations.push({ kind: "group", project: project.id });
+  }
+  const out: { relation: Relation; convId: string; started: string }[] = [];
+  for (const relation of relations) {
+    for (const chain of sessionChains(ws, relation)) {
+      if (chain.memberId !== employeeId) continue;
+      const active = chain.rows.filter((row) => row.ended === null).at(-1);
+      if (active !== undefined) out.push({ relation, convId: active.id, started: active.started });
+    }
+  }
+  return out;
 }
 
 /** 关系下各成员的会话链（群聊按项目 config 的 members 顺序；未创建过会话的成员为空链）。 */

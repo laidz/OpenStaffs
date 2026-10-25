@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { agentPanelHtml, agentSessionTabsHtml, chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
+import type { EmployeeSession, SessionContextView } from "../../web/api.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 
 describe("渲染", () => {
@@ -332,8 +333,78 @@ describe("侧栏部门树", () => {
   it("sidebarHtml：无 org 数据时回落平铺（首帧不白屏）；都没有才出提示", () => {
     const flat = sidebarHtml({ ...initialState, configured: true, employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }] });
     expect(flat).toContain('data-room="dm:alice"');
+    expect(flat).toContain('data-agent-sessions="alice"');
     const empty = sidebarHtml({ ...initialState, configured: true });
     expect(empty).toContain("还没有员工");
     expect(empty).toContain("&lt;名字&gt;.agent.config.json");
+  });
+});
+
+describe("员工会话上下文面板", () => {
+  const dm: EmployeeSession = {
+    convId: "conv_dm",
+    kind: "dm",
+    relationKey: "dm:alice",
+    started: "2026-10-25T10:00:00+08:00",
+    running: true,
+    model: "faux/faux-model",
+    thinkingLevel: "high",
+    contextUsed: 10,
+    contextWindow: 100,
+  };
+  const group: EmployeeSession = {
+    convId: "conv_yt",
+    kind: "group",
+    relationKey: "group:yt",
+    projectId: "yt",
+    projectAlias: "油管",
+    started: "2026-10-25T10:01:00+08:00",
+    running: false,
+    model: "faux/faux-model",
+    thinkingLevel: null,
+    contextUsed: 20,
+  };
+  const context: SessionContextView = {
+    ...dm,
+    instructions: "你是 alice。<系统>",
+    cwd: "/office/work/alice",
+    items: [
+      { role: "user", text: "写个文件" },
+      { role: "assistant", text: "", toolCalls: [{ name: "write", arguments: { path: "a.md", content: "<x>" } }] },
+      { role: "tool", text: "ok", toolCallId: "call_1" },
+      { role: "assistant", text: "完成" },
+    ],
+  };
+
+  it("Tab：运行点、群名、时间；选中态", () => {
+    const tabs = agentSessionTabsHtml([dm, group], "conv_dm");
+    expect(tabs).toContain('data-agent-conv="conv_dm"');
+    expect(tabs).toContain('class="tab active running"');
+    expect(tabs).toContain("油管");
+    expect(tabs).toContain("2026-10-25 10:01");
+  });
+
+  it("面板：系统提示词 + 工具调用 + 工具结果；HTML 全转义", () => {
+    const html = agentPanelHtml(
+      { ...initialState, configured: true },
+      { id: "alice", alias: "爱丽丝" },
+      [dm, group],
+      "conv_dm",
+      context,
+    );
+    expect(html).toContain("会话上下文 · 爱丽丝");
+    expect(html).toContain("系统提示词");
+    expect(html).toContain("你是 alice。&lt;系统&gt;");
+    expect(html).toContain("工具调用：write");
+    expect(html).toContain("&lt;x&gt;");
+    expect(html).toContain("工具结果");
+    expect(html).toContain("完成");
+    expect(html).not.toContain("<系统>");
+  });
+
+  it("无会话 / 无上下文时给出提示", () => {
+    const empty = agentPanelHtml({ ...initialState, configured: true }, { id: "alice" }, [], undefined, undefined);
+    expect(empty).toContain("还没有活跃会话");
+    expect(empty).toContain("该员工还没有活跃会话");
   });
 });

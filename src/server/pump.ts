@@ -48,6 +48,8 @@ export class Pump {
   #refs = new Map<string, () => Promise<void>>();
   /** 同一 convId 的并发 register 复用同一 in-flight 占用，防双订阅/重复广播（delta 无去重字段，重影可感）。 */
   #pending = new Map<string, Pending>();
+  /** 正在跑（run start → end）的会话；只服务于「运行中」展示，不参与调度。 */
+  #running = new Set<string>();
   readonly #deps: Deps;
   readonly #queue: KeyedQueue;
   readonly #outbox: Outbox;
@@ -87,7 +89,13 @@ export class Pump {
     }
   }
 
+  /** 该会话当前是否在跑（run start 到 end 之间）。 */
+  isRunning(convId: string): boolean {
+    return this.#running.has(convId);
+  }
+
   async unregister(convId: string): Promise<void> {
+    this.#running.delete(convId);
     const pending = this.#pending.get(convId);
     if (pending !== undefined) {
       // 清占位 + 标记取消：in-flight 的 watch 建立后自退订；之后的新 register 会重新建立订阅。
@@ -181,6 +189,10 @@ export class Pump {
         }
         case "run":
         case "tool":
+          if (event.type === "run") {
+            if (event.phase === "start") this.#running.add(convId);
+            else this.#running.delete(convId);
+          }
           hub.broadcast({
             type: "room.activity", roomKey: ref.roomKey, convId, memberId: ref.memberId,
             kind: event.type, phase: event.phase,

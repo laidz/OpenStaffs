@@ -17,6 +17,35 @@ export type ProjectSummary = { id: string; alias: string; members: { id: string;
 export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[]; queued: QueuedItemView[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
 export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null };
+export type ContextItemView = {
+  role: "system" | "user" | "assistant" | "tool";
+  kind?: string;
+  text: string;
+  thinking?: string;
+  toolCalls?: { name: string; arguments: unknown }[];
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+};
+export type EmployeeSession = {
+  convId: string;
+  kind: "dm" | "group";
+  relationKey: string;
+  projectId?: string;
+  projectAlias?: string;
+  started: string;
+  running: boolean;
+  model: string;
+  thinkingLevel: string | null;
+  contextUsed: number;
+  contextWindow?: number;
+};
+export type EmployeeSessions = { employee: { id: string; alias?: string }; sessions: EmployeeSession[] };
+export type SessionContextView = EmployeeSession & {
+  instructions: string;
+  cwd?: string;
+  items: ContextItemView[];
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -58,6 +87,12 @@ export const api = {
   /** 当前房间各成员活跃会话的实际信息（模型 / 思考强度 / 上下文用量）。 */
   sessionInfo: (roomKey: string) =>
     request<{ sessions: RoomSessionInfo[] }>(`${roomPath(roomKey)}/sessions/info`),
+  /** 某员工的活跃会话（私聊 + 各群）+ 运行状态。 */
+  employeeSessions: (employeeId: string) =>
+    request<EmployeeSessions>(`/api/employees/${encodeURIComponent(employeeId)}/sessions`),
+  /** 某条会话的完整上下文（系统提示词 + 模型条目）；只读。 */
+  sessionContext: (employeeId: string, convId: string) =>
+    request<SessionContextView>(`/api/employees/${encodeURIComponent(employeeId)}/sessions/${encodeURIComponent(convId)}/context`),
   history: (roomKey: string, convId: string) =>
     request<{ convId: string; memberId: string; messages: RoomMessage[] }>(
       `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/messages`,

@@ -72,6 +72,10 @@ class FakePort implements HarnessPort {
   async send(convId: string, text: string): Promise<ChatMessage> {
     return { id: "x", role: "assistant", text };
   }
+  async context(): Promise<{ instructions: string; items: never[] }> {
+    return { instructions: "", items: [] };
+  }
+
   async transcript(): Promise<ChatMessage[]> {
     return [];
   }

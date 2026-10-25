@@ -7,6 +7,8 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { startNewSession } from "../../src/domain/conversation-chain.ts";
+import type { HarnessPort } from "../../src/harness/port.ts";
 import { projectConfigFile } from "../../src/config/naming.ts";
 import { seedOffice, writeJsonFile } from "../helpers/office.ts";
 import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
@@ -889,6 +891,74 @@ describe("授权请求 API", () => {
         body: JSON.stringify({ decision: "accept" }),
       });
       expect(missing.status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("员工会话上下文 API", () => {
+  it("列出活跃会话（运行中优先）+ 返回完整上下文；非本人员工/会话 404", async () => {
+    seedOffice(root, {
+      agents: [
+        { id: "alice", alias: "爱丽丝", model: "faux/faux-model" },
+        { id: "bob", alias: "鲍勃", model: "faux/faux-model" },
+      ],
+      projects: [{ id: "yt", alias: "油管", members: ["alice"] }, { id: "seo", members: ["bob"] }],
+    });
+    const ws = createWorkspace(root);
+    fs.mkdirSync(path.join(root, "work", "alice"), { recursive: true });
+    startNewSession(path.join(root, "work", "alice", "conversation_ids.md"), "conv_dm", "2026-10-25T10:00:00+08:00");
+    startNewSession(path.join(stateDir(ws), "chains", "group-yt", "alice.md"), "conv_yt", "2026-10-25T10:01:00+08:00");
+    startNewSession(path.join(stateDir(ws), "chains", "group-seo", "bob.md"), "conv_bob", "2026-10-25T10:02:00+08:00");
+
+    const harness = {
+      sessionUsage: async (convId: string) => ({
+        model: { provider: "faux", modelId: "faux-model" },
+        thinkingLevel: "medium",
+        contextUsed: convId === "conv_dm" ? 10 : 20,
+      }),
+      context: async (convId: string) => ({
+        instructions: "你是 alice。",
+        items: [{ role: "user" as const, text: `问题 ${convId}` }],
+      }),
+    } as unknown as HarnessPort;
+    const pump = {
+      register: async () => {},
+      unregister: async () => {},
+      isRunning: (id: string) => id === "conv_yt",
+    };
+    const { base, close } = await start({
+      ws,
+      getConfig: () => configured,
+      getHarness: () => harness,
+      queue: new KeyedQueue(),
+      publicDir,
+      port: 4319,
+      pump,
+    });
+    try {
+      const list = (await (await fetch(`${base}/api/employees/alice/sessions`)).json()) as {
+        employee: { id: string; alias?: string };
+        sessions: Record<string, unknown>[];
+      };
+      expect(list.employee).toEqual({ id: "alice", alias: "爱丽丝" });
+      expect(list.sessions.map((session) => session["convId"])).toEqual(["conv_yt", "conv_dm"]);
+      expect(list.sessions[0]).toMatchObject({
+        kind: "group", projectId: "yt", projectAlias: "油管", running: true, model: "faux/faux-model", contextUsed: 20,
+      });
+
+      const context = (await (await fetch(`${base}/api/employees/alice/sessions/conv_dm/context`)).json()) as {
+        instructions: string;
+        items: { role: string; text: string }[];
+      };
+      expect(context.instructions).toContain("你是 alice。");
+      expect(context.items).toEqual([{ role: "user", text: "问题 conv_dm" }]);
+
+      expect((await fetch(`${base}/api/employees/nobody/sessions`)).status).toBe(404);
+      expect((await fetch(`${base}/api/employees/alice/sessions/nope/context`)).status).toBe(404);
+      // 越权：alice 的 URL 不能取 bob 的会话上下文
+      expect((await fetch(`${base}/api/employees/alice/sessions/conv_bob/context`)).status).toBe(404);
     } finally {
       await close();
     }

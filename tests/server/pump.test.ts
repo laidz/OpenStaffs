@@ -231,3 +231,21 @@ describe("落库异常不连坐（Task 6 收口）", () => {
     }
   });
 });
+
+describe("运行状态", () => {
+  it("isRunning：run start/end 维护，unregister 清掉", async () => {
+    seedEmployee("alice");
+    const harness = new StubHarness();
+    const { pump } = makePump(harness);
+    await pump.register("conv_run", { roomKey: "dm:alice", memberId: "alice" });
+    expect(pump.isRunning("conv_run")).toBe(false);
+    harness.emit("conv_run", { type: "run", convId: "conv_run", phase: "start" });
+    expect(pump.isRunning("conv_run")).toBe(true);
+    harness.emit("conv_run", { type: "run", convId: "conv_run", phase: "end" });
+    expect(pump.isRunning("conv_run")).toBe(false);
+
+    harness.emit("conv_run", { type: "run", convId: "conv_run", phase: "start" });
+    await pump.unregister("conv_run");
+    expect(pump.isRunning("conv_run")).toBe(false);
+  });
+});

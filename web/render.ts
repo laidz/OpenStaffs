@@ -2,7 +2,7 @@ import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
-import type { EmployeeSummary, OrgDept } from "./api.ts";
+import type { ContextItemView, EmployeeSession, EmployeeSummary, OrgDept, SessionContextView } from "./api.ts";
 import type { Live, State } from "./state.ts";
 
 export function escapeHtml(text: string): string {
@@ -51,13 +51,16 @@ export function sidebarHtml(state: State): string {
   </aside>`;
 }
 
-/** 侧栏里的一员（私聊入口）：红点 = 该房间 pin 计数，忙碌点 = 正在跑。 */
+/** 侧栏里的一员：名字按钮进私聊（红点 = pin 计数，忙碌点 = 正在跑）；右侧 icon 进「会话上下文」。 */
 function personItemHtml(state: State, person: EmployeeSummary): string {
   const roomKey = `dm:${person.id}`;
   const pins = state.pins[roomKey] ?? 0;
   const busy = state.busy[person.id] === true ? '<span class="dot"></span>' : "";
   const active = state.roomKey === roomKey ? " active" : "";
-  return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
+  return `<div class="item-row">
+    <button class="item item-main${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
+    <button type="button" class="item-ctx" data-agent-sessions="${escapeHtml(person.id)}" title="查看会话上下文" aria-label="查看会话上下文">▤</button>
+  </div>`;
 }
 
 /** 部门节点：可折叠（折叠时不渲染正文——不是藏起来再叠着显示）。 */
@@ -268,6 +271,94 @@ export function permissionCardsHtml(state: State): string {
     })
     .join("");
   return `<div class="perm-cards" id="perm-cards">${cards}</div>`;
+}
+
+function relationLabel(session: EmployeeSession): string {
+  return session.kind === "dm" ? "私聊" : `群 · ${session.projectAlias ?? session.projectId ?? ""}`;
+}
+
+function sessionTime(started: string): string {
+  return started.slice(0, 16).replace("T", " ");
+}
+
+/** Tab 条：每个活跃会话一个；运行中的带点。 */
+export function agentSessionTabsHtml(sessions: EmployeeSession[], selected: string | undefined): string {
+  return sessions
+    .map((session) => {
+      const running = session.running ? '<span class="dot" title="运行中"></span>' : "";
+      const active = session.convId === selected ? " active" : "";
+      return `<button type="button" class="tab${active}${session.running ? " running" : ""}" data-agent-conv="${escapeHtml(session.convId)}">${running}<span>${escapeHtml(relationLabel(session))}</span><span class="ctx-meta">${escapeHtml(sessionTime(session.started))}</span></button>`;
+    })
+    .join("");
+}
+
+const ROLE_LABEL: Record<ContextItemView["role"], string> = {
+  system: "系统",
+  user: "用户",
+  assistant: "助手",
+  tool: "工具结果",
+};
+
+function contextItemHtml(item: ContextItemView): string {
+  const meta = item.kind === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.kind)}</span>`;
+  const toolName = item.toolName === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolName)}</span>`;
+  const error = item.isError === true ? '<span class="ctx-error">错误</span>' : "";
+  const thinking =
+    item.thinking === undefined || item.thinking === ""
+      ? ""
+      : `<details class="ctx-block"><summary>思考</summary><pre>${escapeHtml(item.thinking)}</pre></details>`;
+  const text = item.text === "" ? "" : `<pre class="ctx-text">${escapeHtml(item.text)}</pre>`;
+  const calls = (item.toolCalls ?? [])
+    .map(
+      (call) =>
+        `<details class="ctx-block"><summary>工具调用：${escapeHtml(call.name)}</summary><pre>${escapeHtml(JSON.stringify(call.arguments ?? {}, null, 2))}</pre></details>`,
+    )
+    .join("");
+  const empty = text === "" && thinking === "" && calls === "" ? '<div class="ctx-meta">（空）</div>' : "";
+  return `<div class="ctx-item ctx-${item.role}">
+    <div class="ctx-head"><strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}</div>
+    ${thinking}${text}${calls}${empty}
+  </div>`;
+}
+
+function contextBodyHtml(context: SessionContextView): string {
+  const usage = context.contextWindow === undefined
+    ? `${context.contextUsed} tokens`
+    : `${context.contextUsed} / ${context.contextWindow} tokens`;
+  const system = context.instructions.trim() === ""
+    ? '<p class="hint">（没有系统提示词）</p>'
+    : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></details>`;
+  return `<div class="ctx-header">
+      <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(sessionTime(context.started))}</span></div>
+      <div class="ctx-meta">${escapeHtml(context.model)} · 思考 ${escapeHtml(context.thinkingLevel ?? "—")} · ${escapeHtml(usage)}${context.running ? ' · <span class="ctx-running">运行中</span>' : ""}</div>
+      ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
+    </div>
+    ${system}
+    <div class="ctx-items">${context.items.map(contextItemHtml).join("")}</div>`;
+}
+
+/** 员工「会话上下文」面板：Tab（活跃会话）+ 选中会话的完整上下文。 */
+export function agentPanelHtml(
+  state: State,
+  employee: { id: string; alias?: string },
+  sessions: EmployeeSession[],
+  selected: string | undefined,
+  context: SessionContextView | undefined,
+): string {
+  const tabs = agentSessionTabsHtml(sessions, selected);
+  const body =
+    context === undefined
+      ? `<p class="hint">${sessions.length === 0 ? "该员工还没有活跃会话。" : "无法读取该会话上下文（它可能刚刚结束）。"}</p>`
+      : contextBodyHtml(context);
+  return `<div class="layout">${sidebarHtml(state)}<section class="chat agent-panel">
+    <header class="chat-head">
+      <span class="title">会话上下文 · ${escapeHtml(employee.alias ?? employee.id)}</span>
+      <button id="agent-panel-refresh">刷新</button>
+      <button id="agent-panel-back">返回聊天</button>
+    </header>
+    <div class="tabs">${tabs === "" ? '<span class="hint">还没有活跃会话</span>' : tabs}</div>
+    <div class="agent-context">${body}</div>
+  </section></div>${permissionCardsHtml(state)}`;
 }
 
 export function layoutHtml(state: State): string {

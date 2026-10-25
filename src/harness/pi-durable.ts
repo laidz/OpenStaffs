@@ -17,7 +17,7 @@ import { createAccessExtension } from "./access-extension.ts";
 import { WriteGuard } from "./write-guard.ts";
 import type { AccessContext } from "../domain/access-control.ts";
 import type { Relation } from "../domain/types.ts";
-import type { ChatMessage, HarnessEvent, HarnessPort, PostEntry } from "./port.ts";
+import type { ChatMessage, ContextItem, HarnessEvent, HarnessPort, PostEntry, SessionContext } from "./port.ts";
 
 export type PiHarnessOptions = {
   root: string;
@@ -48,6 +48,49 @@ function textOf(message: Message | undefined): string {
     .flatMap((block) => (block && block.type === "text" ? [String(block.text ?? "")] : []))
     .join("")
     .trim();
+}
+
+/** 一条模型消息 → 上下文条目（保留工具调用 / 思考 / 工具结果）。 */
+function toContextItem(message: Message, kind?: string): ContextItem | undefined {
+  const rawRole = (message as { role?: unknown }).role;
+  const role = rawRole === "toolResult" ? "tool" : rawRole;
+  if (role !== "user" && role !== "assistant" && role !== "tool") return undefined;
+  const text = textOf(message);
+  if (role === "assistant") {
+    const blocks = Array.isArray((message as { content?: unknown }).content)
+      ? ((message as { content: unknown[] }).content)
+      : [];
+    const thinking = blocks
+      .flatMap((block) => (block && (block as { type?: unknown }).type === "thinking" ? [String((block as { thinking?: unknown }).thinking ?? "")] : []))
+      .join("\n")
+      .trim();
+    const toolCalls = blocks.flatMap((block) => {
+      if (!block || (block as { type?: unknown }).type !== "toolCall") return [];
+      const call = block as { name?: unknown; arguments?: unknown };
+      return [{ name: String(call.name ?? ""), arguments: call.arguments ?? {} }];
+    });
+    return {
+      role: "assistant",
+      text,
+      ...(kind === undefined ? {} : { kind }),
+      ...(thinking === "" ? {} : { thinking }),
+      ...(toolCalls.length === 0 ? {} : { toolCalls }),
+    };
+  }
+  if (role === "tool") {
+    const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
+    const toolName = (message as { toolName?: unknown }).toolName;
+    const isError = (message as { isError?: unknown }).isError;
+    return {
+      role: "tool",
+      text,
+      ...(kind === undefined ? {} : { kind }),
+      ...(typeof toolCallId === "string" ? { toolCallId } : {}),
+      ...(typeof toolName === "string" ? { toolName } : {}),
+      ...(isError === true ? { isError: true } : {}),
+    };
+  }
+  return { role: "user", text, ...(kind === undefined ? {} : { kind }) };
 }
 
 /** entry → 单条聊天消息（只认 user/assistant；工具结果等跳过）。 */
@@ -86,6 +129,9 @@ export function mapPiEvent(event: PiAgentEvent, convId: string): HarnessEvent[] 
       const message = entryToChatMessage(event.entry);
       return message === undefined ? [] : [{ type: "message", convId, message }];
     }
+    // 订阅晚于投递时（新会话首轮、服务端重启）收不到 run_start；snapshot.run 补上「已在跑」。
+    case "snapshot":
+      return event.run === undefined ? [] : [{ type: "run", convId, phase: "start" }];
     case "run_start":
       return [{ type: "run", convId, phase: "start" }];
     case "run_end":
@@ -312,6 +358,32 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
       return async () => {
         await stream.stop();
       };
+    },
+    async context(convId) {
+      const conv = await conversation(convId as unknown as ConversationId);
+      const agent = await conv.agent(ctx);
+      const context = await conv.context(ctx);
+      // entry kind（如 pi.compaction）按 contributions 回填，messages 本身不带 kind。
+      const kinds = new WeakMap<object, string>();
+      for (const [index, entry] of context.entries.entries()) {
+        for (const message of context.contributions[index] ?? []) kinds.set(message as object, entry.kind);
+      }
+      const system = context.messages
+        .filter((message) => (message as { role?: unknown }).role === "system")
+        .map((message) => textOf(message))
+        .filter((text) => text !== "");
+      const items: ContextItem[] = [];
+      for (const message of context.messages) {
+        if ((message as { role?: unknown }).role === "system") continue;
+        const item = toContextItem(message, kinds.get(message as object));
+        if (item !== undefined) items.push(item);
+      }
+      const result: SessionContext = {
+        instructions: system.length > 0 ? system.join("\n\n") : (agent.instructions ?? ""),
+        items,
+        ...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
+      };
+      return result;
     },
     async transcript(convId) {
       const conv = await conversation(convId as unknown as ConversationId);

@@ -4,7 +4,7 @@ import path from "node:path";
 import { loadProjectConfig } from "../config/load.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
-import { bossNamesFor, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
+import { bossNamesFor, displayThinkingLevel, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { findPerson, loadOrg, type OrgDepartment, type OrgTree } from "../domain/org.ts";
 import type { Workspace } from "../domain/paths.ts";
@@ -12,7 +12,7 @@ import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage
 import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  findSessionOwner, interruptRoom, roomSessionInfo, sessionChains, sessionDefaults, type Relation,
+  employeeActiveSessions, findSessionOwner, interruptRoom, roomSessionInfo, sessionChains, sessionDefaults, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
@@ -24,6 +24,8 @@ import type { SseHub } from "./sse.ts";
 export type PumpLike = {
   register(convId: string, ref: { roomKey: string; memberId: string }): Promise<void>;
   unregister(convId: string): Promise<void>;
+  /** 会话当前是否在跑（「会话上下文」面板的运行点）；缺省视为未知 / false。 */
+  isRunning?(convId: string): boolean;
 };
 
 export type ServerDeps = {
@@ -122,6 +124,104 @@ function roomExists(ws: Workspace, relation: Relation): boolean {
   return relation.kind === "dm"
     ? findPerson(loadOrg(ws), relation.employeeId) !== undefined // dm 分支 P2 已落地，保持不动
     : loadProjectConfig(ws, relation.project) !== undefined; // 仅群聊分支改判扁平 config
+}
+
+/** 「会话上下文」：该员工的活跃会话列表 + 单条会话的完整上下文（只读）。 */
+async function handleEmployees(
+  deps: ServerDeps,
+  res: http.ServerResponse,
+  method: string,
+  segments: string[],
+): Promise<void> {
+  if (method !== "GET") {
+    json(res, 405, { error: "方法不允许" });
+    return;
+  }
+  let employeeId: string;
+  try {
+    employeeId = decodeURIComponent(segments[2]!);
+  } catch {
+    json(res, 404, { error: "员工不存在" });
+    return;
+  }
+  const person = findPerson(loadOrg(deps.ws), employeeId);
+  const harness = deps.getHarness();
+  if (person === undefined) {
+    json(res, 404, { error: "员工不存在" });
+    return;
+  }
+  if (harness === undefined) {
+    json(res, 503, { error: "会话服务未就绪" });
+    return;
+  }
+
+  const projects = new Map(listProjects(deps.ws).map((project) => [project.id, project.alias]));
+  const relationView = (relation: Relation): { kind: "dm" | "group"; relationKey: string; projectId?: string; projectAlias?: string } => {
+    if (relation.kind === "dm") return { kind: "dm", relationKey: `dm:${relation.employeeId}` };
+    return {
+      kind: "group",
+      relationKey: `group:${relation.project}`,
+      projectId: relation.project,
+      projectAlias: projects.get(relation.project) ?? relation.project,
+    };
+  };
+  const sessions = employeeActiveSessions(deps.ws, employeeId);
+
+  if (segments.length === 4 && segments[3] === "sessions") {
+    const out: Record<string, unknown>[] = [];
+    for (const session of sessions) {
+      try {
+        const usage = await harness.sessionUsage(session.convId);
+        out.push({
+          convId: session.convId,
+          ...relationView(session.relation),
+          started: session.started,
+          running: deps.pump?.isRunning?.(session.convId) ?? false,
+          model: formatModelRef(usage.model),
+          thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
+          contextUsed: usage.contextUsed,
+          ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
+        });
+      } catch {
+        // 坏会话跳过：一条会话取不到信息不该让整个面板 500。
+      }
+    }
+    out.sort((a, b) => Number(b["running"] === true) - Number(a["running"] === true) || String(b["started"]).localeCompare(String(a["started"])));
+    json(res, 200, { employee: { id: person.id, ...(person.alias === undefined ? {} : { alias: person.alias }) }, sessions: out });
+    return;
+  }
+
+  if (segments.length === 6 && segments[3] === "sessions" && segments[5] === "context") {
+    let convId: string;
+    try {
+      convId = decodeURIComponent(segments[4]!);
+    } catch {
+      json(res, 404, { error: "会话不存在或已结束" });
+      return;
+    }
+    const session = sessions.find((item) => item.convId === convId);
+    if (session === undefined) {
+      json(res, 404, { error: "会话不存在或已结束" });
+      return;
+    }
+    const [usage, context] = await Promise.all([harness.sessionUsage(convId), harness.context(convId)]);
+    json(res, 200, {
+      convId,
+      ...relationView(session.relation),
+      started: session.started,
+      running: deps.pump?.isRunning?.(convId) ?? false,
+      model: formatModelRef(usage.model),
+      thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
+      contextUsed: usage.contextUsed,
+      ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
+      instructions: context.instructions,
+      ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+      items: context.items,
+    });
+    return;
+  }
+
+  json(res, 404, { error: "接口不存在" });
 }
 
 async function handleRooms(
@@ -372,6 +472,10 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                 members: memberSummaries(deps.ws, tree, project.id),
               })),
             );
+            return;
+          }
+          if (segments[1] === "employees" && segments[2] !== undefined) {
+            await handleEmployees(deps, res, method, segments);
             return;
           }
           if (segments[1] === "rooms" && segments[2] !== undefined && harness !== undefined) {
