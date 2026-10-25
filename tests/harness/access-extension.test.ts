@@ -70,6 +70,41 @@ describe("访问控制钩子", () => {
   });
 });
 
+describe("并发写保护（work/）", () => {
+  it("没读先写被拦；读过之后再写放行", async () => {
+    const workdir = path.join(root, "work", "alice");
+    fs.mkdirSync(workdir, { recursive: true });
+    fs.writeFileSync(path.join(workdir, "note.md"), "old");
+
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "pwn" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("blocked"),
+      fauxAssistantMessage(fauxToolCall("read", { path: "note.md" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("write", { path: "note.md", content: "new" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state.sqlite"), models });
+    await harness.open();
+    try {
+      const convId = await harness.startSession({
+        cwd: workdir,
+        instructions: "你是 alice。",
+        model: { provider: "faux", modelId: "faux-model" },
+        access: { root, cwd: workdir, selfId: "alice", permissions: { write: [workdir], read: [workdir], bash: [] } },
+      });
+      await harness.send(convId, "直接写");
+      expect(fs.readFileSync(path.join(workdir, "note.md"), "utf8")).toBe("old");
+      await harness.send(convId, "先读再写");
+      expect(fs.readFileSync(path.join(workdir, "note.md"), "utf8")).toBe("new");
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe("未注册会话", () => {
   it("beforeTool 直接返回 block（未注册 = 不跑工具）", () => {
     const extension = createAccessExtension(() => undefined);

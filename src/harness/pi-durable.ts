@@ -14,6 +14,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { Message } from "@earendil-works/pi-ai";
 import { createAccessExtension } from "./access-extension.ts";
+import { WriteGuard } from "./write-guard.ts";
 import type { AccessContext } from "../domain/access-control.ts";
 import type { Relation } from "../domain/types.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort, PostEntry } from "./port.ts";
@@ -116,7 +117,7 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
   let harness: Harness | undefined;
   const accessByConv = new Map<string, AccessContext>();
   const sessionInfoByConv = new Map<string, { selfId: string; relation: Relation }>();
-  const accessExtension = createAccessExtension((id) => accessByConv.get(id));
+  const accessExtension = createAccessExtension((id) => accessByConv.get(id), new WriteGuard(options.root));
   registry.install(accessExtension);
 
   // 默认扩展集固定：MCP 扩展只安装、不默认选中（由会话的 mcpExtensions 选择）。
