@@ -16,6 +16,7 @@ import { newSession, openDm, openGroup, relationCwd, sessionDefaults, type Sessi
 import { stripLeadingMentions } from "../app/message-row.ts";
 import { parseRoomKey, roomKeyOf, toRoomMessage, type RoomMessage, type RoomSpeaker } from "../app/rooms.ts";
 import { openMessageStore } from "../store/messages.ts";
+import { memoryTools } from "./memory.ts";
 import { BOSS_PARTICIPANT } from "../store/row.ts";
 
 /** 授权请求依赖（由装配层注入；未注入时 request_permission 报"不可用"）。 */
@@ -256,4 +257,12 @@ const requestPermission: ToolDef = {
 };
 
 /** OpenStaffs 自有工具（统一注册表，唯一真相源）。加工具 = 加一条并在此登记。 */
-export const openStaffsToolDefs: readonly ToolDef[] = [officeList, memberProfile, roomHistory, sendMessage, newSessionTool, requestPermission];
+export const openStaffsToolDefs: readonly ToolDef[] = [
+  officeList,
+  memberProfile,
+  roomHistory,
+  sendMessage,
+  newSessionTool,
+  requestPermission,
+  ...memoryTools,
+];

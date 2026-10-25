@@ -47,3 +47,12 @@ test("非对象 / prompt 非字符串 → 空字段 + issue / 字段缺省", () 
   expect(array.issues.length).toBe(1);
   expect(parseConfigFields({ prompt: 42 }).fields.prompt).toBeUndefined();
 });
+
+test("memory：布尔值解析，非布尔值忽略并记 issue", () => {
+  expect(parseConfigFields({ memory: true }).fields.memory).toBe(true);
+  expect(parseConfigFields({ memory: false }).fields.memory).toBe(false);
+  expect(parseConfigFields({}).fields.memory).toBeUndefined();
+  const bad = parseConfigFields({ memory: "yes" });
+  expect(bad.fields.memory).toBeUndefined();
+  expect(bad.issues).toContain("memory 必须是布尔值（已忽略）");
+});

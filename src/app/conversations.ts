@@ -4,7 +4,8 @@ import { findPerson, loadOrg } from "../domain/org.ts";
 import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
-import { ensureMemory, loadEmployee, type Employee } from "../domain/employee.ts";
+import { loadEmployee, type Employee } from "../domain/employee.ts";
+import { renderMemoryBlock } from "../domain/memory/view.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { Relation } from "../domain/types.ts";
@@ -57,7 +58,10 @@ export function instructionsFor(ws: Workspace, relation: Relation, speaker: Empl
   const parts: string[] = [];
   const chain = renderPromptChain(scopes, promptContextFor(ws, relation, speaker));
   if (chain !== "") parts.push(chain);
-  if (speaker.memory !== "") parts.push(speaker.memory);
+  if (speaker.memoryEnabled) {
+    const memory = renderMemoryBlock(ws, speaker.id);
+    if (memory !== "") parts.push(memory);
+  }
   parts.push(renderSkillCatalog(ws, scopes, readSkillPaths(ws)));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
@@ -121,7 +125,6 @@ async function ensure(
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
   const speaker = loadEmployee(ws, speakerId);
-  ensureMemory(ws, speakerId); // D27：会话建立时补建 work/<id>/MEMORY.md
   const file = chainFileFor(ws, relation, speakerId);
   const active = activeSession(file);
   if (active !== undefined && (await harness.attach(active.id, accessFor(ws, relation, speaker)))) {
@@ -150,7 +153,6 @@ export async function newSession(
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): Promise<string> {
   const speaker = loadEmployee(ws, speakerId);
-  ensureMemory(ws, speakerId); // D27：会话建立时补建 work/<id>/MEMORY.md
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
   return convId;

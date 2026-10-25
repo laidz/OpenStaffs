@@ -15,6 +15,8 @@ export type ConfigFields = {
   permissions: PermissionTable;
   model?: string;
   thinkingLevel?: string;
+  /** 记忆开关；缺省 = 跟随空间级配置。 */
+  memory?: boolean;
   head: string[];
   owner: string[];
   members: string[];
@@ -100,6 +102,9 @@ export function parseConfigFields(raw: unknown): { fields: ConfigFields; issues:
   if (model !== undefined) fields.model = model;
   const thinkingLevel = text(raw["thinkingLevel"]);
   if (thinkingLevel !== undefined) fields.thinkingLevel = thinkingLevel;
+  const memory = raw["memory"];
+  if (typeof memory === "boolean") fields.memory = memory;
+  else if (memory !== undefined) issues.push("memory 必须是布尔值（已忽略）");
   fields.skills = textArray(raw["skills"], "skills", issues);
   fields.mcp = textArray(raw["mcp"], "mcp", issues);
   fields.head = textArray(raw["head"], "head", issues);

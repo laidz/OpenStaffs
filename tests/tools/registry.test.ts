@@ -420,9 +420,12 @@ describe("request_permission", () => {
 });
 
 describe("注册表", () => {
-  it("暴露 6 个工具且名字唯一", () => {
+  it("暴露 12 个工具且名字唯一", () => {
     const names = openStaffsToolDefs.map((t) => t.name).sort();
-    expect(names).toEqual(["member_profile", "new_session", "office_list", "request_permission", "room_history", "send_message"]);
+    expect(names).toEqual([
+      "member_profile", "memory_add", "memory_get", "memory_list", "memory_profile",
+      "memory_remove", "memory_update", "new_session", "office_list", "request_permission", "room_history", "send_message",
+    ]);
   });
 });
 

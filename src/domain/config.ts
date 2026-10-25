@@ -100,6 +100,25 @@ export function readBossName(ws: Workspace): string {
 }
 
 /**
+ * 空间级记忆开关（config.json 的 memory）：缺省 / 非布尔 → undefined（由调用方按 true 处理）。
+ * 只读原始 JSON，不依赖 providers / model 是否合法。
+ */
+export function readMemoryFlag(ws: Workspace): boolean | undefined {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(configFile(ws), "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { memory?: unknown };
+    return typeof parsed.memory === "boolean" ? parsed.memory : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 外部技能目录（config.json 的 skillPaths）：老板的全局技能库，多个 agent 工具共用。
  * 写法：`~` 开头 → 家目录；绝对路径 → 原样；其余 → 相对办公空间根目录。
  * 去重（先出现者胜）；文件缺失 / 坏 JSON / 非数组 / 坏条目 → 跳过（不崩）。

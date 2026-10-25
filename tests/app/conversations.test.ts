@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace, memoryFile } from "../../src/domain/paths.ts";
+import { createWorkspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
@@ -13,6 +13,7 @@ import {
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
+import { createEntity, writeProfile } from "../../src/domain/memory/store.ts";
 import { newSpaceConfig } from "../../src/domain/space.ts";
 import { seedOffice } from "../helpers/office.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
@@ -51,17 +52,18 @@ describe("应用用例", () => {
     }
   });
 
-  it("打开会话时自动补建 work/<id>/MEMORY.md（D27）", async () => {
+  it("新会话注入 profile + 索引；关闭开关则不注入", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
-    const harness = harnessWithFaux();
-    await harness.open();
-    try {
-      await openDm(ws, harness, "alice");
-      expect(fs.existsSync(memoryFile(ws, "alice"))).toBe(true);
-    } finally {
-      await harness.close();
-    }
+    writeProfile(ws, "alice", "我是 alice");
+    createEntity(ws, "alice", { title: "VIP 口径", description: "谈 VIP 时看", body: "正文" });
+    const text = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
+    expect(text).toContain("我是 alice");
+    expect(text).toContain("vip-口径 · VIP 口径 — 谈 VIP 时看");
+
+    seedOffice(root, { agents: [{ id: "bob", model: "faux/faux-model", memory: false }] });
+    writeProfile(ws, "bob", "不该出现");
+    expect(instructionsFor(ws, { kind: "dm", employeeId: "bob" }, loadEmployee(ws, "bob"))).not.toContain("不该出现");
   });
 
   it("新开会话：追加一条并结束上一条", async () => {
@@ -111,8 +113,7 @@ describe("应用用例", () => {
       agents: [{ id: "alice", department: "eng", prompt: "你是运营。" }],
       projects: [{ id: "yt", members: ["alice"], prompt: "项目规范" }],
     });
-    fs.mkdirSync(path.join(root, "work", "alice"), { recursive: true });
-    fs.writeFileSync(path.join(root, "work", "alice", "MEMORY.md"), "记忆一条。");
+    writeProfile(ws, "alice", "记忆一条。");
     const speaker = loadEmployee(ws, "alice");
     const text = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
     const order = ["空间总纲", "部门规矩", "项目规范", "你是运营。", "记忆一条。", "## 可用技能"];

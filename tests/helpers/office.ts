@@ -9,7 +9,7 @@ export type OfficeSpec = {
   departments?: { path: string; alias?: string; head?: string[]; prompt?: string; skills?: string[]; mcp?: string[] }[];
   agents?: {
     id: string; department?: string; alias?: string; model?: string; thinkingLevel?: string;
-    prompt?: string; skills?: string[]; mcp?: string[]; permissions?: Record<string, string[]>;
+    prompt?: string; skills?: string[]; mcp?: string[]; permissions?: Record<string, string[]>; memory?: boolean;
   }[];
   projects?: { id: string; alias?: string; members?: string[]; owner?: string[]; prompt?: string; skills?: string[]; mcp?: string[] }[];
 };

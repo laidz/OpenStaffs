@@ -54,12 +54,7 @@ export function messagesDbFile(ws: Workspace): string {
 /** 工作树目录名（D20：平铺 `work/<名字>/`，与定义树分离）。 */
 export const WORK_DIR_NAME = "work";
 
-/** agent 的工作目录（会话 cwd / 自己的可写目录 / 会话链落点）；P2 只建目录，不预置 MEMORY.md（D27 归 P5）。 */
+/** agent 的工作目录（会话 cwd / 自己的可写目录 / 会话链落点 / 原生记忆 memory/）。 */
 export function workDir(ws: Workspace, id: string): string {
   return path.join(ws.root, WORK_DIR_NAME, id);
-}
-
-/** 默认记忆文件（D27）：工作目录里的 MEMORY.md。 */
-export function memoryFile(ws: Workspace, id: string): string {
-  return path.join(workDir(ws, id), "MEMORY.md");
 }

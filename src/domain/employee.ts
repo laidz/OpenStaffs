@@ -1,10 +1,10 @@
 // src/domain/employee.ts —— 人 = 单一 `agents/.../<名字>.agent.config.json`（D1/D2/D5）。
 // 定位走 P2 的 org 模块（`loadPerson` / `listPeople`），字段解析走 P3 的 `src/config/*`；
-// 记忆读自工作目录 `work/<id>/MEMORY.md`（D20/D27）。不再有 AGENTS.md / profile.md。
-import fs from "node:fs";
+// 记忆是框架原生能力（`work/<id>/memory/`），这里只解析开关。
 import { loadAgentConfig } from "../config/load.ts";
 import { listPeople, loadPerson } from "./org.ts";
-import { memoryFile, workDir, type Workspace } from "./paths.ts";
+import { workDir, type Workspace } from "./paths.ts";
+import { readMemoryFlag } from "./config.ts";
 import type { PermissionTable } from "../config/schema.ts";
 import type { EmployeeId, ModelChoice } from "./types.ts";
 
@@ -14,8 +14,8 @@ export type Employee = {
   dir: string;
   /** 工作目录 work/<id>/（D20/D27）。 */
   workDir: string;
-  /** 记忆正文（读自 work/<id>/MEMORY.md；缺失 → 空串）。 */
-  memory: string;
+  /** 原生记忆是否启用：员工显式值 → 空间默认 → true。 */
+  memoryEnabled: boolean;
   /** 模型覆盖（config 的 model / thinkingLevel）。 */
   model: ModelChoice;
   /** 展示名（alias 缺省 = id）。 */
@@ -30,14 +30,6 @@ export type Employee = {
   permissions?: PermissionTable;
 };
 
-function readText(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
-}
-
 /** 读人：P2 定位（`loadPerson`，不存在 → 抛「员工不存在」）+ P3 解析的字段 + 工作目录记忆。 */
 export function loadEmployee(ws: Workspace, id: EmployeeId): Employee {
   const person = loadPerson(ws, id); // P2：不存在会抛 `员工不存在: <id>`
@@ -51,7 +43,7 @@ export function loadEmployee(ws: Workspace, id: EmployeeId): Employee {
     id,
     dir: person.dir,
     workDir: workDir(ws, id),
-    memory: readText(memoryFile(ws, id)).trim(),
+    memoryEnabled: fields?.memory ?? readMemoryFlag(ws) ?? true,
     model,
     skills: fields?.skills ?? [],
     mcp: fields?.mcp ?? [],
@@ -59,13 +51,6 @@ export function loadEmployee(ws: Workspace, id: EmployeeId): Employee {
     ...(fields?.prompt === undefined ? {} : { prompt: fields.prompt }),
     ...(permissions === undefined ? {} : { permissions }),
   };
-}
-
-/** 首次使用某 agent 时补建其工作目录与空 MEMORY.md（幂等，不覆盖已有内容；D27）。 */
-export function ensureMemory(ws: Workspace, id: EmployeeId): void {
-  fs.mkdirSync(workDir(ws, id), { recursive: true });
-  const file = memoryFile(ws, id);
-  if (!fs.existsSync(file)) fs.writeFileSync(file, "");
 }
 
 /** 全部人（P2 的组织发现顺序；逐个补齐能力字段）。 */

@@ -25,10 +25,11 @@ function fauxModels() {
 }
 
 describe("OpenStaffs 工具扩展", () => {
-  it("暴露 6 个工具，名字唯一", () => {
+  it("暴露 12 个工具，名字唯一", () => {
     const ext = createOpenStaffsToolsExtension({ ws: createWorkspace(root), getHarness: () => ({} as HarnessPort) });
     expect((ext.tools ?? []).map((t) => t.name).sort()).toEqual([
-      "member_profile", "new_session", "office_list", "request_permission", "room_history", "send_message",
+      "member_profile", "memory_add", "memory_get", "memory_list", "memory_profile",
+      "memory_remove", "memory_update", "new_session", "office_list", "request_permission", "room_history", "send_message",
     ]);
   });
 

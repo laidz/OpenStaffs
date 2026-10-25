@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace, memoryFile, workDir } from "../../src/domain/paths.ts";
+import { createWorkspace, workDir } from "../../src/domain/paths.ts";
 import { listEmployees, loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-emp-"));
@@ -103,15 +103,6 @@ describe("loadEmployee（单一 config 定义）", () => {
     expect(loadEmployee(ws, "pat").permissions).toEqual({ write: ["./out"], read: ["./"] });
   });
 
-  it("记忆读自 work/<id>/MEMORY.md（trim）；缺失 → 空串", () => {
-    const ws = createWorkspace(tmp);
-    seed("alice", { prompt: "你是 alice。" });
-    expect(loadEmployee(ws, "alice").memory).toBe("");
-    fs.mkdirSync(workDir(ws, "alice"), { recursive: true });
-    fs.writeFileSync(memoryFile(ws, "alice"), "  记住这条  \n");
-    expect(loadEmployee(ws, "alice").memory).toBe("记住这条");
-  });
-
   it("renderInstructions = prompt（缺省空串）", () => {
     const ws = createWorkspace(tmp);
     seed("alice", { prompt: "你是 alice。" });
@@ -119,6 +110,23 @@ describe("loadEmployee（单一 config 定义）", () => {
     seed("earl", {});
     expect(renderInstructions(loadEmployee(ws, "earl"))).toBe("");
   });
+});
+
+it("memoryEnabled：员工显式值覆盖空间默认；缺省为 true", () => {
+  const ws = createWorkspace(tmp);
+  seed("alice", {});
+  expect(loadEmployee(ws, "alice").memoryEnabled).toBe(true);
+
+  seed("alice", { memory: false });
+  expect(loadEmployee(ws, "alice").memoryEnabled).toBe(false);
+
+  seed("alice", {});
+  fs.mkdirSync(path.join(tmp, "openstaffs", ".data"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "openstaffs", ".data", "config.json"), JSON.stringify({ memory: false }));
+  expect(loadEmployee(ws, "alice").memoryEnabled).toBe(false);
+
+  seed("alice", { memory: true });
+  expect(loadEmployee(ws, "alice").memoryEnabled).toBe(true);
 });
 
 it("listEmployees：按 id 排序、跳过隐藏项与无定义文件的目录", () => {

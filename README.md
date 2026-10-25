@@ -93,9 +93,10 @@ EOF
 
 - `prompt`：她的人格与职责（会话创建时注入）；`alias`：展示名（缺省 = 文件名主干）；`model` / `thinkingLevel`：可选，覆盖全局默认模型与思考强度。
 - `skills` / `mcp`：可选，技能名 / MCP server 名数组（累加；见「空间能力」与「MCP server」两节）。
+- `memory`：可选，是否启用原生记忆（缺省 `true`；空间 `openstaffs/.data/config.json` 里也有一个同名总开关，员工配置优先）。关闭后该员工不注入记忆、`memory_*` 工具不可用，已有数据保留。
 - `permissions`：可选，**按工具 → 路径列表**。缺省 `{ "write": [], "read": ["./"], "bash": ["./"] }`；相对路径相对**本文件所在目录**（即她所在部门目录）。员工配置**只能由你（或框架的授权流程）写**——员工自己（含主管）写不了 `*.agent.config.json`。
 - 部门可写 `department.config.json` 声明展示名与负责人：`{ "alias": "工程部", "head": ["alice"] }`——`head` 只能写**本级直属成员**（写子部门成员 / 写错 id 视为无）；负责人对自己所在部门的**整棵子树**有写权限（穿透），但其中的 `*.agent.config.json` 仍在硬保护内（写不了）——**主管当前没有直接写下级定义的通道**，改下级定义请由你写或走授权流程。你写配置一律通过 `write` 工具（受 attenuation 校验）；`bash` 写配置会被拦。
-- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里；记忆文件落点即 `work/<她的 id>/MEMORY.md`，新会话自动注入）；`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` 要**新开会话**生效，`permissions` 每轮写校验即时读。
+- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里）；原生记忆在 `work/<她的 id>/memory/`，由 `memory_*` 工具维护，新会话自动注入 profile 与索引。`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` / `memory` 要**新开会话**生效，`permissions` 每轮写校验即时读。
 
 她的展示名与人格（`prompt`）都可以继续完善——需要什么直接问她：她能自己动手的会自己动手，动不了的会告诉你怎么做。
 

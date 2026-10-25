@@ -23,13 +23,13 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 │     ├─ department.config.json  # 部门声明（可选：alias / head）
 │     └─ <名字>.agent.config.json
 ├─ projects/<项目 id>.project.config.json   # 项目 = 群聊（**扁平文件**：owner / members / 能力 / 权限）
-├─ work/<名字>/                  # 各人的工作目录（会话 cwd、私聊会话链、可选 MEMORY.md）
+├─ work/<名字>/                  # 各人的工作目录（会话 cwd、私聊会话链、memory/ 原生记忆）
 └─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
    ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；新建空间时物化）
    ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
    ├─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
    └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
-      ├─ config.json             # 全局配置：providers / model / thinkingLevel / port / bossName / skillPaths / mcp
+      ├─ config.json             # 全局配置：providers / model / thinkingLevel / memory / port / bossName / skillPaths / mcp
       ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护；私聊链在 work/<人>/conversation_ids.md）
       ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
       ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
@@ -82,6 +82,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `providers` | 供应商 → `{ apiKey }`。可用：`opencode-go` / `anthropic` / `openai` / `deepseek` / `google` / `openrouter`；写了名单外的供应商，启动会直接报错 |
 | `model` | 全局默认模型 `供应商/模型 id`（第一个 `/` 前是供应商，模型 id 可再含 `/`）；人没配模型时兜底 |
 | `thinkingLevel` | 可选：全局默认思考强度。**档位由模型决定**（候选 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）；配置端**不校验**。非思考模型（只支持 `off`）、未显式映射的 `xhigh` / `max`、非法档，界面都展示 `null`。优先级：人的 `<名字>.agent.config.json` > 本字段；改动**新开会话**生效（与 `model` 一样，建议重启后整体确认） |
+| `memory` | 可选布尔，**常驻记忆总开关**（缺省 `true`）。`false` = 员工新会话不注入记忆、`memory_*` 工具不可用（数据保留）；员工层同名字段优先。直读配置文件——**注入看新开会话，工具调用即时生效**。细节见「记忆（原生能力）」 |
 | `port` | 可选，默认 4319；优先级：启动参数 / `OPENSTAFFS_PORT` > 本字段 > 4319 |
 | `bossName` | 可选：负责人称谓（缺省「老板」）。空值/缺失自动回落，**不可为空、不可移除**；界面、消息与工具文案统一消费此称谓。直读配置文件——刷新页面 / 新开会话即生效，无需重启 |
 | `skillPaths` | 可选：外部技能目录数组（老板的全局技能库）。写法：`~/` 开头（或裸 `~`）= 家目录，绝对路径 = 原样，其余 = 相对办公空间根目录。算**空间级**技能，所有会话可用；改动**新开会话**生效。**只指向你自己信任的目录**——这里的技能会进入**所有**员工会话的制度提示词（`name` / `description` 注入，正文由员工按需 `read`）。 |
@@ -139,7 +140,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 **人 = 一个配置文件**：`agents/` 下（可嵌套的）部门目录里的 `<名字>.agent.config.json`；**文件名的骨干就是人 id**（**全局唯一**，重复时只保留先扫描到的那个）。**文件夹 = 部门**，可任意嵌套、深度不限。
 
-人配置文件（`alias` / `prompt` / `skills` / `mcp` / `permissions` / `model` / `thinkingLevel`）：
+人配置文件（`alias` / `prompt` / `skills` / `mcp` / `permissions` / `model` / `thinkingLevel` / `memory`）：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -147,6 +148,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `alias` | 展示名（缺省 = 文件名主干）。改完**刷新页面即生效** |
 | `model` | 覆盖全局默认模型 `供应商/模型 id`；引用的供应商要在全局配置里配好密钥。改完**该人新开会话生效** |
 | `thinkingLevel` | 思考强度（可选，覆盖全局默认）。档位由模型决定，配置端不校验；非思考模型、未映射的 `xhigh` / `max` 与非法档在界面展示 `null`。改完**该人新开会话生效** |
+| `memory` | 记忆开关（可选布尔）：覆盖空间默认。`false` = 该人不注入记忆、记忆工具不可用（数据保留）。注入改完**新开会话生效**；工具调用即时读 |
 | `skills` | 技能**名**数组（累加路线的一环；解析到 `openstaffs/skills/<名>/`）。改完**该人新开会话生效** |
 | `mcp` | MCP server **名**数组（累加路线的一环；解析到 `openstaffs/mcps.json`）。改完**该人新开会话生效** |
 | `permissions` | 按工具 → 路径列表（见「权限：按工具 → 路径」）；**相对路径相对本文件所在目录**解析。每轮写校验即时读 |
@@ -159,7 +161,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `head` | **负责人名单**（字符串数组）：只能写**本级直属成员**的人 id；写子部门成员 / 写不存在的 id 一律**视为无** |
 
 - **负责人（主管）与穿透管理权**：某部门的 `head` 就是该部门的主管；主管对**自己担任 head 的部门整棵子树**（部门目录 + 其中的人，任意深度）有**写权**与**管理权**，**同级兄弟部门不可写**。沿祖先链向上找最近的 `head` 即某人的管理者；全链都没有 = 直接归老板。
-- **工作目录 `work/<名字>/`**：私聊与群聊的会话工作目录都落这里；私聊会话链（`conversation_ids.md`）也落这里（群聊链在机器私有区，见「项目」章节）；对**所有工具**开放。可选放 `MEMORY.md`（每个新会话自动注入系统提示词）。
+- **工作目录 `work/<名字>/`**：私聊与群聊的会话工作目录都落这里；私聊会话链（`conversation_ids.md`）也落这里（群聊链在机器私有区，见「项目」章节）；对**所有工具**开放。`memory/` 是该人的原生记忆目录，由 `memory_*` 工具维护（见「记忆（原生能力）」）。
 - **人的 `permissions` 由授权流程改写**：**任何人（含主管、含自己）都不可写 `<名字>.agent.config.json`**（唯一硬保护，防自授权）。授权弹框批准后由框架代写**发起者自己** agent config 的 `permissions[tool]`（不经过工具闸门）。**当前没有「主管直接写下级定义 / `permissions`」的通道**：人的定义只能由老板或框架的授权流程写。`department` / `space` / `project` 类 `*.config.json` 可用 **`write` 工具**写，但要求在该工具有效集内、JSON 合法、且 `permissions` 通过 attenuation（见「权限：按工具 → 路径」）；**bash 不得写配置**（见下）。
 - id 里**不要含空白或 `@`**（与提及语法冲突，无法被定向），也不要 `__` 开头（保留给 boss / system）。`@` 提及永远用 id，alias 不参与识别。
 
@@ -200,7 +202,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 - 会话创建时，框架把**三样东西**拼成系统提示词（instructions），此后随会话**固化**（快照）：
   1. **prompt 链**：各层 `*.config.json` 的 `prompt` 按**空间 → 部门链（根 → 叶）→ 项目（群聊）→ 员工**累加——空段丢弃、同值保留、`\n\n` 连接，**无覆盖 / 无优先级**。它取代了旧版的「环境段 + 模板」：你的身份、当前会话、工作目录、群成员等，都由变量从各级 `prompt` 里取值。
-  2. **记忆**：该人工作目录里的 `MEMORY.md`（存在且非空才注入；落点见「工作目录」）。
+  2. **记忆**：该人 `work/<id>/memory/` 的 profile 全文 + 未过期条目的索引（未启用或两者都为空则不注入；见「记忆（原生能力）」）。
   3. **技能清单**：本次会话可用的技能（见「技能」章节；恒含系统内置）。
 - **内置 prompt 只有一份**：框架 `src/prompts/space.md`。新建空间时框架把它**物化**进 `openstaffs/space.config.json` 的 `prompt`；此后运行时只读空间配置——**要改空间总纲，直接改 `openstaffs/space.config.json` 的 `prompt` 即可**（改动**新开会话**生效），不必也不能改框架文件。**不再有** `src/prompts/dm.md` / `group.md`（私聊 / 群聊的差异由 `session_info` / `group_rules` 等变量表达——群聊专属的 @ 规则只在群聊渲染，私聊为空），**也不再有**空间 / 项目的 `AGENTS.md`。
 - **变量**（在任意层的 `prompt` 里写 `{{变量}}`；支持 `{{members.0.name}}` 这类多级路径；未知变量渲染为空串；数组用「、」连接，对象取 `name` 缺省 `id`）：
@@ -218,6 +220,41 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 - 整套系统提示词在**会话创建时固化**（随会话快照）：要换 prompt 链 / 记忆 / 技能清单，都需**新开会话**。
 
+## 记忆（原生能力）
+
+记忆是框架原生能力，不依赖外部服务。每个员工一份，落在自己的工作目录：
+
+```
+work/<id>/memory/
+  profile.md        常驻记忆：每次新会话全文注入；纯 Markdown，≤ 8192 字节
+  <id>.md           普通记忆：frontmatter（id / title / description / pinned / created / updated）+ 正文
+  archive/<id>.md   memory_remove 的归档（框架不读；归档不占用 id）
+  .state.json       新鲜度侧车（lastUsed；不要提交）
+  .gitignore        首次写入时创建，忽略 .state.json
+```
+
+**开关**：空间 `config.json` 的 `memory`（缺省 `true`）+ 员工 `.agent.config.json` 的 `memory`（覆盖）。关闭 = 不注入、工具报「记忆未启用」，数据不删。
+
+**注入**：会话创建时把 profile 全文 + 未过期条目的索引（id · 标题 — 简介，pinned 置顶）拼进 instructions，随快照固化。索引上限 40 条 / 16384 字节（pinned 不计入、不截断）；超出只影响注入，`memory_list` 仍可看全。标题 ≤ 40 字、简介 ≤ 80 字且必须**单行**（含换行 / 控制字符会被拒绝）。
+
+**新鲜度与遗忘**：计时起点 = 最近取用 → 更新时间 → 创建时间。`memory_get` / `memory_add` / `memory_update` 会续期；`memory_list` 不续期。非 pinned 且 **90 天**未用 → 移出索引与默认列表（文件仍在：`memory_list(include_stale: true)` 可见，`memory_get` 取到即复活）。pinned 永不淘汰。
+
+**工具**：`memory_list` / `memory_get` / `memory_add` / `memory_update` / `memory_remove` / `memory_profile`。只在 `work/<自己>/memory/` 内读写，不需要额外权限表。
+
+**排障**：
+
+| 现象 | 处理 |
+| --- | --- |
+| 新会话看不到记忆 | 检查开关（空间 / 员工）；检查 `memory/profile.md` 与条目文件是否存在且非空；开关改动要**新开会话** |
+| 记忆不出现在索引 | 可能已过 90 天：`memory_list(include_stale: true)` 看，`memory_get` 取一次即复活；或 `memory_update` 续期 |
+| 记忆工具报「记忆未启用」 | 员工或空间配置里 `memory` 为 `false` |
+| 某个记忆读不到 | 文件 frontmatter 坏了（`memory_list` 会提示跳过的文件）：手工修正该文件的 `id` / `title` / `description`（必须单行），或删文件后用 `memory_add` 重加——坏文件对工具不可见，`memory_update` 改不了它 |
+| 索引提示「还有 N 条未展示」 | 超过 40 条 / 16 KiB 上限：用 `memory_list` 查看，或合并 / 删除旧条目 |
+| 误删 | `memory_remove` 是归档：到 `work/<id>/memory/archive/` 人工找回 |
+
+- 不要直接改 `memory/*.md`（绕过续期会让索引失真）；内容修正一律走 `memory_update`。
+- 删除是归档、不物理销毁；pinned 条目要先取消置顶再删。
+
 ## 技能（Agent Skills）
 
 - 每个技能 = 一个含 `SKILL.md` 的目录；frontmatter 提供 `name`（缺省 = 目录名）与 `description`；正文由 agent 按需 `read`。
@@ -231,7 +268,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | 机制 | 何时生效 | 属于这档的东西 |
 | --- | --- | --- |
 | 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册 |
-| 会话装配（进 instructions，快照） | **新开会话** | prompt 链（空间 → 部门 → 项目 → 员工）、记忆 `MEMORY.md`、技能清单、MCP 选择、全局 / 人的 `model` 与 `thinkingLevel` |
+| 会话装配（进 instructions，快照） | **新开会话** | prompt 链（空间 → 部门 → 项目 → 员工）、记忆（profile + 索引）、技能清单、MCP 选择、全局 / 人的 `model` 与 `thinkingLevel` |
 | 运行中按需读取 | **即时** | `SKILL.md` 正文（`read` 时读）、各层 `*.config.json` 的 `permissions`（**每轮写校验即时读**）、项目 config 的 `members`（@ 路由与成员校验） |
 | 直读展示 | **刷新页面** | `bossName`、人的 `alias`、部门 `alias` |
 
