@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
+import { renderTemplate } from "../../src/domain/prompt.ts";
 import {
-  agentId, agentName, bossName, memberCount, members, projectId, projectName, promptVariables, sessionInfo, sessionKind,
-  workdir, type PromptVarContext,
+  agentId, agentName, bossName, memberCount, members, privateDir, projectId, projectName, promptVariables, sessionInfo, sessionKind,
+  type PromptVarContext,
 } from "../../src/domain/prompt-vars.ts";
 import { seedOffice } from "../helpers/office.ts";
 
@@ -39,9 +40,9 @@ describe("提示词变量", () => {
     expect(bossName(dmCtx("alice"))).toBe("老板");
   });
 
-  it("workdir 直出 cwd（= 自己的工作目录）", () => {
+  it("private_dir 直出 cwd（= 自己的私人目录）", () => {
     seedOffice(root, { agents: [{ id: "alice" }] });
-    expect(workdir(dmCtx("alice"))).toBe(path.join(root, "work", "alice"));
+    expect(privateDir(dmCtx("alice"))).toBe(path.join(root, "work", "alice"));
   });
 
   it("project_name / project_id：群聊取项目 alias / id；私聊 undefined", () => {
@@ -91,10 +92,12 @@ describe("提示词变量", () => {
     seedOffice(root, { agents: [{ id: "alice", alias: "爱丽丝" }], projects: [{ id: "demo", members: ["alice"] }] });
     const group = groupCtx("demo", "alice");
     expect(Object.keys(promptVariables).sort()).toEqual([
-      "agent_id", "agent_name", "boss_name", "group_rules", "member_count", "members", "project_id", "project_name",
-      "session_info", "session_kind", "workdir",
+      "agent_id", "agent_name", "boss_name", "member_count", "members", "private_dir", "project_id", "project_name",
+      "session_info", "session_kind",
     ]);
     expect(promptVariables["agent_name"]?.(group)).toBe("爱丽丝");
-    expect(promptVariables["workdir"]?.(group)).toBe(path.join(root, "work", "alice"));
+    expect(promptVariables["private_dir"]?.(group)).toBe(path.join(root, "work", "alice"));
+    expect(promptVariables["workdir"]).toBeUndefined();
+    expect(renderTemplate("{{workdir}}", group)).toBe("");
   });
 });

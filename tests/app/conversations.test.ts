@@ -14,7 +14,6 @@ import {
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
 import { createEntity, writeProfile } from "../../src/domain/memory/store.ts";
-import { newSpaceConfig } from "../../src/domain/space.ts";
 import { seedOffice } from "../helpers/office.ts";
 import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
 
@@ -63,7 +62,15 @@ describe("应用用例", () => {
 
     seedOffice(root, { agents: [{ id: "bob", model: "faux/faux-model", memory: false }] });
     writeProfile(ws, "bob", "不该出现");
-    expect(instructionsFor(ws, { kind: "dm", employeeId: "bob" }, loadEmployee(ws, "bob"))).not.toContain("不该出现");
+    const bob = instructionsFor(ws, { kind: "dm", employeeId: "bob" }, loadEmployee(ws, "bob"));
+    expect(bob).not.toContain("不该出现");
+    expect(bob).not.toContain("## 使用记忆");
+
+    const ordered = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, loadEmployee(ws, "alice"));
+    const indexes = ["OpenStaffs", "你是 alice。", "## 使用记忆", "我是 alice", "## 可用技能"]
+      .map((needle) => ordered.indexOf(needle));
+    expect(indexes.every((index) => index >= 0)).toBe(true);
+    expect([...indexes].sort((a, b) => a - b)).toEqual(indexes);
   });
 
   it("新开会话：追加一条并结束上一条", async () => {
@@ -413,9 +420,9 @@ describe("应用用例", () => {
     expect(text).toContain("项目段\n\n员工段");
   });
 
-  it("空间 prompt（内置物化）在最前；群聊再带项目与成员；私聊不带项目", () => {
+  it("系统段在最前；空间自定义段其次；私聊不带群聊段", () => {
     const ws = seedOffice(root, {
-      space: newSpaceConfig(), // 内置 space.md 物化进空间 config（D32）
+      space: { prompt: "空间自定义规矩。" },
       agents: [{ id: "alice", prompt: "你是 alice。" }, { id: "bob", prompt: "你是 bob。" }],
       projects: [{ id: "yt", alias: "演示项目", members: ["alice", "bob"] }],
     });
@@ -423,13 +430,15 @@ describe("应用用例", () => {
 
     const group = instructionsFor(ws, { kind: "group", project: "yt" }, speaker);
     expect(group).toContain("OpenStaffs");
-    expect(group).toContain("老板");
+    expect(group).toContain("空间自定义规矩。");
     expect(group).toContain("演示项目");
     expect(group).toContain("bob");
-    expect(group.indexOf("OpenStaffs")).toBeLessThan(group.indexOf("你是 alice。"));
+    expect(group.indexOf("OpenStaffs")).toBeLessThan(group.indexOf("空间自定义规矩。"));
+    expect(group.indexOf("空间自定义规矩。")).toBeLessThan(group.indexOf("你是 alice。"));
 
     const dm = instructionsFor(ws, { kind: "dm", employeeId: "alice" }, speaker);
-    expect(dm).toContain("OpenStaffs");
+    expect(dm).toContain("1 对 1 私聊");
+    expect(dm).not.toContain("群聊规则");
     expect(dm).not.toContain("演示项目");
   });
 

@@ -25,7 +25,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 ├─ projects/<项目 id>.project.config.json   # 项目 = 群聊（**扁平文件**：owner / members / 能力 / 权限）
 ├─ work/<名字>/                  # 各人的工作目录（会话 cwd、私聊会话链、memory/ 原生记忆）
 └─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
-   ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；新建空间时物化）
+   ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；首次启动写入空声明）
    ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
    ├─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
    └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
@@ -59,8 +59,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 ## 空间初始化与 0 号员工
 
 - **目录已合并**：机器私有不再是独立隐藏目录，统一收在 `openstaffs/.data/`（含全局配置、pin 状态、授权请求、基座会话库、消息自有库）。`openstaffs/` 的其余内容（`space.config.json`、`skills/`、`mcps.json`）属空间资产，可版本化、随空间整包迁移。
-- **新建空间**：启动时若没有 `openstaffs/space.config.json`，框架会把**内置空间 prompt** 物化进去（此后运行时无关，可自由改写）。判断只看文件是否存在——已存在（含空文件 / 坏 JSON）一律不覆盖。
-- **旧空间升级**：已存在 `space.config.json` 的空间**不会自动迁移**空间总纲。**P5 之前建的空间如需新版空间总纲，请删除 `openstaffs/space.config.json` 后重启**（框架会按上面规则重新物化一份内置 prompt；删前先备份你手改过的内容）。
+- **新建空间**：启动时若没有 `openstaffs/space.config.json`，框架写入**空声明** `{}`（系统 prompt 由框架自持）。判断只看文件是否存在——已存在（含空文件 / 坏 JSON）一律不覆盖。
 - **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根（整个办公空间）有写权限**（「空间级附属 = 老板地盘」的有意例外；配置里写作相对路径 `..`——P3 的权限路径相对配置文件所在目录 `agents/` 解析），直属老板；未配 `model` 时用全局默认。
 - **不做迁移**：旧版把机器私有放在空间根下的隐藏目录，那套位置**不再读取**（破坏性更新）；老板需要的话自行搬迁数据。
 
@@ -230,27 +229,27 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 - 正文不自动替换（避免阅读位置跳动）：选中的会话有新消息 / 流式输出 / 工具活动时，顶部出现「有新内容」按钮，点它重取；「刷新」按钮重取整份列表 + 正文，并保留当前 Tab。
 - 不做 Markdown 渲染（纯 `<pre>` + 折叠），定位是查阅 / 调试。
 
-## 会话装配：prompt 链 + 记忆 + 技能清单
+## 会话装配：系统段 + prompt 链 + 记忆 + 技能清单
 
-- 会话创建时，框架把**三样东西**拼成系统提示词（instructions），此后随会话**固化**（快照）：
-  1. **prompt 链**：各层 `*.config.json` 的 `prompt` 按**空间 → 部门链（根 → 叶）→ 项目（群聊）→ 员工**累加——空段丢弃、同值保留、`\n\n` 连接，**无覆盖 / 无优先级**。它取代了旧版的「环境段 + 模板」：你的身份、当前会话、工作目录、群成员等，都由变量从各级 `prompt` 里取值。
-  2. **记忆**：该人 `work/<id>/memory/` 的 profile 全文 + 未过期条目的索引（未启用或两者都为空则不注入；见「记忆（原生能力）」）。
-  3. **技能清单**：本次会话可用的技能（见「技能」章节；恒含系统内置）。
-- **内置 prompt 只有一份**：框架 `src/prompts/space.md`。新建空间时框架把它**物化**进 `openstaffs/space.config.json` 的 `prompt`；此后运行时只读空间配置——**要改空间总纲，直接改 `openstaffs/space.config.json` 的 `prompt` 即可**（改动**新开会话**生效），不必也不能改框架文件。**不再有** `src/prompts/dm.md` / `group.md`（私聊 / 群聊的差异由 `session_info` / `group_rules` 等变量表达——群聊专属的 @ 规则只在群聊渲染，私聊为空），**也不再有**空间 / 项目的 `AGENTS.md`。
+- 会话创建时，框架把**四段**拼成系统提示词（instructions），此后随会话**固化**（快照）：
+  1. **系统段**（框架自持）：`src/prompts/environment.md`（环境与通用规则）+ `src/prompts/dm.md` 或 `src/prompts/group.md`（会话前缀）。模板在 `npm start` 时读入内存；升级框架后**重启**，新开会话即用新版。
+  2. **prompt 链**：各层 `*.config.json` 的 `prompt` 按**空间 → 部门链（根 → 叶）→ 项目（群聊）→ 员工**累加——空段丢弃、同值保留、`\n\n` 连接，**无覆盖 / 无优先级**。
+  3. **记忆**：该人 `work/<id>/memory/` 的 profile 全文 + 未过期条目的索引（说明见 `src/prompts/memory.md`；关闭或两者都为空时不注入动态块，关闭时说明也不注入）。
+  4. **技能清单**：本次会话可用的技能（见「技能」章节；恒含系统内置）。
+- **系统 prompt 由框架自持**：四个模板在 `src/prompts/`，改工作区不会改系统文案。`space.config.json` 的 `prompt` 只是**可选的自定义层**（默认空），与部门 / 项目 / 员工 `prompt` 一起累加。
 - **变量**（在任意层的 `prompt` 里写 `{{变量}}`；支持 `{{members.0.name}}` 这类多级路径；未知变量渲染为空串；数组用「、」连接，对象取 `name` 缺省 `id`）：
 
 | 变量 | 含义 |
 | --- | --- |
 | `agent_name` / `agent_id` | 你的展示名 / 你的 id |
 | `boss_name` | 负责人称谓（`bossName`） |
-| `workdir` | 会话工作目录（私聊 / 群聊都 = `work/<你>`） |
+| `private_dir` | 私人目录（= 会话 cwd，私聊 / 群聊都 = `work/<你>`） |
 | `project_name` / `project_id` | 项目展示名 / 项目 id（私聊为空） |
 | `members` / `member_count` | 群成员数组（`{id,name}`）/ 成员数（私聊为空 / 0） |
 | `session_kind` | 会话类型：`dm`（私聊）/ `group`（群聊） |
 | `session_info` | 当前会话的一句话描述（私聊 = 「与『负责人称谓』的私聊」；群聊 = 项目展示名 + id + 成员名单） |
-| `group_rules` | 群聊专属消息规则（@ 规则 / 派活礼仪等）；**私聊为空串**（内置 prompt 用它门控群聊文案） |
 
-- 整套系统提示词在**会话创建时固化**（随会话快照）：要换 prompt 链 / 记忆 / 技能清单，都需**新开会话**。
+- 整套系统提示词在**会话创建时固化**（随会话快照）：要换系统模板 / prompt 链 / 记忆 / 技能清单，都需**重启后新开会话**（用户 `prompt` 改完新开会话即可）。
 
 ## 记忆（原生能力）
 
@@ -299,8 +298,8 @@ work/<id>/memory/
 
 | 机制 | 何时生效 | 属于这档的东西 |
 | --- | --- | --- |
-| 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册 |
-| 会话装配（进 instructions，快照） | **新开会话** | prompt 链（空间 → 部门 → 项目 → 员工）、记忆（profile + 索引）、技能清单、MCP 选择、全局 / 人的 `model` 与 `thinkingLevel` |
+| 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册；系统 prompt 模板（`src/prompts/` 读入内存） |
+| 会话装配（进 instructions，快照） | **新开会话** | 系统段（环境 + 私聊 / 群聊前缀）、prompt 链（空间 → 部门 → 项目 → 员工）、记忆（profile + 索引）、技能清单、MCP 选择、全局 / 人的 `model` 与 `thinkingLevel` |
 | 运行中按需读取 | **即时** | `SKILL.md` 正文（`read` 时读）、各层 `*.config.json` 的 `permissions`（**每轮写校验即时读**）、项目 config 的 `members`（@ 路由与成员校验） |
 | 直读展示 | **刷新页面** | `bossName`、人的 `alias`、部门 `alias` |
 

@@ -14,7 +14,7 @@ export type Staff0Config = {
 
 /** 内置的管家 prompt（可被老板改写；不在框架更新时自动覆盖）。 */
 const STAFF0_PROMPT =
-  "你是本办公空间的 0 号员工（首席管家）。你对空间根（整个办公空间）有写权限，负责空间级事务；协作、产物与记忆的通用约定见空间总纲。";
+  "你是本办公空间的 0 号员工（首席管家）。你对空间根（整个办公空间）有写权限，负责空间级事务；协作、产物与记忆的通用约定见系统提示词。";
 
 export function staff0File(ws: Workspace): string {
   return path.join(agentsDir(ws), `${STAFF0_ID}.agent.config.json`);

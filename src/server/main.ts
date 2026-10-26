@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   }
   const root = startup.root;
   const ws = createWorkspace(root);
-  // 启动探测（P4）：新建空间物化 space.config.json + 首次启动自动建 Staff0；失败不抛（逐项记 failed）。
+  // 启动探测（P4）：新建空间写入空 space.config.json + 首次启动自动建 Staff0；失败不抛（逐项记 failed）。
   const bootstrap = ensureSpace(ws);
   if (bootstrap.newSpace) console.log(`[openstaffs] 新建空间：已生成 ${spaceConfigFile(ws)}`);
   if (bootstrap.staff0 === "created") console.log(`[openstaffs] 已创建 0 号员工：${staff0File(ws)}`);

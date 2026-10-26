@@ -6,12 +6,12 @@ import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { activeSession, readChain, startNewSession, type SessionRow } from "../domain/conversation-chain.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { loadEmployee, type Employee } from "../domain/employee.ts";
-import { renderMemoryBlock } from "../domain/memory/view.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 import type { Relation } from "../domain/types.ts";
 import { assembleCapabilities } from "../capabilities/assemble.ts";
 import { renderPromptChain } from "../capabilities/prompt.ts";
+import { renderMemoryPrompt, renderSystemPrompt } from "../capabilities/system-prompt.ts";
 import { scopesForOrg } from "../capabilities/scopes.ts";
 import { renderSkillCatalog } from "../capabilities/skills.ts";
 import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
@@ -53,16 +53,15 @@ export function promptContextFor(ws: Workspace, relation: Relation, speaker: Emp
   };
 }
 
-/** 会话快照（仅新开会话时渲染一次）：prompt 链（空间 → 部门 → 项目 → 员工）→ 记忆 → 技能目录（恒含系统内置）。 */
+/** 会话快照（仅新开会话时渲染一次）：系统段 → prompt 链（空间 → 部门 → 项目 → 员工）→ 记忆 → 技能目录。 */
 export function instructionsFor(ws: Workspace, relation: Relation, speaker: Employee): string {
   const scopes = scopesFor(ws, relation, speaker);
+  const ctx = promptContextFor(ws, relation, speaker);
   const parts: string[] = [];
-  const chain = renderPromptChain(scopes, promptContextFor(ws, relation, speaker));
+  parts.push(renderSystemPrompt(ctx));
+  const chain = renderPromptChain(scopes, ctx);
   if (chain !== "") parts.push(chain);
-  if (speaker.memoryEnabled) {
-    const memory = renderMemoryBlock(ws, speaker.id);
-    if (memory !== "") parts.push(memory);
-  }
+  parts.push(renderMemoryPrompt(ctx, speaker.memoryEnabled));
   parts.push(renderSkillCatalog(ws, scopes, readSkillPaths(ws)));
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }

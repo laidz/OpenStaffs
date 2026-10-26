@@ -59,11 +59,9 @@
 
 ### 2. 空间能力（可选）
 
-在办公空间的 `openstaffs/space.config.json` 里，给全体会话加总纲 / 默认技能与 MCP：
+在办公空间的 `openstaffs/space.config.json` 里，给全体会话加空间级自定义 prompt / 默认技能与 MCP：
 
-> 新建空间时框架已自动物化一份**内置空间总纲**（写进本文件的 `prompt` 字段）——这也是空间总纲的唯一来源：想改直接改这个 `prompt`（改完**新开会话**生效），不必（也不能）改框架文件。
->
-> **旧空间升级提示**：已存在 `space.config.json` 的空间不会自动迁移总纲。**P5 之前建的空间如需新版空间总纲，请删除 `openstaffs/space.config.json` 后重启**（框架会重新物化一份内置总纲；删前先备份你手改过的内容）。
+> 系统级提示词（身份、私聊 / 群聊规则、记忆说明）由框架自持，随框架升级；此处 `prompt` 只是**空间级自定义层**（可选，默认空），与部门 / 项目 / 员工 `prompt` 一起累加。
 
 ```json
 {
@@ -73,7 +71,7 @@
 }
 ```
 
-- `prompt`：空间总纲，注入**所有**会话（与部门 / 项目 / 员工的 `prompt` 一起按空间 → 部门 → 项目 → 员工累加）。
+- `prompt`：可选的空间级自定义层，与部门 / 项目 / 员工的 `prompt` 一起按空间 → 部门 → 项目 → 员工累加（系统级提示词另由框架注入）。
 - `skills`：技能**名**数组，到 `openstaffs/skills/<技能名>/` 解析（累加；系统内置技能恒在）。
 - `mcp`：MCP server **名**数组，到 `openstaffs/mcps.json` 解析（累加）。
 - `permissions`：按工具 → 路径列表（可选）；**只有项目 / 员工两层进权限路线**（见「4. 项目」与「3. Agent」）。
@@ -98,7 +96,7 @@ EOF
 - `memory`：可选，是否启用原生记忆（缺省 `true`；空间 `openstaffs/.data/config.json` 里也有一个同名总开关，员工配置优先）。关闭后该员工不注入记忆、`memory_*` 工具不可用，已有数据保留。
 - `permissions`：可选，**按工具 → 路径列表**。缺省 `{ "write": [], "read": ["./"], "bash": ["./"] }`；相对路径相对**本文件所在目录**（即她所在部门目录）。员工配置**只能由你（或框架的授权流程）写**——员工自己（含主管）写不了 `*.agent.config.json`。
 - 部门可写 `department.config.json` 声明展示名与负责人：`{ "alias": "工程部", "head": ["alice"] }`——`head` 只能写**本级直属成员**（写子部门成员 / 写错 id 视为无）；负责人对自己所在部门的**整棵子树**有写权限（穿透），但其中的 `*.agent.config.json` 仍在硬保护内（写不了）——**主管当前没有直接写下级定义的通道**，改下级定义请由你写或走授权流程。你写配置一律通过 `write` 工具（受 attenuation 校验）；`bash` 写配置会被拦。
-- 她的**工作目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里）；原生记忆在 `work/<她的 id>/memory/`，由 `memory_*` 工具维护，新会话自动注入 profile 与索引。同一员工可以在多个房间**并行**工作；`work/` 下写已存在文件前必须先 `read`（框架强制，`bash` 除外）。`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` / `memory` 要**新开会话**生效，`permissions` 每轮写校验即时读。
+- 她的**私人目录**是 `work/<她的 id>/`（示例里即 `work/alice/`，私聊与群聊的会话都落这里）；原生记忆在 `work/<她的 id>/memory/`，由 `memory_*` 工具维护，新会话自动注入 profile 与索引。同一员工可以在多个房间**并行**工作；`work/` 下写已存在文件前必须先 `read`（框架强制，`bash` 除外）。`alias` 刷新页面即生效，`prompt` / `model` / `thinkingLevel` / `skills` / `mcp` / `memory` 要**新开会话**生效，`permissions` 每轮写校验即时读。
 
 她的展示名与人格（`prompt`）都可以继续完善——需要什么直接问她：她能自己动手的会自己动手，动不了的会告诉你怎么做。
 
@@ -145,4 +143,4 @@ EOF
 - 员工不能自己定义 server：需要新 server 请改 `openstaffs/mcps.json`，再在相应层 config 的 `mcp` 里按名引用。
 - 工具名形如 `mcp__<server>__<tool>`；工具太多时员工先用 `tool_search` 搜索。
 
-> 更多细节（按工具的权限、技能、空间规矩（`space.config.json` 的 `prompt`）、排障……）都在你员工的技能里——办公室开起来之后，直接问你的员工即可。
+> 更多细节（按工具的权限、技能、空间自定义 prompt（`space.config.json` 的 `prompt`，可选）、排障……）都在你员工的技能里——办公室开起来之后，直接问你的员工即可。

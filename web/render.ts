@@ -24,7 +24,7 @@ export function setupPage(root: string, port: number): string {
 }</pre>
       <p>可选 provider：opencode-go / anthropic / openai / deepseek / google / openrouter。模型引用格式为 <code>供应商/模型 id</code>；员工可在自己的 <code>agents/&lt;部门…&gt;/&lt;名字&gt;.agent.config.json</code> 里用 <code>model</code> 字段覆盖成别的供应商与模型。</p>
       <p>保存配置后：Ctrl+C 停止服务 → 重新 <code>npm start</code> → 刷新本页。</p>
-      <p class="hint">首次启动已自动初始化空间：<code>openstaffs/space.config.json</code>（空间总纲）与 <code>agents/staff0.agent.config.json</code>（0 号员工）。员工与项目不需要在这里配置（详见 README.md）。</p>
+      <p class="hint">首次启动已自动初始化空间：<code>openstaffs/space.config.json</code>（空间自定义层，可选）与 <code>agents/staff0.agent.config.json</code>（0 号员工）。员工与项目不需要在这里配置（详见 README.md）。</p>
     </main>`;
 }
 

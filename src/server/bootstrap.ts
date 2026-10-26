@@ -5,7 +5,7 @@ import { ensureStaff0 } from "../domain/staff0.ts";
 export type EnsureStatus = "created" | "exists" | "failed";
 
 export type BootstrapResult = {
-  /** 本次是否新建了空间（以 space.config.json 的物化为准，D32）。 */
+  /** 本次是否新建了空间（以 space.config.json 首次写入为准）。 */
   newSpace: boolean;
   spaceConfig: EnsureStatus;
   staff0: EnsureStatus;
@@ -21,7 +21,7 @@ function attempt(run: () => "created" | "exists"): EnsureStatus {
 }
 
 /**
- * 启动探测（P4）：新建空间物化 `space.config.json`（D32）+ 首次启动自动建 Staff0（§8）。
+ * 启动探测（P4）：新建空间写入空 `space.config.json` + 首次启动自动建 Staff0（§8）。
  * 幂等、不覆盖、不抛（失败项记 `"failed"`）。
  */
 export function ensureSpace(ws: Workspace): BootstrapResult {

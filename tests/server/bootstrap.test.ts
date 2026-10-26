@@ -13,11 +13,11 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-test("首次启动：新建空间物化 space.config.json + 自动建 Staff0", () => {
+test("首次启动：新建空间写入空 space.config.json + 自动建 Staff0", () => {
   const ws = createWorkspace(root);
   const result = ensureSpace(ws);
   expect(result).toEqual({ newSpace: true, spaceConfig: "created", staff0: "created" });
-  expect(JSON.parse(fs.readFileSync(spaceConfigFile(ws), "utf8")).prompt.length).toBeGreaterThan(0);
+  expect(JSON.parse(fs.readFileSync(spaceConfigFile(ws), "utf8"))).toEqual({});
   expect(JSON.parse(fs.readFileSync(staff0File(ws), "utf8"))).toEqual(staff0Config());
 });
 
