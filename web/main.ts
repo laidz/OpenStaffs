@@ -172,7 +172,7 @@ function renderLive(): void {
   const liveArea = document.getElementById("live-area");
   if (liveArea === null) return;
   const stick = nearBottom();
-  liveArea.innerHTML = liveHtml(state.live);
+  liveArea.innerHTML = liveHtml(state);
   if (stick) scrollToBottom();
 }
 
@@ -560,6 +560,11 @@ function renderConfigPanel(): void {
   });
 }
 
+/** 成员展示名：优先 alias（组织树里的昵称），回落到 id。 */
+function memberName(memberId: string): string {
+  return state.employees.find((person) => person.id === memberId)?.alias ?? memberId;
+}
+
 async function openHistory(): Promise<void> {
   if (state.roomKey === undefined) return;
   const roomKey = state.roomKey;
@@ -572,7 +577,7 @@ async function openHistory(): Promise<void> {
     ${rows
       .map(
         (row) =>
-          `<div class="session"><span>${escapeHtml(row.memberId)} · ${escapeHtml(row.started.slice(0, 19).replace("T", " "))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
+          `<div class="session"><span>${escapeHtml(memberName(row.memberId))} · ${escapeHtml(row.started.slice(0, 19).replace("T", " "))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
       )
       .join("") || `<p class="hint">还没有会话。</p>`}
     <p><button id="btn-history-back">返回聊天</button></p>

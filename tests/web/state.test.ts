@@ -96,16 +96,35 @@ describe("前端状态归约", () => {
     expect(state.live["c1"]?.text).toBe("再");
   });
 
-  it("忙绿与工具活动、失败事件", () => {
+  it("忙碌与工具活动、失败事件", () => {
     let state = inRoom();
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "run", phase: "start" } });
     expect(state.busy["alice"]).toBe(true);
+    expect(state.live["c1"]?.activity).toBe("正在思考…");
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "write" } });
     expect(state.live["c1"]?.tools).toEqual(["write"]);
+    expect(state.live["c1"]?.activity).toBe("正在执行 write…");
+    // 工具结束：栈弹出，但状态行**不消失**（退化成「正在思考…」）——否则气泡高度塌陷、UI 跳动
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "end" } });
+    expect(state.live["c1"]?.tools).toEqual([]);
+    expect(state.live["c1"]?.activity).toBe("正在思考…");
     state = reduce(state, { type: "sse", event: { type: "room.failed", roomKey: "dm:alice", convId: "c1", memberId: "alice", message: "模型不可用" } });
     expect(state.live["c1"]?.error).toBe("模型不可用");
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "run", phase: "end" } });
     expect(state.busy["alice"]).toBe(false);
+  });
+
+  it("状态行文案跟随事件：思考 / 输出 / 工具，且恒非空", () => {
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "thinking", delta: "嗯" } });
+    expect(state.live["c1"]?.activity).toBe("正在思考…");
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "text", delta: "好" } });
+    expect(state.live["c1"]?.activity).toBe("正在输出…");
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "shell" } });
+    expect(state.live["c1"]?.activity).toBe("正在执行 shell…");
+    // 工具结束后又回到思考（模型接着算下一轮）
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "thinking", delta: "再" } });
+    expect(state.live["c1"]?.activity).toBe("正在执行 shell…"); // 工具仍在跑：工具优先
   });
 
   it("run end 清掉残留的流式气泡（中断后不留幽灵）；错误气泡保留", () => {
@@ -137,8 +156,11 @@ describe("前端状态归约", () => {
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "run", phase: "start" } });
     expect(state.live["c1"]?.error).toBeUndefined();
 
-    // 没有 live 的会话：run 开始不得凭空造出空气泡
+    // 没有 live 的会话：run 开始要**建出**进行中气泡（转圈 + 状态行），让用户立刻看到「在干活」
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c9", memberId: "alice", kind: "run", phase: "start" } });
+    expect(state.live["c9"]?.activity).toBe("正在思考…");
+    // run 结束：不留幽灵气泡
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c9", memberId: "alice", kind: "run", phase: "end" } });
     expect(state.live["c9"]).toBeUndefined();
   });
 

@@ -32,7 +32,12 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .msg-text { display: inline-block; padding: 9px 12px; border-radius: 10px; background: #fff; border: 1px solid #e3e5e8; white-space: pre-wrap; word-break: break-word; text-align: left; }
 .msg.boss .msg-text { background: #d6e4ff; border-color: #adc6ff; }
 .msg.live .msg-text { color: #5a6270; }
-.msg .tool-line { font-size: 12px; color: #8a9099; }
+/* 进行中气泡的状态行：转圈 + 当前在做的事。
+   高度固定（min-height + 单行省略）——文案变化不引起气泡高度变化，消息列表不跳。 */
+.live-status { display: flex; align-items: center; gap: 6px; max-width: 100%; min-height: 18px; margin-top: 2px; font-size: 12px; line-height: 18px; color: #8a9099; }
+.live-status-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-spinner { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%; border: 2px solid #dfe2e7; border-top-color: #1677ff; animation: live-spin 0.9s linear infinite; }
+@keyframes live-spin { to { transform: rotate(360deg); } }
 .msg.error .msg-text { background: #fff1f0; border-color: #ffa39e; color: #a8071a; }
 /* 气泡悬浮工具栏：复制 / pin（唯一 pin 入口）；所有消息一视同仁
    .msg 收窄为 fit-content（贴合气泡），工具条绝对定位在气泡右下角 → 脱离文档流、不挤压气泡 */

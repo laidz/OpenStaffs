@@ -3,7 +3,7 @@ import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
 import type { ConfigView, ContextItemView, EmployeeSession, EmployeeSummary, OrgDept, SessionContextView } from "./api.ts";
-import type { Live, State } from "./state.ts";
+import type { State } from "./state.ts";
 
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/gu, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
@@ -137,18 +137,21 @@ export function messagesHtml(
   return bubbles.join("");
 }
 
-export function liveHtml(live: Record<string, Live>): string {
-  return Object.values(live)
+/**
+ * 流式 / 进行中气泡：昵称 + 正文（Markdown）+ 底部状态行（转圈 + 当前在做的事）。
+ * - 昵称取成员的 alias（org 里没有该人时回落 id）——不再直接把 agent_id 顶在气泡上；
+ * - 状态行在 run 期间**恒存在**（文案由 state.activity 保证非空），
+ *   旧实现只在「工具有在跑」时渲染该行，工具一结束整行消失 → 气泡塌陷、消息列表跳动。
+ */
+export function liveHtml(state: State): string {
+  return Object.values(state.live)
     .map((entry) => {
-      const body =
-        entry.error !== undefined
-          ? `<div class="msg-text">⚠️ ${escapeHtml(entry.error)}</div>`
-          : `<div class="msg-text md">${markdownHtml(entry.text) || "…"}</div>`;
-      const tool =
-        entry.tools.length > 0
-          ? `<div class="tool-line">正在执行 ${escapeHtml(entry.tools[entry.tools.length - 1]!)}…</div>`
-          : "";
-      return `<div class="msg employee live${entry.error !== undefined ? " error" : ""}"><div class="msg-name">${escapeHtml(entry.memberId)}</div>${body}${tool}</div>`;
+      const name = state.employees.find((person) => person.id === entry.memberId)?.alias ?? entry.memberId;
+      if (entry.error !== undefined) {
+        return `<div class="msg employee live error"><div class="msg-name">${escapeHtml(name)}</div><div class="msg-text">⚠️ ${escapeHtml(entry.error)}</div></div>`;
+      }
+      const status = `<div class="live-status"><span class="live-spinner" aria-hidden="true"></span><span class="live-status-text">${escapeHtml(entry.activity || "正在思考…")}</span></div>`;
+      return `<div class="msg employee live" data-live-conv="${escapeHtml(entry.convId)}"><div class="msg-name">${escapeHtml(name)}</div><div class="msg-text md">${markdownHtml(entry.text) || "…"}</div>${status}</div>`;
     })
     .join("");
 }
@@ -226,7 +229,7 @@ export function chatHtml(state: State): string {
     ${sessionInfoHtml(state)}
     <div class="msg-list" id="msg-list">
       <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned, state.queued)}</div>
-      <div id="live-area">${liveHtml(state.live)}</div>
+      <div id="live-area">${liveHtml(state)}</div>
     </div>
     <div class="composer">
       ${targetsRow}

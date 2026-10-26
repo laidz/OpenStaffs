@@ -102,22 +102,37 @@ describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {
     expect(html).not.toContain("msg-text md");
   });
 
-  it("流式气泡按 Markdown 渲染（含工具行）；失败气泡保持原样转义", () => {
-    const live = { "dm:a": { convId: "dm:a", memberId: "alice", text: "**粗**", thinking: "", tools: ["shell"] } };
-    const html = liveHtml(live);
+  it("进行中气泡：昵称取 alias、状态行常驻（转圈 + 当前在做的事）、失败气泡保持原样转义", () => {
+    const state = {
+      ...initialState,
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
+      live: { "dm:a": { convId: "dm:a", memberId: "alice", text: "**粗**", thinking: "", tools: [], activity: "正在执行 shell…" } },
+    };
+    const html = liveHtml(state);
     expect(html).toContain('class="msg-text md"');
     expect(html).toContain("<strong>粗</strong>");
+    expect(html).toContain('class="live-spinner"');
     expect(html).toContain("正在执行 shell…");
+    // 昵称而不是 agent_id
+    expect(html).toContain('class="msg-name">爱丽丝</div>');
+    expect(html).not.toContain('class="msg-name">alice</div>');
 
-    const failed = { "dm:a": { convId: "dm:a", memberId: "alice", text: "半句", thinking: "", tools: [], error: "<崩>" } };
+    const failed = { ...state, live: { "dm:a": { convId: "dm:a", memberId: "alice", text: "半句", thinking: "", tools: [], activity: "", error: "<崩>" } } };
     const html2 = liveHtml(failed);
     expect(html2).toContain("⚠️ &lt;崩&gt;");
     expect(html2).not.toContain("msg-text md");
+    expect(html2).not.toContain("live-spinner"); // 失败态不再转圈
   });
 
-  it("流式正文尚未输出时显示省略号占位", () => {
-    const live = { "dm:a": { convId: "dm:a", memberId: "alice", text: "", thinking: "", tools: [] } };
-    expect(liveHtml(live)).toContain("…");
+  it("进行中气泡：没有正文时也占着「…」+ 状态行，org 里查不到该人时回落 id", () => {
+    const state = {
+      ...initialState,
+      live: { "dm:a": { convId: "dm:a", memberId: "ghost", text: "", thinking: "", tools: [], activity: "" } },
+    };
+    const html = liveHtml(state);
+    expect(html).toContain("…");
+    expect(html).toContain('class="msg-name">ghost</div>');
+    expect(html).toContain("正在思考…"); // activity 空串时的兜底文案（状态行不空）
   });
 });
 

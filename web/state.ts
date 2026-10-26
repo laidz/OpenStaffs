@@ -9,8 +9,18 @@ export type Live = {
   text: string;
   thinking: string;
   tools: string[];
+  /** 状态行文案（「正在思考…」/「正在执行 write…」）：run 期间**恒非空**，
+   *  否则状态行随事件消失 → 气泡高度塌陷 → 消息列表跳动。 */
+  activity: string;
   error?: string;
 };
+
+/** 状态行文案：正在跑的工具优先，其次按调用方给的默认动作（思考 / 输出）。 */
+function activityText(tools: string[], fallback: "thinking" | "text"): string {
+  const tool = tools[tools.length - 1];
+  if (tool !== undefined && tool !== "") return `正在执行 ${tool}…`;
+  return fallback === "text" ? "正在输出…" : "正在思考…";
+}
 
 /** 授权卡片条目：视图数据 + 本地处理态（busy 禁用按钮、error 红字提示）。 */
 export type PermissionRequestItem = PermissionRequestView & { busy?: boolean; error?: string };
@@ -104,7 +114,7 @@ function appendMessage(messages: RoomMessage[], incoming: RoomMessage): RoomMess
 }
 
 function liveOf(state: State, convId: string, memberId: string): Live {
-  return state.live[convId] ?? { convId, memberId, text: "", thinking: "", tools: [] };
+  return state.live[convId] ?? { convId, memberId, text: "", thinking: "", tools: [], activity: "" };
 }
 
 export function reduce(state: State, event: UiEvent): State {
@@ -216,8 +226,8 @@ function reduceSse(state: State, event: ServerEvent): State {
       const existing = liveOf(state, event.convId, event.memberId);
       const updated =
         event.channel === "text"
-          ? { ...existing, text: existing.text + event.delta }
-          : { ...existing, thinking: existing.thinking + event.delta };
+          ? { ...existing, text: existing.text + event.delta, activity: activityText(existing.tools, "text") }
+          : { ...existing, thinking: existing.thinking + event.delta, activity: activityText(existing.tools, "thinking") };
       // 同一会话重试时，新的增量必须露出来：清掉上一轮 failed 留下的错误提示。
       delete updated.error;
       return { ...state, live: { ...state.live, [event.convId]: updated } };
@@ -226,23 +236,30 @@ function reduceSse(state: State, event: ServerEvent): State {
       if (event.kind === "run") {
         const busy = { ...state.busy, [event.memberId]: event.phase === "start" };
         const existing = state.live[event.convId];
-        // 新一轮 run 开始：清掉上一轮 failed 的错误提示（无 live 则不凭空造气泡）。
-        if (event.phase === "start" && existing?.error !== undefined) {
+        if (event.phase === "start") {
+          // run 开始就出「进行中」气泡（转圈 + 状态行）：不必等第一段增量，用户立刻看到「在干活」。
+          if (existing === undefined) {
+            const fresh: Live = { convId: event.convId, memberId: event.memberId, text: "", thinking: "", tools: [], activity: "正在思考…" };
+            return { ...state, busy, live: { ...state.live, [event.convId]: fresh } };
+          }
+          // 新一轮 run 开始：清掉上一轮 failed 的错误提示。
+          if (existing.error === undefined) return { ...state, busy };
           const cleared = { ...existing };
           delete cleared.error;
           return { ...state, busy, live: { ...state.live, [event.convId]: cleared } };
         }
         // run 结束仍留有 live：多为被中断（正常结束会先落 assistant message 并清掉）。清掉残影，避免幽灵气泡。
-        if (event.phase === "end" && existing !== undefined && existing.error === undefined) {
+        if (existing !== undefined && existing.error === undefined) {
           const live = { ...state.live };
           delete live[event.convId];
           return { ...state, busy, live };
         }
         return { ...state, busy };
       }
+      // 工具起止：只改**工具栈**与状态行文案——状态行不会因为工具结束而消失（它退化成「正在思考…」）。
       const existing = liveOf(state, event.convId, event.memberId);
       const tools = event.phase === "start" ? [...existing.tools, event.name ?? ""] : existing.tools.slice(0, -1);
-      return { ...state, live: { ...state.live, [event.convId]: { ...existing, tools } } };
+      return { ...state, live: { ...state.live, [event.convId]: { ...existing, tools, activity: activityText(tools, "thinking") } } };
     }
     case "room.failed": {
       const existing = liveOf(state, event.convId, event.memberId);
