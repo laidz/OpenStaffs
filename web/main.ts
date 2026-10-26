@@ -2,6 +2,7 @@ import { api, type ConfigScope, type ConfigView, type SessionContextView, type S
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
 import { configPanelHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
+import { localDraftStore } from "./drafts.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
 
@@ -9,6 +10,8 @@ const app = document.getElementById("app")!;
 let state: State = initialState;
 let status: Status | undefined;
 let sending = false;
+/** 输入框草稿的本地缓存（按房间键）：切会话 / 进详情 / 全量重画后自动填回。 */
+const drafts = localDraftStore();
 /** 会话详情（只读）：聊天顶部信息条的「详情」进入，内容就是那一条会话；undefined = 不在面板。 */
 type SessionPanelState = { memberId: string; convId: string; context?: SessionContextView };
 let sessionPanel: SessionPanelState | undefined;
@@ -34,6 +37,7 @@ function renderAll(): void {
   }
   app.innerHTML = layoutHtml(state);
   bindEvents();
+  restoreDraft(); // 全量重画会重建（空的）输入框：把该房间的本地草稿填回去
   scrollToBottom();
 }
 
@@ -303,12 +307,16 @@ function bindEvents(): void {
       void sendCurrent();
     }
   });
-  input?.addEventListener("input", () => syncComposerUi());
+  input?.addEventListener("input", () => {
+    saveComposerDraft();
+    syncComposerUi();
+  });
   for (const box of app.querySelectorAll<HTMLInputElement>("#composer-targets input[data-target]")) {
     box.addEventListener("change", () => {
       const area = composerInput();
       if (area === null) return;
       area.value = toggleTarget(area.value, box.dataset.target!, box.checked);
+      saveComposerDraft(); // 勾选会改正文（写 @ 前缀）→ 草稿跟着存
       syncComposerUi();
       area.focus();
     });
@@ -494,11 +502,31 @@ async function sendCurrent(): Promise<void> {
   }
 }
 
+/** 当前房间的本地草稿存回浏览器（空内容 = 删除）。没有房间 / 没有输入框时什么都不做。 */
+function saveComposerDraft(): void {
+  const roomKey = state.roomKey;
+  const area = composerInput();
+  if (roomKey === undefined || area === null) return;
+  drafts.save(roomKey, area.value);
+}
+
+/** 把当前房间的本地草稿填回输入框（renderAll 重建 DOM 后调用）；顺带同步群聊勾选与发送按钮态。 */
+function restoreDraft(): void {
+  const roomKey = state.roomKey;
+  const area = composerInput();
+  if (roomKey === undefined || area === null) return;
+  const draft = drafts.load(roomKey);
+  if (draft === "") return;
+  area.value = draft;
+  syncComposerUi(); // 群聊：正文是勾选态的唯一真相源，勾回来才能继续发
+}
+
 /** 发送成功后写入草稿（room 事件可能重建过输入框，故重新取元素）；保留勾选对象的 @ 前缀便于接着发。 */
 function applyDraft(draft: string): void {
   const area = composerInput();
   if (area === null) return;
   area.value = draft;
+  saveComposerDraft(); // 发完了：缓存跟着清空（群聊只剩 @ 前缀）
   syncComposerUi();
   if (draft !== "") area.focus();
 }
