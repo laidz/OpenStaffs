@@ -132,12 +132,14 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .agent-context { flex: 1; overflow: auto; padding: 12px 16px 24px; }
 .ctx-header { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; margin-bottom: 10px; }
 .ctx-meta { color: #8a9099; font-size: 12px; }
-/* 每步的时间（本地时区）：推到行尾，不抢角色 / 工具名 */
-.ctx-time { margin-left: auto; color: #a0a6ad; font-size: 12px; font-variant-numeric: tabular-nums; }
+/* 每步的时间（本地时区）放行首：与左侧角色 / 工具名并排，不往右推 */
+.ctx-time { color: #a0a6ad; font-size: 12px; font-variant-numeric: tabular-nums; }
 .ctx-running { color: #d48806; }
 .ctx-error { color: #f5222d; font-size: 12px; }
 .ctx-system { margin-bottom: 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; padding: 8px 10px; }
 .ctx-system > summary { cursor: pointer; color: #5b6169; font-size: 13px; }
+/* 基础信息卡片里的系统提示词：不再嵌套一层卡片边框，用一条上分隔线连接；正文自带白底边框 */
+.ctx-header .ctx-system { margin: 8px 0 0; border: 0; border-top: 1px solid #eceef1; border-radius: 0; background: transparent; padding: 8px 0 0; }
 .ctx-system-body { margin-top: 8px; }
 /* 系统提示词正文：自带一层边框 / 底色，不再裸在灰底上 */
 .ctx-system pre { margin: 0; background: #fff; border: 1px solid #eceef1; border-radius: 6px; padding: 10px 12px; max-height: 360px; overflow: auto; }

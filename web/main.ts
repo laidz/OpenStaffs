@@ -1,6 +1,6 @@
 import { api, type ConfigScope, type ConfigView, type SessionContextView, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { configPanelHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
+import { configPanelHtml, contextItemsHtml, contextMetaHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { localDraftStore } from "./drafts.ts";
 import { connectEvents } from "./sse.ts";
@@ -414,22 +414,65 @@ async function refreshPins(): Promise<void> {
 
 function onServerEvent(event: ServerEvent): void {
   dispatch({ type: "sse", event });
-  markSessionPanelStale(event);
+  followPanelContent(event);
 }
 
+/** 面板里新内容的刷新节流：流式期间事件密集，合并成一次重画。 */
+let panelRefreshTimer: number | undefined;
+
 /**
- * 会话详情面板的实时信号：只标「有新内容」（不自动替换正文，避免阅读位置跳动）。
- * 面板就是当前这一条会话，不再维护 Tab 列表。
+ * 会话详情面板的实时跟随：这条会话有新内容 → 自动拉一次上下文，**直接 prepend 进列表**（新的在上）。
+ * 没有「刷新 / 有新内容」按钮：面板是只读的，不需要人手动点。
  */
-function markSessionPanelStale(event: ServerEvent): void {
+function followPanelContent(event: ServerEvent): void {
   const panel = sessionPanel;
   if (panel === undefined) return;
   const touched =
-    (event.type === "room.delta" || event.type === "room.failed" || (event.type === "room.activity" && event.kind === "tool")) &&
-    event.convId === panel.convId;
+    event.type === "room.delta" ||
+    event.type === "room.failed" ||
+    event.type === "room.activity" ||
+    (event.type === "room.message" && event.message.speaker.kind === "employee" && event.message.speaker.id === panel.memberId);
   if (!touched) return;
-  const button = document.getElementById("session-panel-reload");
-  if (button !== null) button.hidden = false;
+  // 增量 / 工具事件按会话过滤；正式消息按成员过滤（库行视图 convId 恒为 store）
+  if (event.type !== "room.message" && event.convId !== panel.convId) return;
+  if (panelRefreshTimer !== undefined) window.clearTimeout(panelRefreshTimer);
+  panelRefreshTimer = window.setTimeout(() => {
+    panelRefreshTimer = undefined;
+    void prependPanelItems();
+  }, 350);
+}
+
+/**
+ * 拉一次最新上下文并**原地**更新条目区（不重建整个面板）。
+ * - 条目区是「新的在上」，所以新内容天然 prepend 到顶部；
+ * - 已展开的折叠块（data-key）保持展开；用户不在顶部时调整 scrollTop，阅读位置不跳。
+ */
+async function prependPanelItems(): Promise<void> {
+  const panel = sessionPanel;
+  if (panel === undefined) return;
+  const holder = document.getElementById("ctx-items");
+  if (holder === null) return; // 已经不在面板
+  const seq = ++sessionPanelSeq;
+  const context = await api.sessionContext(panel.memberId, panel.convId).catch(() => undefined);
+  if (context === undefined || seq !== sessionPanelSeq || sessionPanel !== panel) return; // 过期结果
+  const live = document.getElementById("ctx-items");
+  if (live === null) return;
+  const scroller = live.closest(".agent-context");
+  const stuckTop = scroller === null || scroller.scrollTop < 24;
+  const openKeys = new Set(
+    [...live.querySelectorAll<HTMLDetailsElement>("details[data-key][open]")].map((details) => details.dataset.key ?? ""),
+  );
+  const before = live.scrollHeight;
+  panel.context = context;
+  live.innerHTML = contextItemsHtml([...context.items].reverse());
+  for (const details of live.querySelectorAll<HTMLDetailsElement>("details[data-key]")) {
+    if (openKeys.has(details.dataset.key ?? "")) details.open = true;
+  }
+  // 顶部信息行的用量 / 运行中跟着变（只改那一行，不动卡片其他部分）
+  const meta = document.getElementById("ctx-meta-line");
+  if (meta !== null) meta.innerHTML = contextMetaHtml(context);
+  // 不在顶部阅读时：保持原来的阅读位置（新内容加在上面会把下面的内容推下去）
+  if (scroller !== null && !stuckTop) scroller.scrollTop += live.scrollHeight - before;
 }
 
 async function refreshAll(): Promise<void> {
@@ -560,8 +603,6 @@ async function renderSessionPanel(): Promise<void> {
     sessionPanel = undefined;
     renderAll();
   });
-  document.getElementById("session-panel-refresh")?.addEventListener("click", () => guard(renderSessionPanel()));
-  document.getElementById("session-panel-reload")?.addEventListener("click", () => guard(renderSessionPanel()));
 }
 
 /** 定义文件面板（只读）：左侧栏人员 / 部门 / 项目的 {} 进入，原样展示 config JSON。 */

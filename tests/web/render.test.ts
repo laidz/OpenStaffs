@@ -58,7 +58,8 @@ describe("会话信息条", () => {
     };
     const html = sessionInfoHtml(state);
     expect(html).toContain("faux/faux-model");
-    expect(html).toContain("思考 null");
+    expect(html).toContain("思考 default");
+    expect(html).not.toContain("思考 null");
     expect(html).toContain("12.8K / 128K，10%");
     expect(html).not.toContain("alice ·"); // 私聊不重复成员名
   });
@@ -387,15 +388,18 @@ describe("会话详情 / 定义文件面板", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
     // 会话开始时间：本地 `YYYY-MM-DD HH:mm`（不是截断的 ISO）
     expect(html).toContain("2026-10-25 10:00");
-    expect(html).not.toContain(startedAt.toISOString().slice(0, 10) + "T");
+    const head = html.slice(html.indexOf('<div class="ctx-header">'), html.indexOf('id="ctx-items"'));
+    expect(head).not.toContain("T02:00:00"); // 卡片里不是 ISO 半截（UTC）
     // 上下文：带单位、带百分比（与聊天顶部信息条一致）
     expect(html).toContain("上下文 166K / 1M，17%");
     expect(html).not.toContain("166000 / 1000000 tokens");
-    // 每步时间（本地 HH:mm:ss，推到行尾，title 给完整日期）
+    // 每步时间（本地 HH:mm:ss）在行首：与左侧内容并排，不在行尾
     expect(html).toContain("10:00:05");
     expect(html).toContain("10:00:09");
     expect(html).toContain("10:00:20");
     expect(html).toContain('class="ctx-time"');
+    expect(html.indexOf('class="ctx-time"')).toBeLessThan(html.indexOf("<strong>用户</strong>"));
+    expect(html).not.toContain("margin-left: auto");
 
     // 没时间戳的条目：不显时间（不硬造）
     const notime = sessionPanelHtml({ ...initialState, configured: true }, { ...context, items: [{ role: "user", text: "没有时间戳" }] });
@@ -405,7 +409,10 @@ describe("会话详情 / 定义文件面板", () => {
   it("会话详情：只有当前这一条会话（无 Tab），系统提示词 / 工具调用全转义", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
     expect(html).toContain("会话详情（只读）");
-    expect(html).toContain('id="session-panel-refresh"');
+    // 没有「刷新 / 有新内容」按钮：新内容自动 prepend 进列表
+    expect(html).not.toContain('id="session-panel-refresh"');
+    expect(html).not.toContain('id="session-panel-reload"');
+    expect(html).not.toContain("有新内容");
     expect(html).toContain('id="session-panel-back"');
     expect(html).not.toContain("data-agent-conv"); // Tab 切会话已移除
     expect(html).toContain("系统提示词");
@@ -425,7 +432,7 @@ describe("会话详情 / 定义文件面板", () => {
     expect(html.split("工具调用：write").length - 1).toBe(1);
     expect(html).toContain("已完成"); // 状态徽标
     // 默认收起：折叠块不带 open
-    expect(html).toContain('<details class="ctx-block ctx-call">');
+    expect(html).toContain('<details class="ctx-block ctx-call" data-key=');
     expect(html).not.toContain(" open");
 
     // 配不上的结果（调用不在视图里）：独立成条且同样默认收起
@@ -451,8 +458,14 @@ describe("会话详情 / 定义文件面板", () => {
     expect(html.split("工具调用：write").length - 1).toBe(1);
   });
 
-  it("系统提示词有边框容器（不再是裸的正文）", () => {
+  it("系统提示词在第一张卡片（基础信息）里，不再单独成块", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    const header = html.indexOf('<div class="ctx-header">');
+    const system = html.indexOf('<details class="ctx-system">');
+    const items = html.indexOf('id="ctx-items"');
+    expect(header).toBeGreaterThan(-1);
+    expect(system).toBeGreaterThan(header); // 在基础信息卡片内
+    expect(system).toBeLessThan(items); // 在条目区之前
     expect(html).toContain('<div class="ctx-system-body">');
     expect(html).toContain('class="ctx-text"');
   });

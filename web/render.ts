@@ -177,7 +177,7 @@ export function formatTokenCount(tokens: number): string {
 
 /**
  * 会话信息条：显示每条活跃会话**实际在用**的模型全值、思考强度、已用上下文 / 模型窗口。
- * 群聊逐成员展示（私聊不重复成员名）；思考强度 null = 模型明确不支持该档。
+ * 群聊逐成员展示（私聊不重复成员名）；思考强度 null = 未显式设定 → 展示 `default`（模型默认档）。
  */
 export function sessionInfoHtml(state: State): string {
   const isGroup = state.roomKey?.startsWith("group:") === true;
@@ -188,7 +188,7 @@ export function sessionInfoHtml(state: State): string {
       const parts: string[] = [];
       if (isGroup) parts.push(`<span class="session-member">${escapeHtml(name)}</span>`);
       parts.push(`<span class="session-model">${escapeHtml(info.model)}</span>`);
-      parts.push(`<span class="session-thinking">思考 ${escapeHtml(String(info.thinkingLevel ?? "null"))}</span>`);
+      parts.push(`<span class="session-thinking">思考 ${escapeHtml(info.thinkingLevel ?? "default")}</span>`);
       const used = formatTokenCount(info.contextUsed);
       const context =
         info.contextWindow === undefined
@@ -324,19 +324,20 @@ function callBadge(result: ContextItemView | undefined): string {
 /**
  * 工具调用 + 它自己的结果（同一个 toolCallId）合成**一块**可折叠内容，默认收起。
  * 原来「调用」与「结果」是两条并列条目，UI 上像两件不相干的事，且默认全展开、很吵。
+ * `key` 用于新内容到达后保持已展开的折叠块（列表重画时不会“刷刷全合上”）。
  */
-function toolCallHtml(call: { id?: string; name: string; arguments?: unknown }, result: ContextItemView | undefined): string {
+function toolCallHtml(call: { id?: string; name: string; arguments?: unknown }, result: ContextItemView | undefined, key: string): string {
   const args = `<pre class="ctx-args">${escapeHtml(JSON.stringify(call.arguments ?? {}, null, 2))}</pre>`;
   const output =
     result === undefined
       ? ""
       : `<div class="ctx-result"><pre>${escapeHtml(result.text === "" ? "（空输出）" : result.text)}</pre></div>`;
-  return `<details class="ctx-block ctx-call"><summary>工具调用：${escapeHtml(call.name)} ${callBadge(result)}</summary>${args}${output}</details>`;
+  return `<details class="ctx-block ctx-call" data-key="${escapeHtml(key)}"><summary>工具调用：${escapeHtml(call.name)} ${callBadge(result)}</summary>${args}${output}</details>`;
 }
 
 /** 孤立结果（对应调用不在本视图里）：仍单独成条，同样默认收起。 */
-function orphanResultHtml(item: ContextItemView): string {
-  return `<details class="ctx-block ctx-call"><summary>工具结果：${escapeHtml(item.toolName ?? "工具")} ${callBadge(item)}</summary><pre>${escapeHtml(item.text === "" ? "（空输出）" : item.text)}</pre></details>`;
+function orphanResultHtml(item: ContextItemView, key: string): string {
+  return `<details class="ctx-block ctx-call" data-key="${escapeHtml(key)}"><summary>工具结果：${escapeHtml(item.toolName ?? "工具")} ${callBadge(item)}</summary><pre>${escapeHtml(item.text === "" ? "（空输出）" : item.text)}</pre></details>`;
 }
 
 /**
@@ -344,7 +345,7 @@ function orphanResultHtml(item: ContextItemView): string {
  * 只有**真能配上调用**的结果才合并（配不上就独立成条，绝不隐身），其余照常展示。
  * 传进来的列表按「新内容在前」排列（调用方已 reverse），配对与排序无关。
  */
-function contextItemsHtml(items: ContextItemView[]): string {
+export function contextItemsHtml(items: ContextItemView[]): string {
   const results = new Map<string, ContextItemView>();
   for (const item of items) {
     if (item.role === "tool" && item.toolCallId !== undefined) results.set(item.toolCallId, item);
@@ -364,57 +365,70 @@ function contextItemsHtml(items: ContextItemView[]): string {
     .join("");
 }
 
+/** 条目在重画前后的稳定标识（用于保住已展开的折叠块）：时间 + 角色 + 工具调用 id + 文本长度。 */
+function itemKey(item: ContextItemView): string {
+  return `${item.at ?? ""}:${item.role}:${item.toolCallId ?? ""}:${item.text.length}`;
+}
+
 function contextItemHtml(item: ContextItemView, results: Map<string, ContextItemView>): string {
   const meta = item.kind === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.kind)}</span>`;
   const toolName = item.toolName === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolName)}</span>`;
   const error = item.isError === true ? '<span class="ctx-error">错误</span>' : "";
-  // 每步的时间（本地时区）；模型消息没带 timestamp 就不显
+  const key = itemKey(item);
+  // 每步的时间（本地时区）放在行首、与左侧内容并排；模型消息没带 timestamp 就不显
   const clock = item.at === undefined ? "" : localClock(item.at);
   const at = clock === "" ? "" : `<span class="ctx-time" title="${escapeHtml(localDateTime(item.at!))}">${escapeHtml(clock)}</span>`;
   const thinking =
     item.thinking === undefined || item.thinking === ""
       ? ""
-      : `<details class="ctx-block"><summary>思考</summary><pre>${escapeHtml(item.thinking)}</pre></details>`;
+      : `<details class="ctx-block" data-key="${escapeHtml(`${key}:thinking`)}"><summary>思考</summary><pre>${escapeHtml(item.thinking)}</pre></details>`;
   // 工具结果的正文放进折叠块里（不再在条目里重复一份）
   const text = item.role === "tool" || item.text === "" ? "" : `<pre class="ctx-text">${escapeHtml(item.text)}</pre>`;
   const calls =
     item.role === "tool"
-      ? orphanResultHtml(item)
-      : (item.toolCalls ?? []).map((call) => toolCallHtml(call, call.id === undefined ? undefined : results.get(call.id))).join("");
+      ? orphanResultHtml(item, `${key}:result`)
+      : (item.toolCalls ?? [])
+          .map((call) => toolCallHtml(call, call.id === undefined ? undefined : results.get(call.id), `${key}:call:${call.id ?? call.name}`))
+          .join("");
   // 工具结果的内容在折叠块里，不算「空」
   const empty = text === "" && thinking === "" && calls === "" && item.role !== "tool" ? '<div class="ctx-meta">（空）</div>' : "";
   return `<div class="ctx-item ctx-${item.role}">
-    <div class="ctx-head"><strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}${at}</div>
+    <div class="ctx-head">${at}<strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}</div>
     ${thinking}${text}${calls}${empty}
   </div>`;
 }
 
-/**
- * 会话详情面板的正文：头信息 + 系统提示词（常驻页首，可折叠）+ 模型条目。
- * 条目区**新的在上**（逆序）：打工的会话动辄几十条，最关心的永远是最新那条，不用每次滑到底。
- */
-function contextBodyHtml(context: SessionContextView): string {
+/** 基础信息卡片里的「模型 / 思考 / 用量 / 运行中」一行；新内容到达时原地更新（不重画卡片）。 */
+export function contextMetaHtml(context: SessionContextView): string {
   // 上下文用量与聊天顶部信息条同口径：带单位、带百分比（如 166K / 1M，17%）
   const used = formatTokenCount(context.contextUsed);
   const usage =
     context.contextWindow === undefined
       ? `上下文 ${used}`
       : `上下文 ${used} / ${formatTokenCount(context.contextWindow)}，${Math.round((context.contextUsed / context.contextWindow) * 100)}%`;
+  return `${escapeHtml(context.model)} · 思考 ${escapeHtml(context.thinkingLevel ?? "default")} · ${escapeHtml(usage)}${context.running ? ' · <span class="ctx-running">运行中</span>' : ""}`;
+}
+
+/**
+ * 会话详情面板的正文：基础信息卡片（关系 / 模型 / 用量 / 系统提示词）+ 模型条目。
+ * 系统提示词并进第一张卡片（不再是页面上另起一坨）；条目区**新的在上**（逆序）。
+ */
+function contextBodyHtml(context: SessionContextView): string {
   const system = context.instructions.trim() === ""
     ? '<p class="hint">（没有系统提示词）</p>'
     : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><div class="ctx-system-body"><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></div></details>`;
   return `<div class="ctx-header">
       <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(localDateTime(context.started))}</span></div>
-      <div class="ctx-meta">${escapeHtml(context.model)} · 思考 ${escapeHtml(context.thinkingLevel ?? "—")} · ${escapeHtml(usage)}${context.running ? ' · <span class="ctx-running">运行中</span>' : ""}</div>
+      <div class="ctx-meta" id="ctx-meta-line">${contextMetaHtml(context)}</div>
       ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
+      ${system}
     </div>
-    ${system}
-    <div class="ctx-items">${contextItemsHtml([...context.items].reverse())}</div>`;
+    <div class="ctx-items" id="ctx-items">${contextItemsHtml([...context.items].reverse())}</div>`;
 }
 
 /**
  * 会话详情（只读）：就是聊天顶部信息条那一条会话的完整上下文（系统提示词 + 模型条目）。
- * 不再提供 Tab 切会话：入口是信息条上的「详情」，所以只展示这一条。
+ * 没有「刷新」按钮：这条会话有新内容时自动 prepend 进列表（见 web/main.ts）。
  */
 export function sessionPanelHtml(state: State, context: SessionContextView | undefined): string {
   const body =
@@ -424,8 +438,6 @@ export function sessionPanelHtml(state: State, context: SessionContextView | und
   return `<div class="layout">${sidebarHtml(state)}<section class="chat detail-panel">
     <header class="chat-head">
       <span class="title">会话详情（只读）</span>
-      <button id="session-panel-reload" title="这条会话有新内容" hidden>有新内容</button>
-      <button id="session-panel-refresh">刷新</button>
       <button id="session-panel-back">返回聊天</button>
     </header>
     <div class="agent-context">${body}</div>
