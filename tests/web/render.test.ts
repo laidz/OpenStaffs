@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentPanelHtml, agentSessionTabsHtml, chatHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { chatHtml, configPanelHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { EmployeeSession, SessionContextView } from "../../web/api.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
@@ -333,14 +333,15 @@ describe("侧栏部门树", () => {
   it("sidebarHtml：无 org 数据时回落平铺（首帧不白屏）；都没有才出提示", () => {
     const flat = sidebarHtml({ ...initialState, configured: true, employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }] });
     expect(flat).toContain('data-room="dm:alice"');
-    expect(flat).toContain('data-agent-sessions="alice"');
+    expect(flat).toContain('data-config-scope="agent"');
+    expect(flat).toContain('data-config-id="alice"');
     const empty = sidebarHtml({ ...initialState, configured: true });
     expect(empty).toContain("还没有员工");
     expect(empty).toContain("&lt;名字&gt;.agent.config.json");
   });
 });
 
-describe("员工会话上下文面板", () => {
+describe("会话详情 / 定义文件面板", () => {
   const dm: EmployeeSession = {
     convId: "conv_dm",
     kind: "dm",
@@ -351,18 +352,6 @@ describe("员工会话上下文面板", () => {
     thinkingLevel: "high",
     contextUsed: 10,
     contextWindow: 100,
-  };
-  const group: EmployeeSession = {
-    convId: "conv_yt",
-    kind: "group",
-    relationKey: "group:yt",
-    projectId: "yt",
-    projectAlias: "油管",
-    started: "2026-10-25T10:01:00+08:00",
-    running: false,
-    model: "faux/faux-model",
-    thinkingLevel: null,
-    contextUsed: 20,
   };
   const context: SessionContextView = {
     ...dm,
@@ -375,26 +364,12 @@ describe("员工会话上下文面板", () => {
       { role: "assistant", text: "完成" },
     ],
   };
-
-  it("Tab：运行点、群名、时间；选中态", () => {
-    const tabs = agentSessionTabsHtml([dm, group], "conv_dm");
-    expect(tabs).toContain('data-agent-conv="conv_dm"');
-    expect(tabs).toContain('class="tab active running"');
-    expect(tabs).toContain("油管");
-    expect(tabs).toContain("2026-10-25 10:01");
-  });
-
-  it("面板：系统提示词 + 工具调用 + 工具结果；HTML 全转义", () => {
-    const html = agentPanelHtml(
-      { ...initialState, configured: true },
-      { id: "alice", alias: "爱丽丝" },
-      [dm, group],
-      "conv_dm",
-      context,
-    );
-    expect(html).toContain("会话上下文 · 爱丽丝");
-    expect(html).toContain('id="agent-panel-reload"');
-    expect(html).toContain('id="agent-panel-refresh"');
+  it("会话详情：只有当前这一条会话（无 Tab），系统提示词 / 工具调用全转义", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    expect(html).toContain("会话详情（只读）");
+    expect(html).toContain('id="session-panel-refresh"');
+    expect(html).toContain('id="session-panel-back"');
+    expect(html).not.toContain("data-agent-conv"); // Tab 切会话已移除
     expect(html).toContain("系统提示词");
     expect(html).toContain("你是 alice。&lt;系统&gt;");
     expect(html).toContain("工具调用：write");
@@ -402,11 +377,24 @@ describe("员工会话上下文面板", () => {
     expect(html).toContain("工具结果");
     expect(html).toContain("完成");
     expect(html).not.toContain("<系统>");
+    // 顶部信息条的入口不在这里：详情就有「详情」按钮，不再需要面板内的会话列表
+    expect(sessionInfoHtml({ ...initialState, configured: true, roomKey: "dm:alice", sessions: [{ memberId: "alice", ...dm }] })).toContain('data-session-detail="conv_dm"');
   });
 
-  it("无会话 / 无上下文时给出提示", () => {
-    const empty = agentPanelHtml({ ...initialState, configured: true }, { id: "alice" }, [], undefined, undefined);
-    expect(empty).toContain("还没有活跃会话");
-    expect(empty).toContain("该员工还没有活跃会话");
+  it("会话详情：拿不到上下文时给出提示，不留空白", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, undefined);
+    expect(html).toContain("无法读取该会话上下文");
+  });
+
+  it("定义文件面板：原文原样转义进 pre；缺文件时说明", () => {
+    const view = { scope: "agent" as const, id: "alice", file: "alice 的定义文件", text: '{\n  "prompt": "<你>是 alice"\n}' };
+    const html = configPanelHtml({ ...initialState, configured: true }, view, "alice");
+    expect(html).toContain('class="ctx-text config-text"');
+    expect(html).toContain("alice 的定义文件");
+    expect(html).toContain("&lt;你&gt;是 alice");
+    expect(html).toContain('id="config-panel-back"');
+
+    const missing = configPanelHtml({ ...initialState, configured: true }, { ...view, text: null }, "alice");
+    expect(missing).toContain("该层没有配置文件");
   });
 });

@@ -108,19 +108,22 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .perm-actions button:disabled { opacity: 0.5; cursor: default; }
 .perm-error { color: #a8071a; font-size: 12px; margin-top: 6px; }
 
-/* 员工行：名字按钮 + 「会话上下文」icon */
+/* 侧栏每一行：主按钮（进房间 / 折叠部门）+ 右侧 {} 按钮 */
 .item-row { display: flex; align-items: center; border-radius: 8px; }
 .item-row:hover { background: #f0f2f5; }
 .item-row .item { flex: 1; width: auto; }
 .item-row .item.active { background: #e8f0fe; }
-.item-ctx { border: 0; background: transparent; color: #8a9099; cursor: pointer; font-size: 13px; padding: 6px 8px; border-radius: 6px; }
+.item-row .dept-head { flex: 1; width: auto; }
+/* 会话详情入口：信息条上的文字按钮（原来的侧栏 ▤ 已改为「看定义文件」） */
+.session-detail { border: 0; background: transparent; color: #1677ff; cursor: pointer; font-size: 12px; padding: 0 2px; }
+.session-detail:hover { text-decoration: underline; }
+/* 侧栏每一行的 {} 按钮（人员 / 部门 / 项目）：看该层定义文件原文 */
+.item-ctx { border: 0; background: transparent; color: #8a9099; cursor: pointer; font-size: 12px; padding: 6px 8px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .item-ctx:hover { background: #e3e5e8; color: #333; }
-/* 会话上下文面板 */
-#agent-panel-reload { border-color: #faad14; background: #fffbe6; color: #ad6800; }
-.agent-panel .tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid #e3e5e8; background: #fff; }
-.tab { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #d0d4d9; background: #fff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
-.tab.active { border-color: #1a73e8; background: #e8f0fe; }
-.tab .ctx-meta { font-size: 11px; }
+/* 定义文件面板（只读，原样 JSON） */
+.agent-context .config-text { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 12px; max-height: calc(100vh - 140px); overflow: auto; font-size: 12.5px; }
+/* 面板（会话详情 / 定义文件） */
+#session-panel-reload { border-color: #faad14; background: #fffbe6; color: #ad6800; }
 .agent-context { flex: 1; overflow: auto; padding: 12px 16px 24px; }
 .ctx-header { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; margin-bottom: 10px; }
 .ctx-meta { color: #8a9099; font-size: 12px; }

@@ -35,7 +35,6 @@ export type State = {
   /** 「新开会话」已就绪：下一条消息投递时对目标成员真正新开会话（一次一条，发完清零）。 */
   freshSession: boolean;
   busy: Record<string, boolean>;
-  panel?: "history";
   /** 组织树（部门嵌套）；未拿到时为 undefined（侧栏回落平铺）。 */
   org?: OrgDept;
   /** 折叠的部门路径（**不持久化**：刷新回到全展开）。 */
@@ -67,7 +66,6 @@ export type UiEvent =
   | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
   | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
   | { type: "close-room" }
-  | { type: "panel"; panel?: "history" }
   | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
   | { type: "pin"; roomKey: string; key: string; pinned: boolean }
   | { type: "fresh-session"; on: boolean }
@@ -133,15 +131,12 @@ export function reduce(state: State, event: UiEvent): State {
         sessions: [],
         freshSession: false,
         live: {},
-        panel: undefined,
       };
     case "sessions":
       // 迟到的结果不串台：只接受当前房间。
       return state.roomKey === event.roomKey ? { ...state, sessions: event.sessions } : state;
     case "close-room":
-      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], sessions: [], freshSession: false, live: {}, panel: undefined };
-    case "panel":
-      return { ...state, panel: event.panel };
+      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], sessions: [], freshSession: false, live: {} };
     case "fresh-session":
       return state.freshSession === event.on ? state : { ...state, freshSession: event.on };
     case "pins":
@@ -209,9 +204,13 @@ function reduceSse(state: State, event: ServerEvent): State {
       if (event.message.speaker.kind !== "employee") {
         return { ...state, messages };
       }
-      const live = { ...state.live };
-      delete live[event.message.convId];
-      return { ...state, messages, live };
+      // 按**成员**清（不能按 convId）：正式消息来自库行视图，convId 恒为 "store"，
+      // 而流式气泡的键是 Pi 的 convId —— 按 convId 清会永远删不掉，气泡残影留在消息末尾。
+      // 群聊可多人并行流式：只清这一位成员的气泡。
+      const speakerId = event.message.speaker.id;
+      const keeping = Object.entries(state.live).filter(([, entry]) => entry.memberId !== speakerId);
+      if (keeping.length === Object.keys(state.live).length) return { ...state, messages };
+      return { ...state, messages, live: Object.fromEntries(keeping) };
     }
     case "room.delta": {
       const existing = liveOf(state, event.convId, event.memberId);
@@ -252,14 +251,4 @@ function reduceSse(state: State, event: ServerEvent): State {
     default:
       return state;
   }
-}
-
-/** 会话上下文面板的默认选中：优先保留 keep（刷新时），否则运行中 → 私聊 → 第一条。 */
-export function pickAgentSession(sessions: readonly EmployeeSession[], keep?: string): string | undefined {
-  if (keep !== undefined && sessions.some((session) => session.convId === keep)) return keep;
-  return (
-    sessions.find((session) => session.running)?.convId ??
-    sessions.find((session) => session.kind === "dm")?.convId ??
-    sessions[0]?.convId
-  );
 }

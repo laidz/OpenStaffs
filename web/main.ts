@@ -1,6 +1,6 @@
-import { api, type EmployeeSession, type Status } from "./api.ts";
-import { initialState, pickAgentSession, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { agentPanelHtml, agentSessionTabsHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, setupPage, sidebarHtml } from "./render.ts";
+import { api, type ConfigScope, type ConfigView, type SessionContextView, type Status } from "./api.ts";
+import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
+import { configPanelHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { connectEvents } from "./sse.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
@@ -9,12 +9,12 @@ const app = document.getElementById("app")!;
 let state: State = initialState;
 let status: Status | undefined;
 let sending = false;
-/** 员工「会话上下文」面板（打开时替换聊天区；undefined = 不在面板）。 */
-type AgentPanelState = { employee: { id: string; alias?: string }; sessions: EmployeeSession[]; selected?: string };
-let agentPanel: AgentPanelState | undefined;
-let agentPanelSeq = 0;
-let agentPanelRenderSeq = 0;
-let agentPanelListTimer: number | undefined;
+/** 会话详情（只读）：聊天顶部信息条的「详情」进入，内容就是那一条会话；undefined = 不在面板。 */
+type SessionPanelState = { memberId: string; convId: string; context?: SessionContextView };
+let sessionPanel: SessionPanelState | undefined;
+let sessionPanelSeq = 0;
+/** 定义文件面板：左侧栏人员 / 部门 / 项目的 {} 进入。 */
+let configPanel: (ConfigView & { label: string }) | undefined;
 
 function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
   const next = reduce(state, event);
@@ -26,7 +26,8 @@ function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
 }
 
 function renderAll(): void {
-  agentPanel = undefined; // 全量重画 = 离开面板；避免面板状态与 DOM 两份真相
+  sessionPanel = undefined; // 全量重画 = 离开面板；避免面板状态与 DOM 两份真相
+  configPanel = undefined;
   if (selectView(state) === "setup") {
     app.innerHTML = setupPage(status?.root ?? "", status?.port ?? 4319);
     return;
@@ -77,6 +78,7 @@ function renderDynamic(event: UiEvent): void {
       // run 起止改忙碌点（侧栏）；tool 起止改 live 的工具行。run 结束刷新上下文用量。
       if (event.event.kind === "run") {
         renderSidebar();
+        renderLive(); // run 结束会清掉残影（中断 / 正式消息先到）——DOM 也得跟着消失
         if (event.event.phase === "end") void refreshSessionInfo(event.event.roomKey);
       } else renderLive();
       return;
@@ -137,9 +139,7 @@ function renderSidebar(): void {
   const sidebar = document.getElementById("sidebar");
   if (sidebar === null) return;
   sidebar.outerHTML = sidebarHtml(state);
-  bindRoomButtons(); // outerHTML 重建了侧栏，需重新挂载房间点击
-  bindAgentSessionButtons(); // 员工行的「会话上下文」入口
-  bindDeptToggles(); // 以及部门折叠
+  bindSidebar(); // outerHTML 重建了侧栏，需重新挂载房间点击 / {} 入口 / 部门折叠
 }
 
 /** 消息列表局部更新；nearBottom 必须在重建 DOM 之前测量。 */
@@ -176,11 +176,12 @@ function renderLive(): void {
   if (stick) scrollToBottom();
 }
 
-/** 会话信息条局部更新（模型 / 思考强度 / 上下文用量）。 */
+/** 会话信息条局部更新（模型 / 思考强度 / 上下文用量 / 详情入口）。 */
 function renderSessionInfo(): void {
   const holder = document.getElementById("session-info");
   if (holder === null) return;
   holder.outerHTML = sessionInfoHtml(state);
+  bindSessionDetailButtons(); // outerHTML 重建了信息条，重新挂详情入口
 }
 
 /** 重拉当前房间的会话信息；辅助展示，失败静默等下一次事件。 */
@@ -258,14 +259,28 @@ function bindRoomButtons(): void {
   }
 }
 
-/** 侧栏员工行右侧的「会话上下文」入口（名字按钮仍走 data-room）。 */
-function bindAgentSessionButtons(): void {
-  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-sessions]")) {
+/** 侧栏人员 / 部门 / 项目的 {} 入口：展示该层定义文件原文（只读）。 */
+function bindConfigButtons(): void {
+  for (const element of app.querySelectorAll<HTMLElement>("[data-config-scope]")) {
     element.addEventListener("click", (event) => {
       event.stopPropagation();
-      guard(openAgentPanel(element.dataset.agentSessions!));
+      guard(openConfigPanel(element.dataset.configScope as ConfigScope, element.dataset.configId ?? ""));
     });
   }
+}
+
+/** 会话信息条上的「详情」：进入该会话的只读详情（只这一条，不切 Tab）。 */
+function bindSessionDetailButtons(): void {
+  for (const element of app.querySelectorAll<HTMLElement>("[data-session-detail]")) {
+    element.addEventListener("click", () => guard(openSessionPanel(element.dataset.member ?? "", element.dataset.sessionDetail!)));
+  }
+}
+
+/** 侧栏整体挂载（全量渲染与面板渲染共用）。 */
+function bindSidebar(): void {
+  bindRoomButtons();
+  bindConfigButtons();
+  bindDeptToggles();
 }
 
 /** 部门折叠（renderSidebar 重建侧栏后必须重挂）。 */
@@ -276,9 +291,8 @@ function bindDeptToggles(): void {
 }
 
 function bindEvents(): void {
-  bindRoomButtons();
-  bindAgentSessionButtons();
-  bindDeptToggles();
+  bindSidebar();
+  bindSessionDetailButtons();
   document.getElementById("composer-send")?.addEventListener("click", () => void sendCurrent());
   const input = document.getElementById("composer-input");
   input?.addEventListener("keydown", (event) => {
@@ -392,92 +406,22 @@ async function refreshPins(): Promise<void> {
 
 function onServerEvent(event: ServerEvent): void {
   dispatch({ type: "sse", event });
-  syncAgentPanelActivity(event);
+  markSessionPanelStale(event);
 }
 
 /**
- * 面板打开时的实时信号：
- * - 正文不自动替换（避免阅读位置跳动），只显示「有新内容」按钮；
- * - 运行点按 run 起止更新；
- * - 该员工有新活动（可能多了新会话）时，防抖重拉 Tab 列表。
+ * 会话详情面板的实时信号：只标「有新内容」（不自动替换正文，避免阅读位置跳动）。
+ * 面板就是当前这一条会话，不再维护 Tab 列表。
  */
-function syncAgentPanelActivity(event: ServerEvent): void {
-  const panel = agentPanel;
+function markSessionPanelStale(event: ServerEvent): void {
+  const panel = sessionPanel;
   if (panel === undefined) return;
-  if (event.type === "room.delta") {
-    if (event.convId === panel.selected) markAgentPanelStale();
-    return;
-  }
-  if (event.type === "room.message") {
-    if (event.message.convId === panel.selected) markAgentPanelStale();
-    scheduleAgentPanelListRefresh();
-    return;
-  }
-  if (event.type !== "room.activity") return;
-
-  if (event.kind === "tool" && event.convId === panel.selected) markAgentPanelStale();
-  if (event.kind !== "run") return;
-  if (event.memberId === panel.employee.id) scheduleAgentPanelListRefresh();
-
-  const session = panel.sessions.find((item) => item.convId === event.convId);
-  if (session === undefined) return;
-  session.running = event.phase === "start";
-  const tab = document.querySelector<HTMLElement>(`[data-agent-conv="${CSS.escape(event.convId)}"]`);
-  if (tab === null) return;
-  tab.classList.toggle("running", session.running);
-  const dot = tab.querySelector(".dot");
-  if (session.running && dot === null) {
-    const marker = document.createElement("span");
-    marker.className = "dot";
-    marker.title = "运行中";
-    tab.prepend(marker);
-  } else if (!session.running && dot !== null) {
-    dot.remove();
-  }
-}
-
-function markAgentPanelStale(): void {
-  const button = document.getElementById("agent-panel-reload");
+  const touched =
+    (event.type === "room.delta" || event.type === "room.failed" || (event.type === "room.activity" && event.kind === "tool")) &&
+    event.convId === panel.convId;
+  if (!touched) return;
+  const button = document.getElementById("session-panel-reload");
   if (button !== null) button.hidden = false;
-}
-
-/** 防抖：面板打开期间新会话 / 会话结束不该高频重拉。 */
-function scheduleAgentPanelListRefresh(): void {
-  if (agentPanel === undefined || agentPanelListTimer !== undefined) return;
-  agentPanelListTimer = window.setTimeout(() => {
-    agentPanelListTimer = undefined;
-    void refreshAgentPanelSessions().catch(() => {});
-  }, 300);
-}
-
-/** 只重拉 Tab 列表；选中项仍存在时不动正文。 */
-async function refreshAgentPanelSessions(): Promise<void> {
-  const panel = agentPanel;
-  if (panel === undefined) return;
-  const { sessions } = await api.employeeSessions(panel.employee.id);
-  if (agentPanel !== panel) return;
-  panel.sessions = sessions;
-  const selected = pickAgentSession(sessions, panel.selected);
-  if (selected !== panel.selected) {
-    panel.selected = selected;
-    await renderAgentPanel();
-    return;
-  }
-  const holder = app.querySelector<HTMLElement>(".agent-panel .tabs");
-  if (holder !== null) {
-    holder.innerHTML = agentSessionTabsHtml(sessions, selected);
-    bindAgentTabs();
-  }
-}
-
-function bindAgentTabs(): void {
-  for (const element of app.querySelectorAll<HTMLElement>("[data-agent-conv]")) {
-    element.addEventListener("click", () => {
-      if (agentPanel === undefined) return;
-      agentPanel.selected = element.dataset.agentConv!;
-      guard(renderAgentPanel());
-    });
-  }
 }
 
 async function refreshAll(): Promise<void> {
@@ -503,7 +447,8 @@ async function refreshAll(): Promise<void> {
 }
 
 async function enterRoom(roomKey: string): Promise<void> {
-  agentPanel = undefined;
+  sessionPanel = undefined;
+  configPanel = undefined;
   const [room, info] = await Promise.all([
     api.messages(roomKey),
     api.sessionInfo(roomKey).catch(() => undefined),
@@ -563,38 +508,56 @@ async function interruptCurrent(): Promise<void> {
   await api.interrupt(state.roomKey);
 }
 
-/** 打开员工的「会话上下文」：默认选运行中的，否则私聊，再否则第一条。 */
-async function openAgentPanel(employeeId: string, keep?: string): Promise<void> {
-  const seq = ++agentPanelSeq;
-  const { employee, sessions } = await api.employeeSessions(employeeId);
-  if (seq !== agentPanelSeq) return; // 快速连点：只让最后一次请求落 DOM
-  const selected = pickAgentSession(sessions, keep ?? agentPanel?.selected);
-  agentPanel = { employee, sessions, ...(selected === undefined ? {} : { selected }) };
-  await renderAgentPanel();
+/** 会话详情（只读）：入口 = 聊天顶部信息条的「详情」，内容就是那一条会话。 */
+async function openSessionPanel(memberId: string, convId: string): Promise<void> {
+  configPanel = undefined;
+  sessionPanel = { memberId, convId };
+  await renderSessionPanel();
 }
 
-async function renderAgentPanel(): Promise<void> {
-  if (agentPanel === undefined) {
+async function renderSessionPanel(): Promise<void> {
+  const panel = sessionPanel;
+  if (panel === undefined) {
     renderAll();
     return;
   }
-  const seq = ++agentPanelRenderSeq;
-  const { employee, sessions, selected } = agentPanel;
-  const context =
-    selected === undefined ? undefined : await api.sessionContext(employee.id, selected).catch(() => undefined);
-  if (seq !== agentPanelRenderSeq || agentPanel === undefined) return; // 切 Tab / 关闭面板：丢弃过期结果
-  app.innerHTML = agentPanelHtml(state, employee, sessions, selected, context);
-  bindRoomButtons();
-  bindAgentSessionButtons();
-  bindDeptToggles();
+  const seq = ++sessionPanelSeq;
+  const context = await api.sessionContext(panel.memberId, panel.convId).catch(() => undefined);
+  if (seq !== sessionPanelSeq || sessionPanel !== panel) return; // 快速连点 / 已离开：丢弃过期结果
+  panel.context = context;
+  app.innerHTML = sessionPanelHtml(state, context);
+  bindSidebar();
   bindPermCards();
-  document.getElementById("agent-panel-back")?.addEventListener("click", () => {
-    agentPanel = undefined;
+  document.getElementById("session-panel-back")?.addEventListener("click", () => {
+    sessionPanel = undefined;
     renderAll();
   });
-  document.getElementById("agent-panel-refresh")?.addEventListener("click", () => guard(openAgentPanel(employee.id, agentPanel?.selected)));
-  document.getElementById("agent-panel-reload")?.addEventListener("click", () => guard(renderAgentPanel()));
-  bindAgentTabs();
+  document.getElementById("session-panel-refresh")?.addEventListener("click", () => guard(renderSessionPanel()));
+  document.getElementById("session-panel-reload")?.addEventListener("click", () => guard(renderSessionPanel()));
+}
+
+/** 定义文件面板（只读）：左侧栏人员 / 部门 / 项目的 {} 进入，原样展示 config JSON。 */
+async function openConfigPanel(scope: ConfigScope, id: string): Promise<void> {
+  sessionPanel = undefined;
+  const view = await api.config(scope, id);
+  const label =
+    scope === "agent" ? id : scope === "department" ? (id === "" ? "根部门" : id) : id;
+  configPanel = { ...view, label };
+  renderConfigPanel();
+}
+
+function renderConfigPanel(): void {
+  if (configPanel === undefined) {
+    renderAll();
+    return;
+  }
+  app.innerHTML = configPanelHtml(state, configPanel, configPanel.label);
+  bindSidebar();
+  bindPermCards();
+  document.getElementById("config-panel-back")?.addEventListener("click", () => {
+    configPanel = undefined;
+    renderAll();
+  });
 }
 
 async function openHistory(): Promise<void> {
@@ -615,9 +578,7 @@ async function openHistory(): Promise<void> {
     <p><button id="btn-history-back">返回聊天</button></p>
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
-  bindRoomButtons(); // 面板内也带一份侧栏
-  bindAgentSessionButtons(); // 侧栏员工行的会话入口
-  bindDeptToggles(); // 面板内侧栏的部门折叠同样可用
+  bindSidebar(); // 面板内也带一份侧栏（房间 / {} 定义 / 部门折叠）
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
   for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
     const convId = element.dataset.conv!;
@@ -632,9 +593,7 @@ async function loadHistoryView(roomKey: string, convId: string): Promise<void> {
     ${messagesHtml(messages, state.bossName)}
   </div></div>${permissionCardsHtml(state)}`;
   document.getElementById("btn-history-back")?.addEventListener("click", () => guard(openHistory()));
-  bindRoomButtons(); // 详情视图同样带一份侧栏
-  bindAgentSessionButtons(); // 侧栏员工行的会话入口
-  bindDeptToggles(); // 详情视图侧栏的部门折叠同样可用
+  bindSidebar(); // 详情视图同样带一份侧栏
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
 }
 

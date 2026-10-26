@@ -2,12 +2,14 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { loadProjectConfig } from "../config/load.ts";
+import { agentConfigFile, departmentConfigFile, projectConfigFile } from "../config/naming.ts";
 import { listProjects } from "../domain/project.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, displayThinkingLevel, formatModelRef, readBossName, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { findPerson, loadOrg, type OrgDepartment, type OrgTree } from "../domain/org.ts";
 import type { Workspace } from "../domain/paths.ts";
+import { agentsDir } from "../domain/paths.ts";
 import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage } from "../app/rooms.ts";
 import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
@@ -103,6 +105,36 @@ function memberSummaries(ws: Workspace, tree: OrgTree, project: string): { id: s
     const person = findPerson(tree, id);
     return { id, ...(person?.alias === undefined ? {} : { alias: person.alias }) };
   });
+}
+
+export type ConfigScope = "agent" | "department" | "project";
+
+const CONFIG_SCOPES: readonly ConfigScope[] = ["agent", "department", "project"];
+
+/** id 不得带 NUL / 绝对路径 / `..`（部门 id 允许带分隔符表示嵌套部门）。 */
+function safeConfigId(id: string): boolean {
+  if (id.includes("\0") || path.isAbsolute(id)) return false;
+  return !id.split(/[\\/]/u).includes("..");
+}
+
+/**
+ * 老板在 UI 里查看定义文件：只认三类已知文件名（`*.agent.config.json` / `department.config.json` /
+ * `*.project.config.json`），越界或不存在都返回 undefined（由调用方回 404）。
+ */
+function configFileFor(ws: Workspace, scope: string, id: string): string | undefined {
+  if (!CONFIG_SCOPES.includes(scope as ConfigScope) || !safeConfigId(id)) return undefined;
+  if (scope === "project") {
+    return id.trim() === "" || id.includes("/") || id.includes("\\") ? undefined : projectConfigFile(ws, id);
+  }
+  if (scope === "agent") {
+    const person = findPerson(loadOrg(ws), id);
+    return person === undefined ? undefined : agentConfigFile(person.dir, id);
+  }
+  // 部门：id = 部门路径（"" = 根部门），目录必须落在 agents/ 内。
+  const root = agentsDir(ws);
+  const dir = path.resolve(root, id);
+  if (dir !== root && !dir.startsWith(`${root}${path.sep}`)) return undefined;
+  return departmentConfigFile(dir);
 }
 
 function resolveStatic(publicDir: string, pathname: string): string | undefined {
@@ -476,6 +508,24 @@ export function createHttpServer(deps: ServerDeps): http.Server {
           }
           if (segments[1] === "employees" && segments[2] !== undefined) {
             await handleEmployees(deps, res, method, segments);
+            return;
+          }
+          // 老板看定义文件（左侧栏的 {} 按钮）：只读、只认三类已知配置文件。
+          if (segments[1] === "config" && method === "GET") {
+            const scope = url.searchParams.get("scope") ?? "";
+            const id = url.searchParams.get("id") ?? "";
+            const file = configFileFor(deps.ws, scope, id);
+            if (file === undefined) {
+              json(res, 404, { error: `没有这个配置：${scope}/${id}` });
+              return;
+            }
+            let text: string | null = null;
+            try {
+              text = fs.readFileSync(file, "utf8");
+            } catch {
+              text = null; // 该层没有配置文件（如根部门没写 department.config.json）
+            }
+            json(res, 200, { scope, id, file: path.relative(deps.ws.root, file), text });
             return;
           }
           if (segments[1] === "rooms" && segments[2] !== undefined && harness !== undefined) {

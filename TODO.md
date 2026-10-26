@@ -39,6 +39,7 @@
 
 ## 踩过的坑（改这块代码前必读）
 
+- **前端 live 流式气泡按「成员」清，不按 convId**：正式消息来自库行视图（`toRoomMessage` 的 `convId` 恒为 `"store"`），而流式气泡的键是 Pi 的 convId —— 按 convId 清就是删 `live["store"]`，永远删不掉，消息末尾会留一个截断的残影气泡（看起来像「最后一段内容丢了」）。同理：`run end` 清掉 live 后必须重画 live 区，否则 DOM 里的残影不消失。
 - **Pi 的 submission id 必须传数值**：`abortSubmission` 传字符串会「settle 记录却漏删 inbox 条目」→ 撤回后仍会投递。已在 `src/harness/pi-durable.ts` 注释与测试里锁定。
 - **MCP 心跳不能杀在跑的调用**：有工具调用在途时**必须跳过心跳**（曾实测 5.2s 就中断了一次允许 60s 的调用）；重连要「连续 2 次失败」才做，且心跳要防重入。
 - **MCP 启动必须整体受超时约束**：`initialize` 与 `tools/list` 都要受 10s 启动超时，分页设上限（50 页）——否则一个卡死的 server 能拖住整个进程启动。

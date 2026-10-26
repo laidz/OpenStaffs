@@ -964,3 +964,51 @@ describe("员工会话上下文 API", () => {
     }
   });
 });
+
+describe("定义文件 API（侧栏 {} 按钮）", () => {
+  it("agent / department / project 三类都能取原文；缺文件 → text:null；不存在 / 越界 → 404", async () => {
+    seedOffice(root, {
+      departments: [{ path: "eng", alias: "研发" }],
+      agents: [{ id: "alice", department: "eng", model: "faux/faux-model", prompt: "你是 alice。" }],
+      projects: [{ id: "yt", alias: "油管", members: ["alice"] }],
+    });
+    const ws = createWorkspace(root);
+    const { base, close } = await start({
+      ws,
+      getConfig: () => configured,
+      getHarness: () => undefined,
+      queue: new KeyedQueue(),
+      publicDir,
+      port: 4319,
+    });
+    const get = async (query: string): Promise<{ scope: string; id: string; file: string; text: string | null }> =>
+      (await (await fetch(`${base}/api/config?${query}`)).json()) as { scope: string; id: string; file: string; text: string | null };
+    try {
+      const agent = await get("scope=agent&id=alice");
+      expect(agent.file).toBe(path.join("agents", "eng", "alice.agent.config.json"));
+      expect(agent.text).toContain("你是 alice。");
+
+      const dept = await get("scope=department&id=eng");
+      expect(dept.file).toBe(path.join("agents", "eng", "department.config.json"));
+      expect(dept.text).toContain("研发");
+
+      // 根部门没写 department.config.json：文件路径照给，正文 null（前端提示「该层没有配置文件」）
+      const rootDept = await get("scope=department&id=");
+      expect(rootDept.file).toBe(path.join("agents", "department.config.json"));
+      expect(rootDept.text).toBeNull();
+
+      const project = await get("scope=project&id=yt");
+      expect(project.file).toBe(path.join("projects", "yt.project.config.json"));
+      expect(project.text).toContain("油管");
+
+      // 不存在 / 越界 / 未知 scope：一律 404，不燸路径
+      expect((await fetch(`${base}/api/config?scope=agent&id=nobody`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=project&id=${encodeURIComponent("../secret.txt")}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=department&id=${encodeURIComponent("../..")}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=bogus&id=alice`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=project&id=a/b`)).status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+});

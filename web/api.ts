@@ -40,7 +40,9 @@ export type EmployeeSession = {
   contextUsed: number;
   contextWindow?: number;
 };
-export type EmployeeSessions = { employee: { id: string; alias?: string }; sessions: EmployeeSession[] };
+export type ConfigScope = "agent" | "department" | "project";
+/** 一层定义文件的原样内容（`text: null` = 该层没写配置文件）。 */
+export type ConfigView = { scope: ConfigScope; id: string; file: string; text: string | null };
 export type SessionContextView = EmployeeSession & {
   instructions: string;
   cwd?: string;
@@ -87,12 +89,12 @@ export const api = {
   /** 当前房间各成员活跃会话的实际信息（模型 / 思考强度 / 上下文用量）。 */
   sessionInfo: (roomKey: string) =>
     request<{ sessions: RoomSessionInfo[] }>(`${roomPath(roomKey)}/sessions/info`),
-  /** 某员工的活跃会话（私聊 + 各群）+ 运行状态。 */
-  employeeSessions: (employeeId: string) =>
-    request<EmployeeSessions>(`/api/employees/${encodeURIComponent(employeeId)}/sessions`),
   /** 某条会话的完整上下文（系统提示词 + 模型条目）；只读。 */
   sessionContext: (employeeId: string, convId: string) =>
     request<SessionContextView>(`/api/employees/${encodeURIComponent(employeeId)}/sessions/${encodeURIComponent(convId)}/context`),
+  /** 一层定义文件的原文（左侧栏 {} 按钮）：agent / department / project。`id` = 员工 id / 部门路径（"" = 根）/ 项目 id。 */
+  config: (scope: ConfigScope, id: string) =>
+    request<ConfigView>(`/api/config?scope=${encodeURIComponent(scope)}&id=${encodeURIComponent(id)}`),
   history: (roomKey: string, convId: string) =>
     request<{ convId: string; memberId: string; messages: RoomMessage[] }>(
       `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/messages`,

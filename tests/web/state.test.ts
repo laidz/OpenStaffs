@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { initialState, pickAgentSession, reduce, selectView, type State } from "../../web/state.ts";
+import { initialState, reduce, selectView, type State } from "../../web/state.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
-import type { EmployeeSession } from "../../web/api.ts";
 
 function msg(entryId: string, convId: string, kind: "boss" | "employee", text: string, roomMessageId?: string): RoomMessage {
   return kind === "boss"
@@ -47,6 +46,25 @@ describe("前端状态归约", () => {
     expect(state.live["c1"]?.text).toBe("你好");
     state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("20", "c1", "employee", "你好") } });
     expect(state.live["c1"]).toBeUndefined();
+  });
+
+  it("正式员工消息按**成员**清 live（库行视图的 convId 恒为 store，与 delta 的 Pi convId 不同）", () => {
+    // 回归：曾经按 convId 清 live → 删的是 live["store"]，流式气泡永远清不掉，
+    // 结果消息末尾留一个截断的残影气泡（看起来像「最后一段内容丢了」）。
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "conv:abc", memberId: "alice", channel: "text", delta: "说一半" } });
+    expect(state.live["conv:abc"]?.text).toBe("说一半");
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("20", "store", "employee", "说一半说完") } });
+    expect(Object.keys(state.live)).toEqual([]);
+    expect(state.messages.map((m) => m.text)).toEqual(["说一半说完"]);
+  });
+
+  it("群聊并行流式：别人的气泡不被别人的正式消息清掉", () => {
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "conv:alice", memberId: "alice", channel: "text", delta: "a" } });
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "conv:bob", memberId: "bob", channel: "text", delta: "b" } });
+    state = reduce(state, { type: "sse", event: { type: "room.message", roomKey: "dm:alice", message: msg("20", "store", "employee", "alice 说完") } });
+    expect(Object.keys(state.live)).toEqual(["conv:bob"]);
   });
 
   it("sessions 事件只更新当前房间；切换房间清空（不展示上一个会话的信息）", () => {
@@ -207,14 +225,12 @@ describe("前端状态归约", () => {
     expect(reduce(reduce(state, { type: "fresh-session", on: true }), { type: "close-room" }).freshSession).toBe(false);
   });
 
-  it("room / close-room / panel 状态迁移", () => {
+  it("room / close-room 状态迁移", () => {
     let state = inRoom();
-    state = reduce(state, { type: "panel", panel: "history" });
-    expect(state.panel).toBe("history");
     state = reduce(state, { type: "room", roomKey: "group:yt", messages: [msg("1", "c1", "boss", "hi")], pinned: ["c1:1"] });
     expect(state.roomKey).toBe("group:yt");
     expect(state.pinned).toEqual(["c1:1"]);
-    expect(state.panel).toBeUndefined();
+    expect(state.freshSession).toBe(false);
     state = reduce(state, { type: "close-room" });
     expect(state.roomKey).toBeUndefined();
     expect(state.messages).toHaveLength(0);
@@ -272,35 +288,5 @@ describe("前端状态归约", () => {
     expect(state.collapsedDepts).toEqual(["eng", "eng/platform"]);
     state = reduce(state, { type: "toggle-dept", path: "eng" });
     expect(state.collapsedDepts).toEqual(["eng/platform"]);
-  });
-});
-
-describe("会话上下文面板选中", () => {
-  const session = (convId: string, kind: "dm" | "group", running = false): EmployeeSession => ({
-    convId,
-    kind,
-    relationKey: `${kind === "dm" ? "dm" : "group"}:${convId}`,
-    ...(kind === "group" ? { projectId: convId } : {}),
-    started: "2026-10-25T10:00:00+08:00",
-    running,
-    model: "faux/faux-model",
-    thinkingLevel: null,
-    contextUsed: 0,
-  });
-
-  it("刷新时保留当前选中的会话", () => {
-    const sessions = [session("c_dm", "dm"), session("c_group", "group", true)];
-    expect(pickAgentSession(sessions, "c_dm")).toBe("c_dm");
-  });
-
-  it("没有保留值时：运行中 → 私聊 → 第一条", () => {
-    expect(pickAgentSession([session("c_dm", "dm"), session("c_group", "group", true)])).toBe("c_group");
-    expect(pickAgentSession([session("c_dm", "dm"), session("c_group", "group")])).toBe("c_dm");
-    expect(pickAgentSession([session("c_group", "group")])).toBe("c_group");
-  });
-
-  it("保留值已不存在时回落到默认", () => {
-    expect(pickAgentSession([session("c_dm", "dm")], "gone")).toBe("c_dm");
-    expect(pickAgentSession([], "gone")).toBeUndefined();
   });
 });

@@ -2,7 +2,7 @@ import type { RoomMessage } from "../src/app/rooms.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { RoomSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
-import type { ContextItemView, EmployeeSession, EmployeeSummary, OrgDept, SessionContextView } from "./api.ts";
+import type { ConfigView, ContextItemView, EmployeeSession, EmployeeSummary, OrgDept, SessionContextView } from "./api.ts";
 import type { Live, State } from "./state.ts";
 
 export function escapeHtml(text: string): string {
@@ -42,7 +42,10 @@ export function sidebarHtml(state: State): string {
       const pins = state.pins[roomKey] ?? 0;
       const busy = project.members.some((m) => state.busy[m.id] === true) ? '<span class="dot"></span>' : "";
       const active = state.roomKey === roomKey ? " active" : "";
-      return `<button class="item${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>`;
+      return `<div class="item-row">
+        <button class="item item-main${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
+        ${configButtonHtml("project", project.id, `查看 ${project.id}.project.config.json`)}
+      </div>`;
     })
     .join("");
   return `<aside class="sidebar" id="sidebar">
@@ -51,7 +54,12 @@ export function sidebarHtml(state: State): string {
   </aside>`;
 }
 
-/** 侧栏里的一员：名字按钮进私聊（红点 = pin 计数，忙碌点 = 正在跑）；右侧 icon 进「会话上下文」。 */
+/** 侧栏每一行右侧的 {} 按钮：展示该层定义文件的原样 JSON（只读）。 */
+function configButtonHtml(scope: "agent" | "department" | "project", id: string, title: string): string {
+  return `<button type="button" class="item-ctx" data-config-scope="${escapeHtml(scope)}" data-config-id="${escapeHtml(id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">{}</button>`;
+}
+
+/** 侧栏里的一员：名字按钮进私聊（红点 = pin 计数，忙碌点 = 正在跑）；右侧 {} 看定义文件。 */
 function personItemHtml(state: State, person: EmployeeSummary): string {
   const roomKey = `dm:${person.id}`;
   const pins = state.pins[roomKey] ?? 0;
@@ -59,16 +67,19 @@ function personItemHtml(state: State, person: EmployeeSummary): string {
   const active = state.roomKey === roomKey ? " active" : "";
   return `<div class="item-row">
     <button class="item item-main${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
-    <button type="button" class="item-ctx" data-agent-sessions="${escapeHtml(person.id)}" title="查看会话上下文" aria-label="查看会话上下文">▤</button>
+    ${configButtonHtml("agent", person.id, `查看 ${person.id}.agent.config.json`)}
   </div>`;
 }
 
-/** 部门节点：可折叠（折叠时不渲染正文——不是藏起来再叠着显示）。 */
+/** 部门节点：可折叠（折叠时不渲染正文——不是藏起来再叠着显示）；{} 看 department.config.json。 */
 function deptHtml(state: State, dept: OrgDept): string {
   const collapsed = state.collapsedDepts.includes(dept.path);
   const body = [...dept.people.map((p) => personItemHtml(state, p)), ...dept.departments.map((d) => deptHtml(state, d))].join("");
   return `<div class="dept" data-dept="${escapeHtml(dept.path)}">
-    <button type="button" class="dept-head" data-toggle-dept="${escapeHtml(dept.path)}" aria-expanded="${collapsed ? "false" : "true"}"><span class="caret">${collapsed ? "▸" : "▾"}</span><span>${escapeHtml(dept.name)}</span></button>
+    <div class="item-row dept-row">
+      <button type="button" class="dept-head" data-toggle-dept="${escapeHtml(dept.path)}" aria-expanded="${collapsed ? "false" : "true"}"><span class="caret">${collapsed ? "▸" : "▾"}</span><span>${escapeHtml(dept.name)}</span></button>
+      ${configButtonHtml("department", dept.path, `查看 ${dept.path === "" ? "agents" : `agents/${dept.path}`}/department.config.json`)}
+    </div>
     ${collapsed ? "" : `<div class="dept-body">${body}</div>`}
   </div>`;
 }
@@ -181,6 +192,7 @@ export function sessionInfoHtml(state: State): string {
           ? `上下文 ${used}`
           : `上下文 ${used} / ${formatTokenCount(info.contextWindow)}，${Math.round((info.contextUsed / info.contextWindow) * 100)}%`;
       parts.push(`<span class="session-context">${context}</span>`);
+      parts.push(`<button type="button" class="session-detail" data-session-detail="${escapeHtml(info.convId)}" data-member="${escapeHtml(info.memberId)}" title="查看这条会话的完整上下文（只读）">详情</button>`);
       return `<span class="session-meta" data-member="${escapeHtml(info.memberId)}">${parts.join("")}</span>`;
     })
     .join("");
@@ -281,17 +293,6 @@ function sessionTime(started: string): string {
   return started.slice(0, 16).replace("T", " ");
 }
 
-/** Tab 条：每个活跃会话一个；运行中的带点。 */
-export function agentSessionTabsHtml(sessions: EmployeeSession[], selected: string | undefined): string {
-  return sessions
-    .map((session) => {
-      const running = session.running ? '<span class="dot" title="运行中"></span>' : "";
-      const active = session.convId === selected ? " active" : "";
-      return `<button type="button" class="tab${active}${session.running ? " running" : ""}" data-agent-conv="${escapeHtml(session.convId)}">${running}<span>${escapeHtml(relationLabel(session))}</span><span class="ctx-meta">${escapeHtml(sessionTime(session.started))}</span></button>`;
-    })
-    .join("");
-}
-
 const ROLE_LABEL: Record<ContextItemView["role"], string> = {
   system: "系统",
   user: "用户",
@@ -337,27 +338,38 @@ function contextBodyHtml(context: SessionContextView): string {
     <div class="ctx-items">${context.items.map(contextItemHtml).join("")}</div>`;
 }
 
-/** 员工「会话上下文」面板：Tab（活跃会话）+ 选中会话的完整上下文。 */
-export function agentPanelHtml(
-  state: State,
-  employee: { id: string; alias?: string },
-  sessions: EmployeeSession[],
-  selected: string | undefined,
-  context: SessionContextView | undefined,
-): string {
-  const tabs = agentSessionTabsHtml(sessions, selected);
+/**
+ * 会话详情（只读）：就是聊天顶部信息条那一条会话的完整上下文（系统提示词 + 模型条目）。
+ * 不再提供 Tab 切会话：入口是信息条上的「详情」，所以只展示这一条。
+ */
+export function sessionPanelHtml(state: State, context: SessionContextView | undefined): string {
   const body =
     context === undefined
-      ? `<p class="hint">${sessions.length === 0 ? "该员工还没有活跃会话。" : "无法读取该会话上下文（它可能刚刚结束）。"}</p>`
+      ? '<p class="hint">无法读取该会话上下文（它可能刚刚结束）。</p>'
       : contextBodyHtml(context);
-  return `<div class="layout">${sidebarHtml(state)}<section class="chat agent-panel">
+  return `<div class="layout">${sidebarHtml(state)}<section class="chat detail-panel">
     <header class="chat-head">
-      <span class="title">会话上下文 · ${escapeHtml(employee.alias ?? employee.id)}</span>
-      <button id="agent-panel-reload" title="当前会话有新内容" hidden>有新内容</button>
-      <button id="agent-panel-refresh">刷新</button>
-      <button id="agent-panel-back">返回聊天</button>
+      <span class="title">会话详情（只读）</span>
+      <button id="session-panel-reload" title="这条会话有新内容" hidden>有新内容</button>
+      <button id="session-panel-refresh">刷新</button>
+      <button id="session-panel-back">返回聊天</button>
     </header>
-    <div class="tabs">${tabs === "" ? '<span class="hint">还没有活跃会话</span>' : tabs}</div>
+    <div class="agent-context">${body}</div>
+  </section></div>${permissionCardsHtml(state)}`;
+}
+
+/** 定义文件面板（只读）：左侧栏人员 / 部门 / 项目的 {} 按钮；原样展示 config JSON。 */
+export function configPanelHtml(state: State, view: ConfigView, label: string): string {
+  const body =
+    view.text === null
+      ? `<p class="hint">该层没有配置文件：<code>${escapeHtml(view.file)}</code></p>`
+      : `<pre class="ctx-text config-text">${escapeHtml(view.text)}</pre>`;
+  return `<div class="layout">${sidebarHtml(state)}<section class="chat detail-panel">
+    <header class="chat-head">
+      <span class="title">配置 · ${escapeHtml(label)}</span>
+      <span class="ctx-meta">${escapeHtml(view.file)}</span>
+      <button id="config-panel-back">返回聊天</button>
+    </header>
     <div class="agent-context">${body}</div>
   </section></div>${permissionCardsHtml(state)}`;
 }
