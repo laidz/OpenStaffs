@@ -16,7 +16,7 @@ export type OrgDept = { path: string; name: string; people: OrgPerson[]; departm
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
 export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[]; queued: QueuedItemView[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
-export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null };
+export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null; title?: string; titleSource?: string };
 export type ContextItemView = {
   role: "system" | "user" | "assistant" | "tool";
   kind?: string;
@@ -41,6 +41,8 @@ export type EmployeeSession = {
   thinkingLevel: string | null;
   contextUsed: number;
   contextWindow?: number;
+  /** 会话标题（自动命名 / 时间缺省 / 手动改名）；老会话可能没有。 */
+  title?: string;
 };
 export type ConfigScope = "agent" | "department" | "project";
 /** 一层定义文件的原样内容（`text: null` = 该层没写配置文件）。 */
@@ -94,6 +96,12 @@ export const api = {
   /** 某条会话的完整上下文（系统提示词 + 模型条目）；只读。 */
   sessionContext: (employeeId: string, convId: string) =>
     request<SessionContextView>(`/api/employees/${encodeURIComponent(employeeId)}/sessions/${encodeURIComponent(convId)}/context`),
+  /** 会话标题改名（手动）；返回落库后的实际标题。 */
+  renameSession: (roomKey: string, convId: string, title: string) =>
+    request<{ convId: string; title: string; titleSource: string }>(
+      `${roomPath(roomKey)}/sessions/${encodeURIComponent(convId)}/title`,
+      { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) },
+    ),
   /** 一层定义文件的原文（左侧栏 {} 按钮）：agent / department / project。`id` = 员工 id / 部门路径（"" = 根）/ 项目 id。 */
   config: (scope: ConfigScope, id: string) =>
     request<ConfigView>(`/api/config?scope=${encodeURIComponent(scope)}&id=${encodeURIComponent(id)}`),

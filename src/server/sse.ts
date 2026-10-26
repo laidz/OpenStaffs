@@ -14,7 +14,9 @@ export type ServerEvent =
   /** 出队：投递开始（delivered）/ 被撤回（cancelled）/ 随中断撤下（aborted）。 */
   | { type: "room.dequeued"; roomKey: string; submissionId: string; reason: "delivered" | "cancelled" | "aborted" }
   | { type: "permission.request"; request: PermissionRequestView }
-  | { type: "permission.resolved"; id: string };
+  | { type: "permission.resolved"; id: string }
+  /** 会话标题变了（fallback / 自动命名 / 手动改名同一条写入通道）：前端的标题原地刷新。 */
+  | { type: "session.title"; roomKey: string; convId: string; title: string };
 
 export interface SseClientHandle {
   readonly pending: number;

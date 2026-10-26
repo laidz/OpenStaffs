@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { PermissionRequestNotFoundError, permissionRequestView, resolvePermissionRequest } from "../../src/app/permission-flow.ts";
@@ -83,7 +83,7 @@ function setup() {
   const broadcastMessage = vi.fn<(roomKey: string, message: RoomMessage) => void>();
   // 自有消息库（P1）：审批结果也落库（对齐 http.ts 注入）。openMessageStore 不建父目录 → 先建 stateDir。
   fs.mkdirSync(stateDir(ws), { recursive: true });
-  const messages = openMessageStore(messagesDbFile(ws));
+  const messages = openMessageStore(officeDbFile(ws));
   stores.push(messages);
   const deps = { ws, harness: port, store, queue: new KeyedQueue(), defaults, register, broadcast, messages, broadcastMessage };
   return { ws, store, port, register, broadcast, broadcastMessage, messages, deps };

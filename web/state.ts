@@ -86,6 +86,8 @@ export type UiEvent =
   | { type: "projects"; list: ProjectSummary[] }
   | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
   | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
+  /** 会话标题变了（自动命名 / 时间缺省 / 手动改名）：只改对得上的那一条。 */
+  | { type: "title"; roomKey: string; convId: string; title: string }
   | { type: "close-room" }
   | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
   | { type: "pin"; roomKey: string; key: string; pinned: boolean }
@@ -163,6 +165,18 @@ export function reduce(state: State, event: UiEvent): State {
     case "sessions":
       // 迟到的结果不串台：只接受当前房间。
       return state.roomKey === event.roomKey ? { ...state, sessions: event.sessions } : state;
+    case "title": {
+      if (state.roomKey !== event.roomKey) return state;
+      const hit = state.sessions.some((session) => session.convId === event.convId && session.title !== event.title);
+      // 未命中（不属当前房间可见会话）→ 返回同一引用，上层短路。
+      if (!hit) return state;
+      return {
+        ...state,
+        sessions: state.sessions.map((session) =>
+          session.convId === event.convId ? { ...session, title: event.title } : session,
+        ),
+      };
+    }
     case "close-room":
       return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], sessions: [], freshSession: false, live: {} };
     case "fresh-session":
@@ -193,6 +207,9 @@ export function reduce(state: State, event: UiEvent): State {
 }
 
 function reduceSse(state: State, event: ServerEvent): State {
+  if (event.type === "session.title") {
+    return reduce(state, { type: "title", roomKey: event.roomKey, convId: event.convId, title: event.title });
+  }
   if (event.type === "room.pins") {
     return { ...state, pins: { ...state.pins, [event.roomKey]: event.count } };
   }

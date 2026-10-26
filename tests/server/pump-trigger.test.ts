@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { seedOffice } from "../helpers/office.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
@@ -20,7 +20,7 @@ let store: MessageStore | undefined;
 function getStore(): MessageStore {
   if (store === undefined) {
     fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
-    store = openMessageStore(messagesDbFile(createWorkspace(root)));
+    store = openMessageStore(officeDbFile(createWorkspace(root)));
   }
   return store;
 }
@@ -71,7 +71,7 @@ describe("群回复 @触发（pump 集成）", () => {
     } as unknown as SseHub;
     const pump = new Pump({ ws, harness, hub, store: getStore() });
     try {
-      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
       await harness.submit(aliceConv, "请安排一下收尾");
 
@@ -138,7 +138,7 @@ describe("群回复 @触发（pump 集成）", () => {
     } as unknown as SseHub;
     const pump = new Pump({ ws, harness, hub, store: getStore() });
     try {
-      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
       await harness.submit(aliceConv, "请回答");
       await waitFor(async () =>

@@ -33,13 +33,13 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
       ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护；私聊链在 work/<人>/conversation_ids.md）
       ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
       ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
-      ├─ messages.sqlite         # 消息真相库：房间消息流水（机器维护，不要手改）
+      ├─ openstaffs.sqlite       # 自有库：消息流水（messages）+ 会话元数据（sessions，含标题）；机器维护，不要手改
       └─ state.sqlite            # 基座会话库：某条会话的原文与模型上下文（机器维护，不要手改）
 ```
 
 > **搬到哪儿**：根下只有门面 `agents/`、`projects/`、`work/`、`openstaffs/` 四项。`AGENTS.md` / `profile.md` 作为能力载体已**退出运行时**（不再被读取）。
 
-> **消息真相：自有库 `openstaffs/.data/messages.sqlite`**（`node:sqlite`，一条投递 = 一行、房间视图键为 `store:<seq>`）。
+> **消息真相：自有库 `openstaffs/.data/openstaffs.sqlite`**（`node:sqlite`，一条投递 = 一行、房间视图键为 `store:<seq>`）。
 > 房间视图 / 历史 / pin 校验 / `room_history` 工具**全部查该库**；基座 `state.sqlite` 只用于「某条会话的原文」视图与模型上下文，
 > **不再是消息真相**（一处发言只落一行，不需要读侧合并 / 去重）。
 
@@ -114,6 +114,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `permissions?` | 按工具 → 路径列表 | 见「权限：按工具 → 路径」 |
 | `model?` | `供应商/模型 id` | 覆盖全局默认模型（仅员工层有意义） |
 | `thinkingLevel?` | string | 覆盖全局默认思考强度（仅员工层有意义） |
+| `namingModel?` | `供应商/模型 id` | **仅空间层有意义**：会话自动命名用的模型。**必须是非思考模型**（模型不支持思考档）；未指定 / 写错 / 目录查不到 / 是思考模型 → 自动命名不可用（日志一条 warn，会话只有时间标题）。改完**重启服务**生效 |
 | `head?` | string[] | 部门负责人（只能写本级直属成员） |
 | `owner?` | string[] | 群主名单（声明式字段，当前仅解析保留） |
 | `members?` | string[] | 项目成员（只列员工；老板是天然成员） |
@@ -188,11 +189,17 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
   - 就绪态只对下一条消息有效（发完即清）；换房间 / 离开房间也会清。
   - 员工侧 `new_session` 工具不受影响（仍是立即重开，下一轮起生效）。
 - **会话信息条**：聊天标题下方显示当前房间各活跃会话**实际在用**的模型全值（`供应商/模型 id`）、思考强度、已用上下文 / 模型窗口与占比（如「12.8K / 128K，10%」）。
+- **会话标题（自动命名 + 手动改名）**：每条会话都有标题，存在自有库 `openstaffs.sqlite` 的 `sessions` 表（`conv_id` / `title` / `title_source` / `updated_at`）。
+  - 新建会话**立即**落时间标题（`MM-DD HH:mm`，`title_source = fallback`），所以标题永不为空；若空间配置 `namingModel` 可用，首条消息会**同时**送去命名，成功则走同一个改名通道改写（`auto`）。命名失败**不重试**，时间标题就是兜底。
+  - 老板可在**聊天顶部（私聊）／会话信息条／历史列表／会话详情**四处点标题原地改名（`manual`）；改名走 `PATCH /api/rooms/<房间键>/sessions/<convId>/title`。
+  - **覆盖规则**：`auto` 只覆盖 `fallback`，`manual` 只有 manual 能覆盖——飞行中的自动命名不会盖掉老板手改的名字。
+  - 命名 agent **只加载一个 prompt**（框架 `src/prompts/naming.md`），不注入环境 / 记忆 / 技能；模型**必须是非思考模型**（见 `space.config.json` 的 `namingModel`）。
+  - 群聊里一条消息 @ 多人 → 每人各自新会话、各自命名；员工触发的会话（群回复 @ 提及、`send_message`、`new_session` 工具）不自动命名。
   - 口径 = 会话创建时的**快照**，不是 `config.json` 现值；改配置后要**新开会话**才变。
   - 思考强度按模型能力判定（pi-ai `getSupportedThinkingLevels`，由 `reasoning` + `thinkingLevelMap` 推出）：模型不支持的档（非思考模型只支持 `off`；`xhigh` / `max` 需显式映射）、以及不属于七档的非法值，接口值仍为 `null`（不回落成别的档、不把无效值原样显示），界面统一展示为 `default`。模型目录查不到时无法判定，按原值展示。
   - 上下文用量是**已提交上下文**的估算：新会话在首轮回复前可能显示 0，首轮后按模型回报更新；窗口占比按模型 `contextWindow` 计（实际压缩还会预留输出空间）。
 - **排队中的消息可见、可单条撤回**：员工正在跑时，老板发的消息先落在**待发队列**（消息区里显示为灰／半透明的「排队中」气泡，标注等待的成员 + 「撤回」按钮），投递开始后原地变成正常气泡。
-  - 消息的**真相在自有库**（`openstaffs/.data/messages.sqlite`）：老板发送即落库并广播（键 `store:<seq>`），刷新 / 重启后历史都在；「排队中」只是 UI 状态，进程内展示。
+  - 消息的**真相在自有库**（`openstaffs/.data/openstaffs.sqlite`）：老板发送即落库并广播（键 `store:<seq>`），刷新 / 重启后历史都在；「排队中」只是 UI 状态，进程内展示。
   - **撤回**（点「撤回」）= 撤掉这条消息里**还没开始**的投递，不投递给员工；已经开始投递的撤不回（撤不回时会提示「撤不回」），要停住正在跑的那是**「中断」**（房间级，同时停掉房间里所有在跑的成员）。
   - 同一次发送发给多个成员时按「消息」粒度合并成一条气泡：已经有成员收到（真气泡已出）就只在这条气泡上挂「排队中：<还没拿到的成员>」。
   - 排队态是**进程内**的展示：重启服务后仍在 Pi 待办里的输入照常投递，只是界面不再显示「排队中」。
@@ -305,7 +312,7 @@ work/<id>/memory/
 
 | 机制 | 何时生效 | 属于这档的东西 |
 | --- | --- | --- |
-| 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册；系统 prompt 模板（`src/prompts/` 读入内存） |
+| 启动初始化 | **重启服务** | `config.json` 的供应商 / 密钥 / 端口；MCP server 注册；系统 prompt 模板（`src/prompts/` 读入内存）；空间 `space.config.json` 的 `namingModel` + 命名 prompt |
 | 会话装配（进 instructions，快照） | **新开会话** | 系统段（环境 + 私聊 / 群聊前缀）、prompt 链（空间 → 部门 → 项目 → 员工）、记忆（profile + 索引）、技能清单、MCP 选择、全局 / 人的 `model` 与 `thinkingLevel` |
 | 运行中按需读取 | **即时** | `SKILL.md` 正文（`read` 时读）、各层 `*.config.json` 的 `permissions`（**每轮写校验即时读**）、项目 config 的 `members`（@ 路由与成员校验） |
 | 直读展示 | **刷新页面** | `bossName`、人的 `alias`、部门 `alias` |
@@ -390,6 +397,7 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 | 端口被占用 | 改全局 `config.json` 的 `port`（或启动参数）后重启 |
 | 有员工回复失败（红色错误气泡） | 该员工 `model` 引用的供应商没配 `apiKey`，或模型写法有误；错误要等供应商重试 / 超时后才浮出，可能超过一分钟 |
 | 改了 `config.json` 不生效 | 进程级配置：重启服务；以重启后为准 |
+| 会话标题一直是时间（如 `10-26 15:32`） | 自动命名不可用：看启动日志的「自动命名不可用」——常见原因：`space.config.json` 没写 `namingModel` / 写的不是非思考模型（**判定很严：供应商的全部模型都支持思考档时，自动命名就一直不可用**）/ 供应商没配密钥 / 改了配置没重启；也可能是本次命名失败（失败不重试，标题停在时间标题） |
 | 改了 `.agent.config.json` 不生效 | 会话创建时已固化：`prompt` / `model` / `thinkingLevel` 要**新开会话**生效；`alias` 是实时的，**刷新页面**即变 |
 | 写文件 / 命令被拦「访问控制」 | 目标不在你该工具的有效集内（各层 `permissions` 累加 + 运行时授予）；用 `request_permission` 申请，或请老板改配置 |
 | 写 `*.agent.config.json` 被拦 | 属预期：人的定义是**硬保护**（含自己的）；除 staff0 外请老板改，或走授权流程由框架代写 `permissions` |

@@ -27,6 +27,13 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .session-member { font-weight: 600; color: #1f2329; }
 .session-model { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .session-thinking, .session-context { color: #8a9099; }
+/* 会话标题：四处共用同一个按钮（无边框、悬停才显下划线），点击就地改名。 */
+.session-title { border: none; background: none; padding: 0; font: inherit; color: #1f2329; cursor: pointer; max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-title:hover { text-decoration: underline; }
+.chat-head .title + .session-title.chat-title { font-weight: 400; color: #5a6270; font-size: 13px; }
+.session-title.info-title, .session-title.history-title { font-weight: 600; }
+.session-title-input { font: inherit; min-width: 8em; max-width: 22em; padding: 1px 6px; border: 1px solid #adc6ff; border-radius: 4px; background: #fff; }
+.session-title-input-error { border-color: #e5484d; }
 .msg-list { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; }
 .msg { margin-bottom: 14px; max-width: 72%; min-width: 0; }
 .msg.boss { margin-left: auto; text-align: right; }

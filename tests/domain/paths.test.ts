@@ -2,7 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   agentsDir, conversationIdsFile, createWorkspace, groupConversationIdsFile,
-  messagesDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
+  officeDbFile, spaceDir, spaceSkillsDir, stateDir, workDir,
 } from "../../src/domain/paths.ts";
 
 describe("路径", () => {
@@ -31,8 +31,8 @@ describe("路径", () => {
     expect(spaceSkillsDir(ws)).toBe(path.join("/tmp/company", "openstaffs", "skills"));
   });
 
-  it("消息库随 stateDir 搬迁：落在 openstaffs/.data/messages.sqlite（不改拼接语义）", () => {
-    expect(messagesDbFile(ws)).toBe(path.join("/tmp/company", "openstaffs", ".data", "messages.sqlite"));
-    expect(messagesDbFile(ws)).toBe(path.join(stateDir(ws), "messages.sqlite"));
+  it("消息库随 stateDir 搬迁：落在 openstaffs/.data/openstaffs.sqlite（不改拼接语义）", () => {
+    expect(officeDbFile(ws)).toBe(path.join("/tmp/company", "openstaffs", ".data", "openstaffs.sqlite"));
+    expect(officeDbFile(ws)).toBe(path.join(stateDir(ws), "openstaffs.sqlite"));
   });
 });

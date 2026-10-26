@@ -348,4 +348,24 @@ describe("前端状态归约", () => {
     state = reduce(state, { type: "toggle-dept", path: "eng" });
     expect(state.collapsedDepts).toEqual(["eng/platform"]);
   });
+
+  it("title：只改对得上的那条会话；房间不匹配 / 未命中时返回同一引用", () => {
+    const base = reduce(inRoom(), {
+      type: "sessions",
+      roomKey: "dm:alice",
+      sessions: [
+        { memberId: "alice", convId: "c1", title: "旧标题", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 },
+        { memberId: "bob", convId: "c2", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 },
+      ],
+    });
+    const updated = reduce(base, { type: "title", roomKey: "dm:alice", convId: "c1", title: "登录排查" });
+    expect(updated.sessions.map((session) => session.title)).toEqual(["登录排查", undefined]);
+
+    expect(reduce(base, { type: "title", roomKey: "group:yt", convId: "c1", title: "X" })).toBe(base);
+    expect(reduce(base, { type: "title", roomKey: "dm:alice", convId: "c-missing", title: "X" })).toBe(base);
+
+    // SSE 同口径
+    const viaSse = reduce(base, { type: "sse", event: { type: "session.title", roomKey: "dm:alice", convId: "c2", title: "周报整理" } });
+    expect(viaSse.sessions[1]!.title).toBe("周报整理");
+  });
 });

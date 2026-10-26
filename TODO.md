@@ -12,7 +12,7 @@
 - [ ] **Staff0 引导配置（冷启动）**
   说明：没有 API Key 就无法用 LLM，引导本身有冷启动难题。目标是 staff0 首启后引导老板把 `openstaffs/.data/config.json` 填起来（供应商 / 密钥 / 模型），填完能自检并给出下一步。当前 staff0 只能被对话使用，不主动引导。
 - [ ] **消息查询：全文 / 时间段**
-  说明：现在员工只有 `room_history`（最近 N 条）。消息库（`openstaffs/.data/messages.sqlite`）已有结构化行，缺的是按时间段与关键字的查询能力（工具 + 检索实现），以及是否给 UI。
+  说明：现在员工只有 `room_history`（最近 N 条）。消息库（`openstaffs/.data/openstaffs.sqlite`）已有结构化行，缺的是按时间段与关键字的查询能力（工具 + 检索实现），以及是否给 UI。
 - [ ] **员工档案 UI 编辑**
   说明：人格 / 记忆 / 技能 / 模型目前只能改文件。目标是在 UI 里看和改，并且改 `*.agent.config.json` 仍走 attenuation（不能变成绕过权限的后门）。
 - [ ] **能力雷达图 / 技能证书**
@@ -56,7 +56,8 @@
 - **MCP 定义只有全局单份** `openstaffs/mcps.json`，各层用 `mcp: ["<名字>"]` 按名引用；server 名只允许字母 / 数字 / `_` / `-`，名字本身就是工具前缀与凭据键。
 - **生效时机只有 3 档**：启动初始化 = 重启；会话装配 = 新开会话（快照是刻意的：保护 provider prompt cache、保证会话可复现）；运行中按需读取 = 即时。逐项归属见 `openstaffs-ops` 技能，别在别处另立一套说法。
 - **权限按工具 → 路径**：`attenuation` 只把 `write` 卡在有效集内；`bash` 是**软边界、不是沙箱**；`*.agent.config.json` 是硬保护（只有 staff0 与授权流程能写）。
-- **房间视图读自有消息库**（`openstaffs/.data/messages.sqlite`），不读各成员 transcript；transcript 只服务「某条会话的原文」端点。
+- **房间视图读自有库**（`openstaffs/.data/openstaffs.sqlite`：`messages` 消息流水 + `sessions` 会话元数据），不读各成员 transcript；transcript 只服务「某条会话的原文」端点。
+- **会话标题存在自有库 `sessions` 表**（不进 `conversation_ids.md`——那是会话状态机，标题是展示元数据）；写入只有一条通道：`src/app/sessions.ts` 的 `renameSession`（写库 + 广播 SSE `session.title`），自动命名与手动改名都走它；覆盖规则由 `title_source` 的条件 UPSERT 决定（`auto` 只盖 `fallback`，`manual` 只有 manual 能盖）。
 - **文档即契约**：能力变更同步 `src/skills/openstaffs/SKILL.md`、运维变更同步 `openstaffs-ops/SKILL.md`、上手同步 `README.md`、路线图同步 `docs/产品规划.md`（表见 `AGENTS.md`）。
 
 ## 已完成（历史，不再展开）

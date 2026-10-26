@@ -412,4 +412,70 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     expect(await run("@alice 我自己")).toEqual([]);
     expect(port.submits).toEqual([]);
   });
+
+  it("新会话的第一条消息命名：落时间标题 + 调一次命名；复用旧会话不再命名", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    const named: string[] = [];
+    const titles = {
+      store,
+      notify: () => {},
+      namer: async (text: string) => {
+        named.push(text);
+        return "登录排查";
+      },
+    };
+    const port = new FakePort();
+    const queue = new KeyedQueue();
+
+    await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "帮我看看登录", { queue, defaults, titles });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(named).toEqual(["帮我看看登录"]);
+    expect(store.sessionOf("conv-1")?.title).toBe("登录排查");
+
+    // 第二条消息复用同一会话 → 不再命名
+    await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "继续", { queue, defaults, titles });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(named).toHaveLength(1);
+  });
+
+  it("群聊一条消息 @ 两人 → 两条新会话各自命名", async () => {
+    seedEmployee("alice");
+    seedEmployee("bob");
+    seedGroup("yt", ["alice", "bob"]);
+    const ws = createWorkspace(root);
+    const store = tempStore();
+    const named: string[] = [];
+    const titles = {
+      store,
+      notify: () => {},
+      namer: async (text: string) => {
+        named.push(text);
+        return "协作安排";
+      },
+    };
+    const port = new FakePort();
+    await sendToRoom(ws, port, { kind: "group", project: "yt" }, "@alice @bob 看下这个", {
+      queue: new KeyedQueue(),
+      defaults,
+      titles,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(named).toHaveLength(2);
+    for (const delivery of ["conv-1", "conv-2"]) {
+      expect(store.sessionOf(delivery)?.title).toBe("协作安排");
+    }
+  });
+
+  it("没有 titles 依赖时行为不变（不落标题、不报错）", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    const port = new FakePort();
+    const result = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "你好", {
+      queue: new KeyedQueue(),
+      defaults,
+    });
+    expect(result.deliveries).toHaveLength(1);
+  });
 });

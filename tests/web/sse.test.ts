@@ -55,6 +55,7 @@ describe("SSE 订阅", () => {
       "room.dequeued",
       "permission.request",
       "permission.resolved",
+      "session.title",
       "open",
     ]);
 
@@ -64,11 +65,13 @@ describe("SSE 订阅", () => {
     const item = { submissionId: "11", roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
     source.emit("room.queued", { type: "room.queued", item });
     source.emit("room.dequeued", { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" });
+    source.emit("session.title", { type: "session.title", roomKey: "dm:alice", convId: "c1", title: "登录排查" });
     expect(events).toEqual([
       { type: "permission.request", request },
       { type: "permission.resolved", id: "pr_1" },
       { type: "room.queued", item },
       { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" },
+      { type: "session.title", roomKey: "dm:alice", convId: "c1", title: "登录排查" },
     ]);
     close();
   });

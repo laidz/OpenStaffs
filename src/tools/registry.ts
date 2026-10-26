@@ -7,7 +7,7 @@ import type { McpSessionResolver } from "../domain/mcp.ts";
 import { listPeople, personDisplayName } from "../domain/org.ts";
 import { loadEmployee } from "../domain/employee.ts";
 import { loadAgentConfig } from "../config/load.ts";
-import { messagesDbFile, stateDir, type Workspace } from "../domain/paths.ts";
+import { officeDbFile, stateDir, type Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
@@ -119,7 +119,7 @@ const roomHistory: ToolDef = {
     // `openstaffs/.data` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
     // 建库即空表 → 应返回「（暂无消息）」而不是报错。
     fs.mkdirSync(stateDir(ctx.ws), { recursive: true });
-    const store = openMessageStore(messagesDbFile(ctx.ws));
+    const store = openMessageStore(officeDbFile(ctx.ws));
     try {
       const messages = store.listByRoom(roomKeyOf(relation)).map((m) => toRoomMessage(m, readBossName(ctx.ws), ctx.ws));
       const recent = messages.slice(-limit);
@@ -141,7 +141,7 @@ const roomHistory: ToolDef = {
 function recordAndBroadcast(ctx: ToolContext, row: { projectId: string | null; toIds: string[]; text: string }): void {
   const text = stripLeadingMentions(row.text);
   if (text === "") return;
-  const store = openMessageStore(messagesDbFile(ctx.ws));
+  const store = openMessageStore(officeDbFile(ctx.ws));
   try {
     const stored = store.append({
       sendTime: new Date().toISOString(),
@@ -169,7 +169,7 @@ const sendMessage: ToolDef = {
     const target = String(args["target"]);
     const text = String(args["text"]);
     if (target === "boss") {
-      const convId = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = dm:<自己>，收件人 = 老板）。
       recordAndBroadcast(ctx, { projectId: null, toIds: [BOSS_PARTICIPANT], text });
@@ -180,7 +180,7 @@ const sendMessage: ToolDef = {
       const memberId = memberMatch[1]!;
       if (ctx.relation.kind !== "group") throw new Error("member: 目标只能在群聊里用（当前是私聊）");
       if (!parseMembers(ctx.ws, ctx.relation.project).includes(memberId)) throw new Error(`不是本群成员：${memberId}`);
-      const convId = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.submit(convId, text, { kind: "chat.message", data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = group:<当前群>，收件人 = 被触发的成员）。
       recordAndBroadcast(ctx, { projectId: ctx.relation.project, toIds: [memberId], text });
@@ -189,7 +189,7 @@ const sendMessage: ToolDef = {
     const projectMatch = /^project:(.+)$/u.exec(target);
     if (projectMatch !== null) {
       const projectId = projectMatch[1]!;
-      const convId = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx), ctx.mcp);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = group:<该项目>）。
       // toIds 取空：该目标只是把消息写进「自己在该项目群的会话」，没有具体投递对象（不触发任何人）；

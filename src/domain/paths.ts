@@ -42,9 +42,9 @@ export function spaceSkillsDir(ws: Workspace): string {
   return path.join(spaceDir(ws), "skills");
 }
 
-/** 自有消息库（P1）；`stateDir` 的迁移（P4）不影响本函数语义。 */
-export function messagesDbFile(ws: Workspace): string {
-  return path.join(stateDir(ws), "messages.sqlite");
+/** 自有库（消息流水 + 会话元数据）：`openstaffs/.data/openstaffs.sqlite`（与 Pi 基座库 state.sqlite 区分）。 */
+export function officeDbFile(ws: Workspace): string {
+  return path.join(stateDir(ws), "openstaffs.sqlite");
 }
 
 /** 工作树目录名（D20：平铺 `work/<名字>/`，与定义树分离）。 */

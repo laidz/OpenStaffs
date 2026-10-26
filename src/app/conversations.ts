@@ -18,6 +18,7 @@ import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
 import { effectivePermissions } from "../permissions/effective.ts";
 import { runtimeGrantsFor } from "../permissions/runtime.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
+import type { MessageStore } from "../store/messages.ts";
 
 export type { Relation };
 
@@ -81,6 +82,9 @@ export function accessFor(ws: Workspace, relation: Relation, speaker: Employee):
 /** 新会话默认模型 "provider/modelId"（员工未配模型时兜底）与默认思考强度。 */
 export type SessionDefaults = { model: string; thinkingLevel?: string };
 
+/** 打开 / 新建会话的结果：`created` = 这次真的新建了一条会话（否则是 attach 复用）。 */
+export type OpenResult = { convId: string; created: boolean };
+
 /** 全局配置 → 新会话默认值（model / thinkingLevel 都只是兜底，员工配置优先）。 */
 export function sessionDefaults(config: WorkspaceConfig | undefined): SessionDefaults | undefined {
   if (config === undefined) return undefined;
@@ -122,39 +126,39 @@ function specFor(
 async function ensure(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
-): Promise<string> {
+): Promise<OpenResult> {
   const speaker = loadEmployee(ws, speakerId);
   const file = chainFileFor(ws, relation, speakerId);
   const active = activeSession(file);
   if (active !== undefined && (await harness.attach(active.id, accessFor(ws, relation, speaker)))) {
-    return active.id;
+    return { convId: active.id, created: false };
   }
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(file, convId, new Date().toISOString());
-  return convId;
+  return { convId, created: true };
 }
 
 export function openDm(
   ws: Workspace, harness: HarnessPort, employeeId: string, defaults?: SessionDefaults, mcp?: McpSessionResolver,
-): Promise<string> {
+): Promise<OpenResult> {
   return ensure(ws, harness, { kind: "dm", employeeId }, employeeId, defaults, mcp);
 }
 
 export function openGroup(
   ws: Workspace, harness: HarnessPort, project: string, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
-): Promise<string> {
+): Promise<OpenResult> {
   return ensure(ws, harness, { kind: "group", project }, speakerId, defaults, mcp);
 }
 
 export async function newSession(
   ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string,
   defaults?: SessionDefaults, mcp?: McpSessionResolver,
-): Promise<string> {
+): Promise<OpenResult> {
   const speaker = loadEmployee(ws, speakerId);
   const convId = await harness.startSession(specFor(ws, relation, speaker, defaults, mcp));
   startNewSession(chainFileFor(ws, relation, speakerId), convId, new Date().toISOString());
-  return convId;
+  return { convId, created: true };
 }
 
 /** 一个员工的活跃会话（私聊 + 他所在的每个群的链尾）：供「会话上下文」面板按人聚合。 */
@@ -198,10 +202,12 @@ export function activeMemberSessions(ws: Workspace, relation: Relation): { membe
   return out;
 }
 
-/** 会话信息条（展示层）：模型全值 + 思考强度 + 上下文用量 / 模型窗口。 */
+/** 会话信息条（展示层）：模型全值 + 思考强度 + 上下文用量 / 模型窗口 + 标题。 */
 export type RoomSessionInfo = {
   memberId: string;
   convId: string;
+  /** 会话标题（自有库 `sessions` 表）；没有则缺省。 */
+  title?: string;
   /** "provider/modelId"（会话快照）。 */
   model: string;
   /** 展示层判定后的档位；模型明确不支持 → null。 */
@@ -212,15 +218,19 @@ export type RoomSessionInfo = {
 
 /** 关系下各成员活跃会话的实际信息；坏会话（链指向不存在等）跳过，不连坐整个房间。 */
 export async function roomSessionInfo(
-  ws: Workspace, harness: HarnessPort, relation: Relation,
+  ws: Workspace, harness: HarnessPort, relation: Relation, store?: Pick<MessageStore, "sessionsOf">,
 ): Promise<RoomSessionInfo[]> {
   const out: RoomSessionInfo[] = [];
-  for (const session of activeMemberSessions(ws, relation)) {
+  const sessions = activeMemberSessions(ws, relation);
+  const titles = store?.sessionsOf(sessions.map((session) => session.convId)) ?? new Map();
+  for (const session of sessions) {
     try {
       const usage = await harness.sessionUsage(session.convId);
+      const meta = titles.get(session.convId);
       out.push({
         memberId: session.memberId,
         convId: session.convId,
+        ...(meta === undefined ? {} : { title: meta.title }),
         model: formatModelRef(usage.model),
         thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
         contextUsed: usage.contextUsed,

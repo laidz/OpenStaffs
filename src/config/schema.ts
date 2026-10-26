@@ -15,6 +15,8 @@ export type ConfigFields = {
   permissions: PermissionTable;
   model?: string;
   thinkingLevel?: string;
+  /** 空间层专用：自动命名会话用的模型（必须是非思考模型）；未指定 = 自动命名不可用。 */
+  namingModel?: string;
   /** 记忆开关；缺省 = 跟随空间级配置。 */
   memory?: boolean;
   head: string[];
@@ -102,6 +104,9 @@ export function parseConfigFields(raw: unknown): { fields: ConfigFields; issues:
   if (model !== undefined) fields.model = model;
   const thinkingLevel = text(raw["thinkingLevel"]);
   if (thinkingLevel !== undefined) fields.thinkingLevel = thinkingLevel;
+  const namingModel = text(raw["namingModel"]);
+  if (namingModel !== undefined) fields.namingModel = namingModel;
+  else if (raw["namingModel"] !== undefined) issues.push("namingModel 必须是非空字符串（已忽略）");
   const memory = raw["memory"];
   if (typeof memory === "boolean") fields.memory = memory;
   else if (memory !== undefined) issues.push("memory 必须是布尔值（已忽略）");

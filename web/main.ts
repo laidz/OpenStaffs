@@ -59,6 +59,12 @@ function renderDynamic(event: UiEvent): void {
       renderSessionInfo();
       return;
     }
+    // 会话标题（本地改名成功）：信息条与私聊顶部跟着变。
+    if (event.type === "title") {
+      renderSessionInfo();
+      renderChatHead();
+      return;
+    }
     // pin 事件同时改当前房间气泡高亮与侧栏红点，两处都要局部更新。
     if (event.type === "pin") {
       renderMessages();
@@ -100,6 +106,12 @@ function renderDynamic(event: UiEvent): void {
     case "room.dequeued":
       renderMessages(); // 出队：占位撤下 / 排队标识摘掉
       if (event.event.reason === "delivered") void syncAfterDelivered(event.event.roomKey, event.event.submissionId);
+      return;
+    case "session.title":
+      // 标题变了（新会话的时间标题 / 命名结果 / 另一标签页手改）：重画受影响的那块。
+      renderSessionInfo(); // 信息条（内含标题）
+      renderChatHead(); // 私聊顶部的当前会话标题
+      if (sessionPanel !== undefined && sessionPanel.convId === event.event.convId) void openSessionPanel(sessionPanel.memberId, sessionPanel.convId);
       return;
     default:
       return;
@@ -186,10 +198,36 @@ function renderSessionInfo(): void {
   if (holder === null) return;
   holder.outerHTML = sessionInfoHtml(state);
   bindSessionDetailButtons(); // outerHTML 重建了信息条，重新挂详情入口
+  bindTitles(); // 标题按钮也是重建的
 }
 
-/** 重拉当前房间的会话信息；辅助展示，失败静默等下一次事件。 */
-async function refreshSessionInfo(roomKey: string): Promise<void> {
+/** 聊天头部：私聊的「当前会话标题」跟着会话信息变（群聊不显，头部只有房间名）。 */
+function renderChatHead(): void {
+  const head = document.querySelector<HTMLElement>(".chat-head");
+  if (head === null) return;
+  const current = document.querySelector<HTMLElement>("[data-rename-conv].chat-title");
+  const session = state.roomKey?.startsWith("dm:") === true ? state.sessions[0] : undefined;
+  if (session === undefined) {
+    current?.remove();
+    return;
+  }
+  const title = session.title ?? "未命名";
+  if (current === null) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "session-title chat-title";
+    button.dataset.renameConv = session.convId;
+    button.title = "点击改名";
+    button.textContent = title;
+    head.querySelector(".title")?.after(button);
+    bindTitles();
+    return;
+  }
+  current.textContent = title;
+  current.dataset.renameConv = session.convId;
+}
+
+/** 重拉当前房间的会话信息；辅助展示，失败静默等下一次事件。 */async function refreshSessionInfo(roomKey: string): Promise<void> {
   try {
     const { sessions } = await api.sessionInfo(roomKey);
     dispatch({ type: "sessions", roomKey, sessions });
@@ -294,9 +332,82 @@ function bindDeptToggles(): void {
   }
 }
 
+/**
+ * 会话标题的**原地改名**：点标题 → 就地换成输入框（预填当前值、全选）；
+ * Enter / 失焦保存，Esc 取消；失败保留输入内容并就地提示（不丢字）。
+ */
+function bindTitles(): void {
+  for (const element of app.querySelectorAll<HTMLButtonElement>("button[data-rename-conv]")) {
+    if (element.dataset.titleBound === "1") continue; // 已挂过（局部重画复用同一按钮）
+    element.dataset.titleBound = "1";
+    element.addEventListener("click", (event) => {
+      event.stopPropagation(); // 历史列表里标题与「查看」同处一行：改名不得触发查看
+      startRename(element);
+    });
+  }
+}
+
+/** 把标题按钮就地换成输入框，并在保存时走改名接口。 */
+function startRename(button: HTMLButtonElement): void {
+  const convId = button.dataset.renameConv;
+  const roomKey = state.roomKey;
+  if (convId === undefined || roomKey === undefined) return;
+  const previous = button.textContent ?? "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "session-title-input";
+  input.value = previous === "未命名" ? "" : previous;
+  input.maxLength = 40;
+  button.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  let saving = false;
+  const restore = (): void => {
+    input.replaceWith(button);
+  };
+  const save = async (): Promise<void> => {
+    if (settled || saving) return;
+    const title = input.value.trim();
+    if (title === "" || title === previous) {
+      settled = true;
+      restore();
+      return;
+    }
+    saving = true;
+    try {
+      const saved = await api.renameSession(roomKey, convId, title);
+      settled = true;
+      // 先换回按钮（把输入框收走），再通知 state：局部重画时 DOM 已是最终形态。
+      button.textContent = saved.title;
+      restore();
+      // 服务端已广播 session.title；这里也本地更新（不依赖事件到达时机）。
+      dispatch({ type: "title", roomKey, convId: saved.convId, title: saved.title });
+    } catch (error) {
+      saving = false; // 允许重试；输入框保留用户输入
+      input.classList.add("session-title-input-error");
+      window.alert(error instanceof Error ? error.message : String(error));
+      input.focus();
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      void save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      settled = true;
+      restore();
+    }
+  });
+  input.addEventListener("blur", () => void save());
+}
+
 function bindEvents(): void {
   bindSidebar();
   bindSessionDetailButtons();
+  bindTitles();
   document.getElementById("composer-send")?.addEventListener("click", () => void sendCurrent());
   const input = document.getElementById("composer-input");
   input?.addEventListener("keydown", (event) => {
@@ -599,6 +710,7 @@ async function renderSessionPanel(): Promise<void> {
   app.innerHTML = sessionPanelHtml(state, context);
   bindSidebar();
   bindPermCards();
+  bindTitles(); // 详情头部的标题也能就地改
   document.getElementById("session-panel-back")?.addEventListener("click", () => {
     sessionPanel = undefined;
     renderAll();
@@ -646,7 +758,7 @@ async function openHistory(): Promise<void> {
     ${rows
       .map(
         (row) =>
-          `<div class="session"><span>${escapeHtml(memberName(row.memberId))} · ${escapeHtml(localDateTime(row.started))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
+          `<div class="session"><span><button type="button" class="session-title history-title" data-rename-conv="${escapeHtml(row.id)}" title="点击改名">${escapeHtml(row.title ?? "未命名")}</button> · ${escapeHtml(memberName(row.memberId))} · ${escapeHtml(localDateTime(row.started))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
       )
       .join("") || `<p class="hint">还没有会话。</p>`}
     <p><button id="btn-history-back">返回聊天</button></p>
@@ -654,6 +766,7 @@ async function openHistory(): Promise<void> {
   document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
   bindSidebar(); // 面板内也带一份侧栏（房间 / {} 定义 / 部门折叠）
   bindPermCards(); // 全局授权卡片在只读视图里也可见可点
+  bindTitles(); // 历史行的标题可改名（点击保存后重拉列表）
   for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
     const convId = element.dataset.conv!;
     element.addEventListener("click", () => guard(loadHistoryView(roomKey, convId)));

@@ -176,6 +176,14 @@ export function formatTokenCount(tokens: number): string {
 }
 
 /**
+ * 会话标题（点击即原地改名）：没标题渲染「未命名」占位（绝不出现 undefined）。
+ * `className` 区分展示位置（聊天顶部 / 信息条 / 详情）。
+ */
+function titleHtml(convId: string, title: string | undefined, className: string): string {
+  return `<button type="button" class="session-title ${className}" data-rename-conv="${escapeHtml(convId)}" title="点击改名">${escapeHtml(title ?? "未命名")}</button>`;
+}
+
+/**
  * 会话信息条：显示每条活跃会话**实际在用**的模型全值、思考强度、已用上下文 / 模型窗口。
  * 群聊逐成员展示（私聊不重复成员名）；思考强度 null = 未显式设定 → 展示 `default`（模型默认档）。
  */
@@ -186,6 +194,7 @@ export function sessionInfoHtml(state: State): string {
       const employee = state.employees.find((e) => e.id === info.memberId);
       const name = employee?.alias ?? info.memberId;
       const parts: string[] = [];
+      parts.push(titleHtml(info.convId, info.title, "info-title"));
       if (isGroup) parts.push(`<span class="session-member">${escapeHtml(name)}</span>`);
       parts.push(`<span class="session-model">${escapeHtml(info.model)}</span>`);
       parts.push(`<span class="session-thinking">思考 ${escapeHtml(info.thinkingLevel ?? "default")}</span>`);
@@ -210,6 +219,9 @@ export function chatHtml(state: State): string {
   const project = isGroup ? state.projects.find((p) => `group:${p.id}` === state.roomKey) : undefined;
   const employee = !isGroup ? state.employees.find((e) => `dm:${e.id}` === state.roomKey) : undefined;
   const title = isGroup ? (project?.alias ?? state.roomKey) : (employee?.alias ?? employee?.id ?? state.roomKey);
+  // 私聊：房间名后跟上「当前会话标题」（可点击改）；群聊没有唯一当前会话 → 标题在信息条里逐条展示。
+  const currentSession = isGroup ? undefined : state.sessions[0];
+  const sessionTitleChip = currentSession === undefined ? "" : titleHtml(currentSession.convId, currentSession.title, "chat-title");
   // 群聊：输入框上方罗列成员复选框，勾选 = 往正文写 @（唯一真相源）；无勾选则发送禁用。
   const targetsRow = isGroup ? composerTargetsHtml(project?.members ?? []) : "";
   const placeholder = isGroup
@@ -221,7 +233,7 @@ export function chatHtml(state: State): string {
   const hint = freshSessionHint(state);
   return `<section class="chat">
     <header class="chat-head">
-      <span class="title">${escapeHtml(title)}</span>
+      <span class="title">${escapeHtml(title)}</span>${sessionTitleChip}
       <button id="btn-new-session" class="btn-new-session${armed}" title="下一条消息开启新会话">新开会话</button>
       <button id="btn-history">历史</button>
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
@@ -418,7 +430,7 @@ function contextBodyHtml(context: SessionContextView): string {
     ? '<p class="hint">（没有系统提示词）</p>'
     : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><div class="ctx-system-body"><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></div></details>`;
   return `<div class="ctx-header">
-      <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(localDateTime(context.started))}</span></div>
+      <div>${titleHtml(context.convId, context.title, "detail-title")}<strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(localDateTime(context.started))}</span></div>
       <div class="ctx-meta" id="ctx-meta-line">${contextMetaHtml(context)}</div>
       ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
       ${system}

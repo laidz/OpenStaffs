@@ -8,7 +8,7 @@ let dir: string;
 let store: MessageStore;
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), "os-msg-"));
-  store = openMessageStore(path.join(dir, "messages.sqlite"));
+  store = openMessageStore(path.join(dir, "openstaffs.sqlite"));
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -46,7 +46,7 @@ test("空房间返回 []（不抛）", () => {
 });
 
 test("父目录不存在时也能开库（openMessageStore 自建父目录）", () => {
-  const nested = path.join(dir, "deep", "nested", "messages.sqlite");
+  const nested = path.join(dir, "deep", "nested", "openstaffs.sqlite");
   const nestedStore = openMessageStore(nested);
   try {
     nestedStore.append({ ...base, projectId: null, toIds: ["alice"], text: "自动建目录" });

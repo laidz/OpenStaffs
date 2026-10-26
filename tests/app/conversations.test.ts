@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { readChain, startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
@@ -40,7 +40,7 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const convId = await openDm(ws, harness, "alice");
+      const { convId } = await openDm(ws, harness, "alice");
       expect(fs.existsSync(path.join(root, "work", "alice"))).toBe(true);
       const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain.map((r) => r.id)).toEqual([convId]);
@@ -79,8 +79,8 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const first = await openDm(ws, harness, "alice");
-      const second = await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
+      const { convId: first } = await openDm(ws, harness, "alice");
+      const { convId: second } = await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
       expect(second).not.toBe(first);
       const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain).toHaveLength(2);
@@ -98,14 +98,14 @@ describe("应用用例", () => {
     const ws = createWorkspace(root);
     const first = harnessWithFaux();
     await first.open();
-    const convId = await openDm(ws, first, "alice");
+    const { convId } = await openDm(ws, first, "alice");
     await first.close();
 
     const reopened = harnessWithFaux();
     await reopened.open();
     try {
       const again = await openDm(ws, reopened, "alice");
-      expect(again).toBe(convId);
+      expect(again.convId).toBe(convId);
       const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain).toHaveLength(1);
     } finally {
@@ -217,15 +217,15 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const aliceConv = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
       const aliceFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "alice.md");
       const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
       expect(fs.existsSync(aliceFile)).toBe(true);
       expect(fs.existsSync(bobFile)).toBe(false);
 
-      const bobConv = await openGroup(ws, harness, "yt", "bob");
+      const { convId: bobConv } = await openGroup(ws, harness, "yt", "bob");
       expect(bobConv).not.toBe(aliceConv);
-      expect(await openGroup(ws, harness, "yt", "alice")).toBe(aliceConv);
+      expect((await openGroup(ws, harness, "yt", "alice")).convId).toBe(aliceConv);
 
       expect(readChain(aliceFile)).toHaveLength(1);
       expect(readChain(bobFile)).toHaveLength(1);
@@ -264,9 +264,9 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const a1 = await openGroup(ws, harness, "yt", "alice");
-      const b1 = await openGroup(ws, harness, "yt", "bob");
-      const a2 = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
+      const { convId: a1 } = await openGroup(ws, harness, "yt", "alice");
+      const { convId: b1 } = await openGroup(ws, harness, "yt", "bob");
+      const { convId: a2 } = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
       expect(a2).not.toBe(a1);
       const aliceFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "alice.md");
       const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
@@ -449,7 +449,7 @@ describe("应用用例", () => {
     await harness.open();
     try {
       const defaults: SessionDefaults = { model: "faux/faux-model" };
-      const convId = await openDm(ws, harness, "carol", defaults);
+      const { convId } = await openDm(ws, harness, "carol", defaults);
       const reply = await harness.send(convId, "在吗");
       expect(reply.text).toBe("ok");
     } finally {
@@ -465,7 +465,7 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const a1 = await openGroup(ws, harness, "yt", "alice");
+      const { convId: a1 } = await openGroup(ws, harness, "yt", "alice");
       const chains = sessionChains(ws, { kind: "group", project: "yt" });
       expect(chains.map((c) => c.memberId)).toEqual(["alice", "bob"]);
       expect(chains[0]!.rows).toHaveLength(1);
@@ -487,8 +487,8 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const a = await openGroup(ws, harness, "yt", "alice");
-      const b = await openGroup(ws, harness, "yt", "bob");
+      const { convId: a } = await openGroup(ws, harness, "yt", "alice");
+      const { convId: b } = await openGroup(ws, harness, "yt", "bob");
       // carol 的链写坏：活跃行指向不存在的会话
       const carolFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "carol.md");
       fs.mkdirSync(path.dirname(carolFile), { recursive: true });
@@ -546,14 +546,14 @@ describe("应用用例", () => {
     try {
       const ws = createWorkspace(root);
       const first = await openDm(ws, harness, "dave");
-      await harness.send(first, "在吗");
+      await harness.send(first.convId, "在吗");
       fs.writeFileSync(daveFile, JSON.stringify({ model: "faux/faux-model", prompt: "档案版本二。" }));
       const again = await openDm(ws, harness, "dave");
-      expect(again).toBe(first); // attach 复用旧会话，不重配置
-      await harness.send(again, "还在吗");
+      expect(again.convId).toBe(first.convId); // attach 复用旧会话，不重配置
+      await harness.send(again.convId, "还在吗");
       const fresh = await newSession(ws, harness, { kind: "dm", employeeId: "dave" }, "dave");
-      expect(fresh).not.toBe(first);
-      await harness.send(fresh, "新会话");
+      expect(fresh.convId).not.toBe(first.convId);
+      await harness.send(fresh.convId, "新会话");
 
       expect(systems).toHaveLength(3);
       expect(systems[0]).toContain("档案版本一。");
@@ -577,7 +577,7 @@ describe("应用用例", () => {
     openingModels.setProvider(openingFaux.provider);
     const first = createPiHarness({ root, sqlitePath, models: openingModels });
     await first.open();
-    const convId = await openDm(ws, first, "dave");
+    const { convId } = await openDm(ws, first, "dave");
     await first.close();
     fs.writeFileSync(daveFile, JSON.stringify({ model: "faux/faux-model", prompt: "你是 dave（改）。" })); // 重启后改 prompt：attach 不得重渲染，快照应仍为旧指令
 
@@ -598,8 +598,8 @@ describe("应用用例", () => {
     await reopened.open();
     try {
       const again = await openDm(ws, reopened, "dave");
-      expect(again).toBe(convId);
-      await reopened.send(again, "还在吗");
+      expect(again.convId).toBe(convId);
+      await reopened.send(again.convId, "还在吗");
       expect(seenSystem).toContain("你是 dave。");
     } finally {
       await reopened.close();
@@ -662,7 +662,7 @@ describe("应用用例", () => {
     await harness.open();
     try {
       expect(await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" })).toEqual([]);
-      const convId = await openDm(ws, harness, "alice");
+      const { convId } = await openDm(ws, harness, "alice");
       await harness.send(convId, "你好");
       const [info] = await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" });
       expect(info).toMatchObject({
@@ -675,7 +675,7 @@ describe("应用用例", () => {
       expect(info!.contextUsed).toBeGreaterThan(0);
 
       // 链指向不存在的会话：只跳过该成员，好会话照常返回
-      const aliceGroupConv = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceGroupConv } = await openGroup(ws, harness, "yt", "alice");
       const ghostFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "ghost.md");
       fs.mkdirSync(path.dirname(ghostFile), { recursive: true });
       fs.writeFileSync(
@@ -728,5 +728,24 @@ describe("应用用例", () => {
     expect(calls).toEqual(["space-mcp,agent-mcp", "space-mcp,project-mcp"]);
     expect(specs[0]!.mcpExtensions).toEqual(["mcp:global:fixture"]);
     expect(specs[1]!.mcpExtensions).toEqual(["mcp:global:fixture"]);
+  });
+
+  it("openDm：首次建会话 created=true；复用同一条活跃会话 created=false；newSession 恒 true", async () => {
+    seedEmployee("erin");
+    const ws = createWorkspace(root);
+    const harness = harnessWithFaux();
+    await harness.open();
+    try {
+      const first = await openDm(ws, harness, "erin");
+      expect(first.created).toBe(true);
+      const again = await openDm(ws, harness, "erin");
+      expect(again.created).toBe(false);
+      expect(again.convId).toBe(first.convId);
+      const fresh = await newSession(ws, harness, { kind: "dm", employeeId: "erin" }, "erin");
+      expect(fresh.created).toBe(true);
+      expect(fresh.convId).not.toBe(first.convId);
+    } finally {
+      await harness.close();
+    }
   });
 });

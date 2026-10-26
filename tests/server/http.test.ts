@@ -6,7 +6,7 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace, messagesDbFile, stateDir } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { startNewSession } from "../../src/domain/conversation-chain.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { projectConfigFile } from "../../src/config/naming.ts";
@@ -35,7 +35,7 @@ let messageStore: MessageStore | undefined;
 function getStore(): MessageStore {
   if (messageStore === undefined) {
     fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
-    messageStore = openMessageStore(messagesDbFile(createWorkspace(root)));
+    messageStore = openMessageStore(officeDbFile(createWorkspace(root)));
   }
   return messageStore;
 }
@@ -235,7 +235,11 @@ async function startWithFaux(
     size: 0,
   } as unknown as SseHub;
   const pump = new Pump({ ws, harness, hub, store: getStore() });
-  const server = createHttpServer({ ws, store: getStore(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319, permissionRequests: store, pump, hub });
+  const server = createHttpServer({
+    ws, store: getStore(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319,
+    permissionRequests: store, pump, hub,
+    titles: { store: getStore(), notify: (event) => hub.broadcast({ type: "session.title", ...event }) },
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
@@ -491,6 +495,59 @@ describe("房间 API", () => {
         return body.sessions.length > 0 && body.sessions[0]!.contextUsed > 0 ? body : undefined;
       });
       expect(info.sessions[0]!.thinkingLevel).toBeNull(); // 非推理模型只支持 off；不回落、不显示 high
+    } finally {
+      await close();
+    }
+  });
+
+  it("会话标题：sessions / info 下发 title；PATCH 改名成功且走 manual；400 / 404 边界", async () => {
+    const { base, close, events } = await startWithFaux(["alice"], []);
+    try {
+      await fetch(`${base}/api/rooms/dm:alice/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "帮我看看登录", requestId: "title-1" }),
+      });
+      // 新会话大概率已落时间标题（无 namer 时只有 fallback）；不管哪种，都有标题。
+      const chains = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string; title?: string; titleSource?: string }[] }[] };
+      const convId = chains.chains[0]!.rows[0]!.id;
+      expect(chains.chains[0]!.rows[0]!.title).toBeTruthy();
+
+      const info = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/info`)).json()) as { sessions: { convId: string; title?: string }[] };
+      expect(info.sessions[0]!.title).toBeTruthy();
+
+      const patched = await fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/title`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "  我自己改的  " }),
+      });
+      expect(patched.status).toBe(200);
+      expect(await patched.json()).toMatchObject({ convId, title: "我自己改的", titleSource: "manual" });
+      expect(getStore().sessionOf(convId)).toMatchObject({ title: "我自己改的", titleSource: "manual" });
+      expect(events.some((event) => event.type === "session.title" && event.convId === convId)).toBe(true);
+
+      const after = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { title?: string }[] }[] };
+      expect(after.chains[0]!.rows[0]!.title).toBe("我自己改的");
+
+      // 员工维度的会话列表 / 会话详情也带标题（会话详情面板与侧栏辇取）。
+      const employeeSessions = (await (await fetch(`${base}/api/employees/alice/sessions`)).json()) as { sessions: { convId: string; title?: string }[] };
+      expect(employeeSessions.sessions[0]!.title).toBe("我自己改的");
+      const contextView = (await (await fetch(`${base}/api/employees/alice/sessions/${convId}/context`)).json()) as { title?: string };
+      expect(contextView.title).toBe("我自己改的");
+
+      const patch = (body: unknown) => fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/title`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect((await patch({ title: "   " })).status).toBe(400);
+      expect((await patch({ title: "字".repeat(41) })).status).toBe(400);
+      expect((await patch({})).status).toBe(400);
+      expect((await fetch(`${base}/api/rooms/dm:alice/sessions/conv_nope/title`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "随便" }),
+      })).status).toBe(404);
     } finally {
       await close();
     }

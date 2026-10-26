@@ -10,6 +10,7 @@ const EVENT_TYPES = [
   "room.dequeued",
   "permission.request",
   "permission.resolved",
+  "session.title",
 ] as const;
 
 /** 连接 SSE；返回断开函数。断线由 EventSource 自动重连，重连成功后回调 onReconnect（用于重拉补齐）。 */

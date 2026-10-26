@@ -1,13 +1,16 @@
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createWorkspace, messagesDbFile, stateDir } from "../domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../domain/paths.ts";
 import { spaceConfigFile } from "../domain/space.ts";
+import { loadSpaceConfig } from "../config/load.ts";
 import { staff0File } from "../domain/staff0.ts";
 import { DEFAULT_PORT, configFile, readConfig } from "../domain/config.ts";
 import { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView } from "../app/permission-flow.ts";
 import { sessionDefaults } from "../app/conversations.ts";
+import { createNamer } from "../app/naming.ts";
+import type { SessionTitleDeps } from "../app/sessions.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { openMessageStore, type MessageStore } from "../store/messages.ts";
@@ -56,18 +59,28 @@ async function main(): Promise<void> {
   fs.mkdirSync(stateDir(ws), { recursive: true });
   let store: MessageStore;
   try {
-    store = openMessageStore(messagesDbFile(ws));
+    store = openMessageStore(officeDbFile(ws));
   } catch (error) {
     console.error(`[openstaffs] 启动失败：${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
   let pump: Pump | undefined;
   let mcp: McpManager | undefined;
+  // 会话标题依赖：new 会话命名 / 改名端点写入，全进程一份（与 HTTP 注入同一个）。
+  let titles: SessionTitleDeps = { store };
 
   let harness: ReturnType<typeof createPiHarness> | undefined;
   if (config !== undefined) {
     try {
       const models = await createConfiguredModels(config.providers);
+      // 自动命名：模型由空间配置 namingModel 指定（必须是非思考模型）；不可用则只留时间标题。
+      const namingModel = loadSpaceConfig(ws)?.fields.namingModel;
+      const namer = createNamer({ models, ...(namingModel === undefined ? {} : { namingModel }) });
+      titles = {
+        store,
+        notify: (event) => hub.broadcast({ type: "session.title", ...event }),
+        ...(namer === undefined ? {} : { namer }),
+      };
       mcp = new McpManager({ ws });
       await mcp.start();
       if (mcp.errors().length > 0) {
@@ -125,6 +138,7 @@ async function main(): Promise<void> {
     hub,
     port,
     permissionRequests,
+    titles,
     ...(mcp === undefined ? {} : { mcp }),
   });
   // 端口占用等监听失败：打印中文原因后退出（spec §3.1），不抛未捕获异常。

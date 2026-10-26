@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, messagesDbFile, type Workspace } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, type Workspace } from "../../src/domain/paths.ts";
 import { seedOffice } from "../helpers/office.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import type { ServerEvent, SseHub } from "../../src/server/sse.ts";
@@ -18,7 +18,7 @@ beforeEach(() => {
   ws = createWorkspace(root);
   // openMessageStore 不建父目录（接线方保证 stateDir 存在），这里对齐 main.ts 的接线前提。
   fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
-  store = openMessageStore(messagesDbFile(ws));
+  store = openMessageStore(officeDbFile(ws));
 });
 
 afterEach(() => {
@@ -213,6 +213,15 @@ describe("落库异常不连坐（Task 6 收口）", () => {
       },
       listByRoom() {
         return [];
+      },
+      sessionOf() {
+        return undefined;
+      },
+      sessionsOf() {
+        return new Map();
+      },
+      setTitle() {
+        throw new Error("database is locked");
       },
       close() {},
     });

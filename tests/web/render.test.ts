@@ -82,6 +82,57 @@ describe("会话信息条", () => {
     expect(html).not.toContain("999 /");
     expect(sessionInfoHtml({ ...initialState, roomKey: "dm:alice" })).toBe(`<div class="session-info" id="session-info"></div>`);
   });
+
+  it("标题：每条活跃会话前置标题并可点击改名；缺标题显示「未命名」（不出现 undefined）", () => {
+    const withTitle = {
+      ...initialState,
+      roomKey: "group:yt",
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
+      sessions: [
+        { memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 },
+        { memberId: "bob", convId: "c2", model: "other/m2", thinkingLevel: "off", contextUsed: 0 },
+      ],
+    };
+    const html = sessionInfoHtml(withTitle);
+    expect(html).toContain("登录排查");
+    expect(html).toContain('data-rename-conv="c1"');
+    expect(html).toContain('data-rename-conv="c2"');
+    expect(html).toContain("未命名");
+    expect(html).not.toContain("undefined");
+  });
+});
+
+describe("会话标题在聊天顶部 / 会话详情", () => {
+  it("私聊：聊天顶部显示当前会话标题并可点击改名；群聊不塞（无唯一当前会话）", () => {
+    const dm = {
+      ...initialState,
+      roomKey: "dm:alice",
+      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
+      sessions: [{ memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 }],
+    };
+    const html = chatHtml(dm);
+    expect(html).toContain("登录排查");
+    expect(html).toContain('data-rename-conv="c1"');
+
+    const group = {
+      ...initialState,
+      roomKey: "group:yt",
+      projects: [{ id: "yt", alias: "油管项目", members: [{ id: "alice", alias: "爱丽丝" }] }],
+      sessions: [{ memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 }],
+    };
+    const header = chatHtml(group).split('class="session-info"')[0]!;
+    expect(header).not.toContain("登录排查");
+  });
+
+  it("会话详情：头部带标题与改名入口", () => {
+    const context: SessionContextView = {
+      convId: "c1", kind: "dm", relationKey: "dm:alice", started: "2026-10-26T10:00:00+08:00", running: false,
+      model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0, title: "登录排查", instructions: "你是 alice。", items: [],
+    };
+    const html = sessionPanelHtml({ ...initialState, roomKey: "dm:alice" }, context);
+    expect(html).toContain("登录排查");
+    expect(html).toContain('data-rename-conv="c1"');
+  });
 });
 
 describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {

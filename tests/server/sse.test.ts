@@ -6,7 +6,7 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, conversationIdsFile, messagesDbFile, stateDir, workDir } from "../../src/domain/paths.ts";
+import { createWorkspace, conversationIdsFile, officeDbFile, stateDir, workDir } from "../../src/domain/paths.ts";
 import { startNewSession } from "../../src/domain/conversation-chain.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
@@ -25,7 +25,7 @@ let store: MessageStore | undefined;
 function getStore(): MessageStore {
   if (store === undefined) {
     fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
-    store = openMessageStore(messagesDbFile(createWorkspace(root)));
+    store = openMessageStore(officeDbFile(createWorkspace(root)));
   }
   return store;
 }
@@ -372,7 +372,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const pump = new Pump({ ws, harness, hub, store: getStore() });
     let convId: string | undefined;
     try {
-      convId = await openDm(ws, harness, "alice", { model: "faux/faux-model" });
+      convId = (await openDm(ws, harness, "alice", { model: "faux/faux-model" })).convId;
       await pump.register(convId, { roomKey: "dm:alice", memberId: "alice" });
       await harness.submit(convId, "你好");
       // 若抛错穿透到 Pi 的 listener，订阅会被静默终结 → 只会看到第一次广播就再无事件。

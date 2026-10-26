@@ -5,7 +5,7 @@ import { renderMemoryBlock } from "../domain/memory/view.ts";
 import { renderTemplate } from "../domain/prompt.ts";
 import type { PromptVarContext } from "../domain/prompt-vars.ts";
 
-export type SystemPromptName = "environment" | "dm" | "group" | "memory";
+export type SystemPromptName = "environment" | "dm" | "group" | "memory" | "naming";
 
 /** 读一个内置模板；缺失 / 读失败 → 空串（不拖垮建会话），并留一条日志信号。 */
 function loadTemplate(name: SystemPromptName): string {
@@ -23,6 +23,8 @@ export const SYSTEM_PROMPT_TEMPLATES: Readonly<Record<SystemPromptName, string>>
   dm: loadTemplate("dm"),
   group: loadTemplate("group"),
   memory: loadTemplate("memory"),
+  // 会话命名 agent 的**唯一** prompt（不拼环境 / 会话前缀 / 记忆 / 技能）。
+  naming: loadTemplate("naming"),
 };
 
 /** 渲染、trim、丢空段、`\n\n` 连接。 */

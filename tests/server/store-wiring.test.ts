@@ -4,7 +4,7 @@ import path from "node:path";
 import { type AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WorkspaceConfig } from "../../src/domain/config.ts";
-import { createWorkspace, messagesDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
 import { seedOffice } from "../helpers/office.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
@@ -22,7 +22,7 @@ beforeEach(() => {
   ws = createWorkspace(root);
   // 接线前提（对齐 main.ts）：openMessageStore 不建父目录，注入前必须先有 stateDir。
   fs.mkdirSync(stateDir(ws), { recursive: true });
-  store = openMessageStore(messagesDbFile(ws));
+  store = openMessageStore(officeDbFile(ws));
 });
 
 afterEach(() => {

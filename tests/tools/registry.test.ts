@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, messagesDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
 import { readChain } from "../../src/domain/conversation-chain.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
@@ -51,7 +51,7 @@ function seedStore(
   rows: { projectId: string | null; fromId: string; toIds: string[]; text: string }[],
 ): void {
   fs.mkdirSync(stateDir(ws), { recursive: true });
-  const store = openMessageStore(messagesDbFile(ws));
+  const store = openMessageStore(officeDbFile(ws));
   try {
     for (const row of rows) store.append({ sendTime: new Date().toISOString(), ...row });
   } finally {
@@ -61,7 +61,7 @@ function seedStore(
 
 /** 读自有库某房间的行（写完即关；调用方保证 stateDir 已存在）。 */
 function rowsOf(ws: Workspace, room: string) {
-  const store = openMessageStore(messagesDbFile(ws));
+  const store = openMessageStore(officeDbFile(ws));
   try {
     return store.listByRoom(room);
   } finally {
@@ -168,7 +168,7 @@ describe("send_message", () => {
     try {
       const out = await tool("send_message").run({ target: "boss", text: "汇报一下" }, ctxFor(ws, "alice", dm("alice"), harness));
       expect(out).toContain("老板");
-      const dmConv = await openDm(ws, harness, "alice");
+      const { convId: dmConv } = await openDm(ws, harness, "alice");
       const history = await harness.transcript(dmConv);
       const posted = history.find((m) => m.text === "汇报一下");
       expect((posted?.data as { author?: string } | undefined)?.author).toBe("alice");
@@ -188,7 +188,7 @@ describe("send_message", () => {
     await harness.open();
     try {
       await tool("send_message").run({ target: "member:bob", text: "bob 帮我看下" }, ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness));
-      const bobConv = await openGroup(ws, harness, "demo", "bob");
+      const { convId: bobConv } = await openGroup(ws, harness, "demo", "bob");
       const history = await harness.transcript(bobConv);
       const delivered = history.find((m) => m.text === "bob 帮我看下");
       expect((delivered?.data as { author?: string } | undefined)?.author).toBe("alice");
@@ -316,7 +316,7 @@ describe("new_session", () => {
     const harness = fauxHarness();
     await harness.open();
     try {
-      const before = await openDm(ws, harness, "alice");
+      const { convId: before } = await openDm(ws, harness, "alice");
       await tool("new_session").run({}, ctxFor(ws, "alice", dm("alice"), harness));
       const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
       expect(chain).toHaveLength(2);

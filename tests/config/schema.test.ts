@@ -56,3 +56,12 @@ test("memory：布尔值解析，非布尔值忽略并记 issue", () => {
   expect(bad.fields.memory).toBeUndefined();
   expect(bad.issues).toContain("memory 必须是布尔值（已忽略）");
 });
+
+test("namingModel：字符串解析进 fields；空串 / 非字符串忽略（后者记 issue）", () => {
+  expect(parseConfigFields({ namingModel: " opencode-go/deepseek-v4.1-flash " }).fields.namingModel)
+    .toBe("opencode-go/deepseek-v4.1-flash");
+  expect(parseConfigFields({ namingModel: "" }).fields.namingModel).toBeUndefined();
+  const bad = parseConfigFields({ namingModel: 42 });
+  expect(bad.fields.namingModel).toBeUndefined();
+  expect(bad.issues.some((issue) => issue.includes("namingModel"))).toBe(true);
+});

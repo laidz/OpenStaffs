@@ -9,6 +9,7 @@ import type { MessageStore } from "../store/messages.ts";
 import { BOSS_PARTICIPANT, type StoredMessage } from "../store/row.ts";
 import { openDm, openGroup, newSession, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
 import { parseAgentReply, stripLeadingMentions } from "./message-row.ts";
+import { nameNewSession, type SessionTitleDeps } from "./sessions.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
 
 /** per-key 串行队列：同 key 串行（FIFO）、异 key 并行；前序失败不连坐后续。 */
@@ -35,6 +36,11 @@ export class EmptyGroupError extends Error {}
 /** 群聊消息没有 @ 到任何成员时拒绝发送（不再广播）。 */
 export class NoTargetsError extends Error {}
 
+/** 房间键（与 store / SSE 同口径）：私聊 `dm:<id>`、群聊 `group:<项目>`（不含成员）。 */
+function roomKeyOf(relation: Relation): string {
+  return relation.kind === "dm" ? `dm:${relation.employeeId}` : `group:${relation.project}`;
+}
+
 export type DeliveryReport = { memberId: string; convId: string; submissionId: string; status: SubmissionStatus };
 
 /**
@@ -56,6 +62,8 @@ export async function sendToRoom(
     newSession?: boolean;
     mcp?: McpSessionResolver;
     store?: MessageStore;
+    /** 会话标题依赖（写库 + 广播 + 命名器）；缺省 = 不命名（不改行为）。 */
+    titles?: SessionTitleDeps;
   },
 ): Promise<{ roomMessageId: string; deliveries: DeliveryReport[]; recorded?: StoredMessage }> {
   const body = text.trim();
@@ -99,18 +107,23 @@ export async function sendToRoom(
     targets.map((target) =>
       options.queue.run(relationKey(relation, target.memberId), async (): Promise<DeliveryReport> => {
         const group = relation.kind === "group" ? relation.project : undefined;
-        const convId =
+        const opened =
           options.newSession === true
             ? await newSession(ws, harness, relation, target.memberId, options.defaults, options.mcp)
             : group === undefined
               ? await openDm(ws, harness, target.memberId, options.defaults, options.mcp)
               : await openGroup(ws, harness, group, target.memberId, options.defaults, options.mcp);
+        const convId = opened.convId;
         const meta: InputMeta = {
           kind: "chat.message",
           data: { author: "boss", roomMessageId },
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
         };
         const receipt = await harness.submit(convId, target.body, meta);
+        // 新会话：立刻落时间标题（兜底）+ 后台命名（不阻塞投递）；复用旧会话不动标题。
+        if (opened.created && options.titles !== undefined) {
+          nameNewSession(options.titles, roomKeyOf(relation), convId, target.body);
+        }
         return { memberId: target.memberId, convId, submissionId: receipt.id, status: receipt.status };
       }),
     ),
@@ -160,7 +173,7 @@ export async function triggerFromGroupReply(
   return await Promise.all(
     deliveries.map((delivery) =>
       options.queue.run(relationKey({ kind: "group", project: options.project }, delivery.to), async (): Promise<DeliveryReport> => {
-        const convId = await openGroup(ws, harness, options.project, delivery.to, options.defaults, options.mcp);
+        const { convId } = await openGroup(ws, harness, options.project, delivery.to, options.defaults, options.mcp);
         const receipt = await harness.submit(convId, `${label}：${delivery.body}`, meta);
         return { memberId: delivery.to, convId, submissionId: receipt.id, status: receipt.status };
       }),

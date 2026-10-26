@@ -17,6 +17,8 @@ import {
   employeeActiveSessions, findSessionOwner, interruptRoom, roomSessionInfo, sessionChains, sessionDefaults, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
+import type { SessionTitleDeps } from "../app/sessions.ts";
+import { renameSession } from "../app/sessions.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView, resolvePermissionRequest, PermissionRequestNotFoundError } from "../app/permission-flow.ts";
 import type { MessageStore } from "../store/messages.ts";
@@ -48,6 +50,8 @@ export type ServerDeps = {
   permissionRequests?: PermissionRequestStore;
   /** MCP 扩展选择（发送 / 授权结果投递时装配新会话）。 */
   mcp?: McpSessionResolver;
+  /** 会话标题依赖（发送新会话时命名 / 改名端点写入）；缺省时新会话不命名、PATCH 端点 503。 */
+  titles?: SessionTitleDeps;
 };
 
 const MIME: Record<string, string> = {
@@ -198,6 +202,11 @@ async function handleEmployees(
     };
   };
   const sessions = employeeActiveSessions(deps.ws, employeeId);
+  const titles = deps.store.sessionsOf(sessions.map((session) => session.convId));
+  const titleOf = (convId: string): { title: string } | Record<string, never> => {
+    const meta = titles.get(convId);
+    return meta === undefined ? {} : { title: meta.title };
+  };
 
   if (segments.length === 4 && segments[3] === "sessions") {
     const out: Record<string, unknown>[] = [];
@@ -208,6 +217,7 @@ async function handleEmployees(
           convId: session.convId,
           ...relationView(session.relation),
           started: session.started,
+          ...titleOf(session.convId),
           running: deps.pump?.isRunning?.(session.convId) ?? false,
           model: formatModelRef(usage.model),
           thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
@@ -241,6 +251,7 @@ async function handleEmployees(
       convId,
       ...relationView(session.relation),
       started: session.started,
+      ...titleOf(convId),
       running: deps.pump?.isRunning?.(convId) ?? false,
       model: formatModelRef(usage.model),
       thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
@@ -319,6 +330,7 @@ async function handleRooms(
         defaults,
         newSession,
         ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
+        ...(deps.titles === undefined ? {} : { titles: deps.titles }),
         ...(requestId === undefined ? {} : { requestId }),
       });
       // 老板发言的实时气泡：广播刚落的库行（键 store:<seq>，与 GET 房间视图 / pin 校验同源）。
@@ -422,12 +434,55 @@ async function handleRooms(
   }
 
   if (rest.length === 2 && rest[0] === "sessions" && rest[1] === "info" && method === "GET") {
-    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation) });
+    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation, deps.store) });
     return;
   }
 
   if (rest.length === 1 && rest[0] === "sessions" && method === "GET") {
-    json(res, 200, { chains: sessionChains(deps.ws, relation) });
+    const chains = sessionChains(deps.ws, relation);
+    // 标题批量取一次（列表不因 N 条会话做 N 次查询）；没有标题的会话不带字段。
+    const titles = deps.store.sessionsOf(chains.flatMap((chain) => chain.rows.map((row) => row.id)));
+    json(res, 200, {
+      chains: chains.map((chain) => ({
+        ...chain,
+        rows: chain.rows.map((row) => {
+          const meta = titles.get(row.id);
+          return meta === undefined ? row : { ...row, title: meta.title, titleSource: meta.titleSource };
+        }),
+      })),
+    });
+    return;
+  }
+
+  // 手动改名：走与自动命名同一条写入通道（renameSession：写库 + 广播）。
+  if (rest.length === 3 && rest[0] === "sessions" && rest[2] === "title" && method === "PATCH") {
+    const body = (await readJsonBody(req)) as { title?: unknown } | undefined;
+    const title = typeof body?.title === "string" ? body.title.trim() : "";
+    if (title === "") {
+      json(res, 400, { error: "标题不能为空" });
+      return;
+    }
+    if ([...title].length > 40) {
+      json(res, 400, { error: "标题最多 40 个字" });
+      return;
+    }
+    let convId: string;
+    try {
+      convId = decodeURIComponent(rest[1]!);
+    } catch {
+      json(res, 404, { error: "会话不存在" });
+      return;
+    }
+    if (findSessionOwner(deps.ws, relation, convId) === undefined) {
+      json(res, 404, { error: "会话不存在" });
+      return;
+    }
+    if (deps.titles === undefined) {
+      json(res, 503, { error: "会话标题未启用" });
+      return;
+    }
+    const meta = renameSession(deps.titles, roomKey, convId, title, "manual");
+    json(res, 200, { convId, title: meta.title, titleSource: meta.titleSource });
     return;
   }
 
