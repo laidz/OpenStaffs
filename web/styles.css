@@ -1,8 +1,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2329; }
 #app { height: 100vh; }
-.layout { display: flex; height: 100vh; }
-.sidebar { width: 260px; border-right: 1px solid #e3e5e8; background: #fff; padding: 12px; overflow-y: auto; }
+/* 左侧栏固定宽度、不参与收缩：聊天区再宽也不能把它压窄 */
+.layout { display: flex; height: 100vh; min-width: 0; }
+.sidebar { flex: 0 0 260px; width: 260px; min-width: 0; border-right: 1px solid #e3e5e8; background: #fff; padding: 12px; overflow-y: auto; overflow-x: hidden; }
 .sidebar h3 { font-size: 12px; color: #8a9099; margin: 14px 4px 6px; }
 .item { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; background: transparent; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; text-align: left; }
 .item:hover { background: #f0f2f5; }
@@ -15,9 +16,10 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .dept-head:hover { background: #f0f2f5; border-radius: 8px; }
 .dept-body { padding-left: 12px; }
 .caret { width: 10px; font-size: 10px; color: #a0a6ad; }
-.chat { flex: 1; display: flex; flex-direction: column; }
+/* min-width:0 是关键：flex 子项默认 min-width:auto，会被消息内容的 min-content 宽度顶宽 → 反挤压左侧栏 */
+.chat { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
 .chat-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #e3e5e8; background: #fff; }
-.chat-head .title { font-weight: 600; }
+.chat-head .title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-head button { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
 /* 会话信息条：模型全值 / 思考强度 / 已用上下文与窗口（会话快照，不是配置现值） */
 .session-info { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 6px 16px; border-bottom: 1px solid #eef0f3; background: #fafbfc; font-size: 12px; color: #5a6270; }
@@ -25,8 +27,8 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .session-member { font-weight: 600; color: #1f2329; }
 .session-model { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .session-thinking, .session-context { color: #8a9099; }
-.msg-list { flex: 1; overflow-y: auto; padding: 16px; }
-.msg { margin-bottom: 14px; max-width: 72%; }
+.msg-list { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; }
+.msg { margin-bottom: 14px; max-width: 72%; min-width: 0; }
 .msg.boss { margin-left: auto; text-align: right; }
 .msg-name { font-size: 12px; color: #8a9099; margin-bottom: 3px; }
 .msg-text { display: inline-block; max-width: 100%; padding: 9px 12px; border-radius: 10px; background: #fff; border: 1px solid #e3e5e8; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; text-align: left; }
@@ -40,18 +42,20 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 @keyframes live-spin { to { transform: rotate(360deg); } }
 .msg.error .msg-text { background: #fff1f0; border-color: #ffa39e; color: #a8071a; }
 /* 气泡悬浮工具栏：复制 / pin（唯一 pin 入口）；所有消息一视同仁
-   .msg 收窄为 fit-content（贴合气泡），工具条绝对定位在气泡右下角 → 脱离文档流、不挤压气泡 */
+   .msg 收窄为 fit-content（贴合气泡）；工具条绝对定位在气泡顶部（与名字同一行）、agent 靠右上、用户（老板）靠左上——名字本来就在对侧，两边不会撞。 */
 .msg { position: relative; width: fit-content; }
-.msg-tools { display: none; position: absolute; right: 0; top: calc(100% - 8px); gap: 4px; }
+.msg-tools { display: none; position: absolute; top: 0; gap: 4px; }
+.msg.employee .msg-tools { right: 0; }
+.msg.boss .msg-tools { left: 0; }
 .msg:hover .msg-tools { display: inline-flex; }
 .msg-tool { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 1px 8px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
 .msg-tool:hover { background: #f0f2f5; }
 /* pinned 气泡：淡红底（在老板蓝底规则之后 → 同权重后者胜）+ 图钉按钮高亮 */
 .msg.pinned .msg-text { background: #fff1f0; border-color: #ffccc7; }
 .msg.pinned .msg-tool[data-action="pin"] { background: #fff1f0; border-color: #ffa39e; }
-/* 排队中的老板消息：灰 / 半透明 + 排队标识（等待成员 + 撤回）；撤回只撤还没投递的，拦不住已开始的 */
+/* 排队中的老板消息：一律灰底（含已落盘但投递还在排的真气泡，它们带 has-queue）+ 排队标识（等待成员 + 撤回）；撤回只撤还没投递的，拦不住已开始的 */
 .msg.queued { opacity: 0.65; }
-.msg.queued .msg-text { background: #f2f3f5; border-color: #dfe2e7; color: #5a6270; }
+.msg.queued .msg-text, .msg.has-queue .msg-text { background: #f2f3f5; border-color: #dfe2e7; color: #5a6270; }
 .msg-queue { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8a9099; margin-top: 3px; }
 .msg.boss .msg-queue { justify-content: flex-end; }
 .msg-unqueue { border: 1px solid #d0d4d9; background: #fff; border-radius: 6px; padding: 0 6px; font-size: 12px; color: #5a6270; cursor: pointer; line-height: 1.6; }
