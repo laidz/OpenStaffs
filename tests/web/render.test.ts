@@ -342,7 +342,7 @@ describe("侧栏部门树", () => {
       org: { path: "", name: "办公室", people: [], departments: [{ path: "eng", name: "研发", people: [], departments: [] }] },
     });
     expect(empty).toContain('data-toggle-dept="eng"');
-    expect(empty).not.toContain("还没有员工");
+    expect(empty).not.toContain("暂无员工");
   });
 
   it("sidebarHtml：无 org 数据时回落平铺（首帧不白屏）；都没有才出提示", () => {
@@ -351,8 +351,10 @@ describe("侧栏部门树", () => {
     expect(flat).toContain('data-config-scope="agent"');
     expect(flat).toContain('data-config-id="alice"');
     const empty = sidebarHtml({ ...initialState, configured: true });
-    expect(empty).toContain("还没有员工");
-    expect(empty).toContain("&lt;名字&gt;.agent.config.json");
+    // 侧栏空态只说「暂无」，不再塞教学文案（上手引导在 README 与首次配置页）
+    expect(empty).toContain("<p class=\"hint\">暂无员工</p>");
+    expect(empty).toContain("<p class=\"hint\">暂无项目</p>");
+    expect(empty).not.toContain("agent.config.json（见 README.md）");
   });
 });
 

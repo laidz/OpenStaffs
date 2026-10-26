@@ -49,8 +49,8 @@ export function sidebarHtml(state: State): string {
     })
     .join("");
   return `<aside class="sidebar" id="sidebar">
-    <h3>员工</h3>${employeeItems || `<p class="hint">还没有员工：在 agents/ 下创建 &lt;名字&gt;.agent.config.json（见 README.md）。</p>`}
-    <h3>项目</h3>${projectItems || `<p class="hint">还没有项目：在 projects/ 下创建 &lt;项目&gt;.project.config.json（见 README.md）。</p>`}
+    <h3>员工</h3>${employeeItems || `<p class="hint">暂无员工</p>`}
+    <h3>项目</h3>${projectItems || `<p class="hint">暂无项目</p>`}
   </aside>`;
 }
 
