@@ -26,6 +26,8 @@ export type ContextItemView = {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  /** 这条消息产生时间（ISO）；没数据支撑就不显 */
+  at?: string;
 };
 export type EmployeeSession = {
   convId: string;

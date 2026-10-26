@@ -56,6 +56,9 @@ function toContextItem(message: Message, kind?: string): ContextItem | undefined
   const role = rawRole === "toolResult" ? "tool" : rawRole;
   if (role !== "user" && role !== "assistant" && role !== "tool") return undefined;
   const text = textOf(message);
+  // 每条消息自带毫秒时间戳：转成 ISO 带下去，前端按浏览器本地时区展示
+  const timestamp = (message as { timestamp?: unknown }).timestamp;
+  const at = typeof timestamp === "number" && Number.isFinite(timestamp) ? { at: new Date(timestamp).toISOString() } : {};
   if (role === "assistant") {
     const blocks = Array.isArray((message as { content?: unknown }).content)
       ? ((message as { content: unknown[] }).content)
@@ -73,6 +76,7 @@ function toContextItem(message: Message, kind?: string): ContextItem | undefined
     return {
       role: "assistant",
       text,
+      ...at,
       ...(kind === undefined ? {} : { kind }),
       ...(thinking === "" ? {} : { thinking }),
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
@@ -85,13 +89,14 @@ function toContextItem(message: Message, kind?: string): ContextItem | undefined
     return {
       role: "tool",
       text,
+      ...at,
       ...(kind === undefined ? {} : { kind }),
       ...(typeof toolCallId === "string" ? { toolCallId } : {}),
       ...(typeof toolName === "string" ? { toolName } : {}),
       ...(isError === true ? { isError: true } : {}),
     };
   }
-  return { role: "user", text, ...(kind === undefined ? {} : { kind }) };
+  return { role: "user", text, ...at, ...(kind === undefined ? {} : { kind }) };
 }
 
 /** entry → 单条聊天消息（只认 user/assistant；工具结果等跳过）。 */

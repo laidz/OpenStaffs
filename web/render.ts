@@ -292,8 +292,20 @@ function relationLabel(session: EmployeeSession): string {
   return session.kind === "dm" ? "私聊" : `群 · ${session.projectAlias ?? session.projectId ?? ""}`;
 }
 
-function sessionTime(started: string): string {
-  return started.slice(0, 16).replace("T", " ");
+/** 本地时间 `YYYY-MM-DD HH:mm`（浏览器本地时区）；解析不了则退回原串截断，绝不显半截 ISO。 */
+export function localDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso.slice(0, 16).replace("T", " ");
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** 本地时间 `HH:mm:ss`（条目行上的时间）；解析不了返回空串（宁可不显）。 */
+export function localClock(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 const ROLE_LABEL: Record<ContextItemView["role"], string> = {
@@ -356,6 +368,9 @@ function contextItemHtml(item: ContextItemView, results: Map<string, ContextItem
   const meta = item.kind === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.kind)}</span>`;
   const toolName = item.toolName === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolName)}</span>`;
   const error = item.isError === true ? '<span class="ctx-error">错误</span>' : "";
+  // 每步的时间（本地时区）；模型消息没带 timestamp 就不显
+  const clock = item.at === undefined ? "" : localClock(item.at);
+  const at = clock === "" ? "" : `<span class="ctx-time" title="${escapeHtml(localDateTime(item.at!))}">${escapeHtml(clock)}</span>`;
   const thinking =
     item.thinking === undefined || item.thinking === ""
       ? ""
@@ -369,7 +384,7 @@ function contextItemHtml(item: ContextItemView, results: Map<string, ContextItem
   // 工具结果的内容在折叠块里，不算「空」
   const empty = text === "" && thinking === "" && calls === "" && item.role !== "tool" ? '<div class="ctx-meta">（空）</div>' : "";
   return `<div class="ctx-item ctx-${item.role}">
-    <div class="ctx-head"><strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}</div>
+    <div class="ctx-head"><strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}${at}</div>
     ${thinking}${text}${calls}${empty}
   </div>`;
 }
@@ -379,14 +394,17 @@ function contextItemHtml(item: ContextItemView, results: Map<string, ContextItem
  * 条目区**新的在上**（逆序）：打工的会话动辄几十条，最关心的永远是最新那条，不用每次滑到底。
  */
 function contextBodyHtml(context: SessionContextView): string {
-  const usage = context.contextWindow === undefined
-    ? `${context.contextUsed} tokens`
-    : `${context.contextUsed} / ${context.contextWindow} tokens`;
+  // 上下文用量与聊天顶部信息条同口径：带单位、带百分比（如 166K / 1M，17%）
+  const used = formatTokenCount(context.contextUsed);
+  const usage =
+    context.contextWindow === undefined
+      ? `上下文 ${used}`
+      : `上下文 ${used} / ${formatTokenCount(context.contextWindow)}，${Math.round((context.contextUsed / context.contextWindow) * 100)}%`;
   const system = context.instructions.trim() === ""
     ? '<p class="hint">（没有系统提示词）</p>'
     : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><div class="ctx-system-body"><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></div></details>`;
   return `<div class="ctx-header">
-      <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(sessionTime(context.started))}</span></div>
+      <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(localDateTime(context.started))}</span></div>
       <div class="ctx-meta">${escapeHtml(context.model)} · 思考 ${escapeHtml(context.thinkingLevel ?? "—")} · ${escapeHtml(usage)}${context.running ? ' · <span class="ctx-running">运行中</span>' : ""}</div>
       ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
     </div>

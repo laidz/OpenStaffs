@@ -359,28 +359,49 @@ describe("侧栏部门树", () => {
 });
 
 describe("会话详情 / 定义文件面板", () => {
+  // 用本地时间造 ISO：断言才不受跑测机器的时区影响
+  const startedAt = new Date(2026, 9, 25, 10, 0, 0);
   const dm: EmployeeSession = {
     convId: "conv_dm",
     kind: "dm",
     relationKey: "dm:alice",
-    started: "2026-10-25T10:00:00+08:00",
+    started: startedAt.toISOString(),
     running: true,
     model: "faux/faux-model",
     thinkingLevel: "high",
-    contextUsed: 10,
-    contextWindow: 100,
+    contextUsed: 166_000,
+    contextWindow: 1_000_000,
   };
   const context: SessionContextView = {
     ...dm,
     instructions: "你是 alice。<系统>",
     cwd: "/office/work/alice",
     items: [
-      { role: "user", text: "写个文件" },
-      { role: "assistant", text: "", toolCalls: [{ id: "call_1", name: "write", arguments: { path: "a.md", content: "<x>" } }] },
-      { role: "tool", text: "ok", toolCallId: "call_1", toolName: "write" },
-      { role: "assistant", text: "完成" },
+      { role: "user", text: "写个文件", at: new Date(2026, 9, 25, 10, 0, 5).toISOString() },
+      { role: "assistant", text: "", at: new Date(2026, 9, 25, 10, 0, 9).toISOString(), toolCalls: [{ id: "call_1", name: "write", arguments: { path: "a.md", content: "<x>" } }] },
+      { role: "tool", text: "ok", toolCallId: "call_1", toolName: "write", at: new Date(2026, 9, 25, 10, 0, 12).toISOString() },
+      { role: "assistant", text: "完成", at: new Date(2026, 9, 25, 10, 0, 20).toISOString() },
     ],
   };
+  it("时间按本地时区、上下文用量与聊天信息条同口径、每步带本地时间", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    // 会话开始时间：本地 `YYYY-MM-DD HH:mm`（不是截断的 ISO）
+    expect(html).toContain("2026-10-25 10:00");
+    expect(html).not.toContain(startedAt.toISOString().slice(0, 10) + "T");
+    // 上下文：带单位、带百分比（与聊天顶部信息条一致）
+    expect(html).toContain("上下文 166K / 1M，17%");
+    expect(html).not.toContain("166000 / 1000000 tokens");
+    // 每步时间（本地 HH:mm:ss，推到行尾，title 给完整日期）
+    expect(html).toContain("10:00:05");
+    expect(html).toContain("10:00:09");
+    expect(html).toContain("10:00:20");
+    expect(html).toContain('class="ctx-time"');
+
+    // 没时间戳的条目：不显时间（不硬造）
+    const notime = sessionPanelHtml({ ...initialState, configured: true }, { ...context, items: [{ role: "user", text: "没有时间戳" }] });
+    expect(notime).not.toContain('class="ctx-time"');
+  });
+
   it("会话详情：只有当前这一条会话（无 Tab），系统提示词 / 工具调用全转义", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
     expect(html).toContain("会话详情（只读）");

@@ -132,6 +132,8 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .agent-context { flex: 1; overflow: auto; padding: 12px 16px 24px; }
 .ctx-header { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; margin-bottom: 10px; }
 .ctx-meta { color: #8a9099; font-size: 12px; }
+/* 每步的时间（本地时区）：推到行尾，不抢角色 / 工具名 */
+.ctx-time { margin-left: auto; color: #a0a6ad; font-size: 12px; font-variant-numeric: tabular-nums; }
 .ctx-running { color: #d48806; }
 .ctx-error { color: #f5222d; font-size: 12px; }
 .ctx-system { margin-bottom: 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; padding: 8px 10px; }

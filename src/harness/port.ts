@@ -18,6 +18,8 @@ export type ContextItem = {
   role: "system" | "user" | "assistant" | "tool";
   /** Pi entry kind（如 pi.user / pi.user；从模型上下文还原时可能缺省）。 */
   kind?: string;
+  /** 这条消息产生的时间（ISO，带时区）；模型消息没带 timestamp 时缺省——UI 就不显时间。 */
+  at?: string;
   text: string;
   thinking?: string;
   toolCalls?: { id?: string; name: string; arguments: unknown }[];

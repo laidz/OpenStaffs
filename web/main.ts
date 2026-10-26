@@ -1,6 +1,6 @@
 import { api, type ConfigScope, type ConfigView, type SessionContextView, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { configPanelHtml, escapeHtml, freshSessionHint, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
+import { configPanelHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { localDraftStore } from "./drafts.ts";
 import { connectEvents } from "./sse.ts";
@@ -605,7 +605,7 @@ async function openHistory(): Promise<void> {
     ${rows
       .map(
         (row) =>
-          `<div class="session"><span>${escapeHtml(memberName(row.memberId))} · ${escapeHtml(row.started.slice(0, 19).replace("T", " "))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
+          `<div class="session"><span>${escapeHtml(memberName(row.memberId))} · ${escapeHtml(localDateTime(row.started))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
       )
       .join("") || `<p class="hint">还没有会话。</p>`}
     <p><button id="btn-history-back">返回聊天</button></p>

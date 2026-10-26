@@ -608,6 +608,11 @@ describe("会话完整上下文（context）", () => {
       expect(ctx.items.some((item) => item.role === "user" && item.text.includes("写个文件"))).toBe(true);
       const withTools = ctx.items.find((item) => item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0);
       expect(withTools?.toolCalls?.[0]?.name).toBe("write");
+      // 工具调用带 id（会话详情里用来把调用与结果合成一条）
+      expect(withTools?.toolCalls?.[0]?.id).toBeTruthy();
+      // 每条消息带时间戳（ISO）：会话详情逐步显时间
+      expect(Number.isNaN(Date.parse(withTools?.at ?? ""))).toBe(false);
+      expect(ctx.items.every((item) => item.at !== undefined)).toBe(true);
       expect(ctx.items.some((item) => item.role === "tool" && item.toolName === "write")).toBe(true);
       expect(ctx.items.some((item) => item.role === "assistant" && item.text.includes("完成"))).toBe(true);
     } finally {
