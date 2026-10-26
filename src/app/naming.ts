@@ -2,7 +2,7 @@
  * 会话自动命名 agent：**只加载一个 prompt**（`src/prompts/naming.md`），
  * 不装配环境段 / 会话前缀 / 记忆 / 技能——直接调模型，不新开 Pi 会话（无残留、易测）。
  *
- * 模型由空间配置 `namingModel` 指定，且**必须是非思考模型**；未指定 / 校验不过 = 自动命名不可用。
+ * 模型由空间配置 `namingModel` 指定；未指定 / 引用非法 / 模型目录查不到 = 自动命名不可用。
  * 失败一律不重试：调用方保留「时间标题」兜底。
  */
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -49,23 +49,12 @@ export function cleanTitle(raw: string): string {
   return text;
 }
 
-/** 模型支持的思考档（与 pi-ai 规则一致：非思考模型只有 off）；用于判定「必须是非思考模型」。 */
-function thinkingLevelsOf(model: unknown): string[] {
-  const candidate = model as { reasoning?: unknown; thinkingLevelMap?: unknown };
-  if (candidate.reasoning !== true) return ["off"];
-  const map = candidate.thinkingLevelMap;
-  if (typeof map !== "object" || map === null) return ["off", "low", "medium", "high"];
-  return Object.keys(map as Record<string, unknown>);
-}
-
-function isNonThinking(model: unknown): boolean {
-  const levels = thinkingLevelsOf(model);
-  return levels.length === 1 && levels[0] === "off";
-}
-
 /**
- * 造一个命名器；返回 undefined = 自动命名不可用（未配置 / 引用非法 / 模型目录查不到 / 是思考模型）。
+ * 造一个命名器；返回 undefined = 自动命名不可用（未配置 / 引用非法 / 模型目录查不到）。
  * 原因会打一条 warn，方便老板在启动日志里一眼看到。
+ *
+ * 说明：**不限制模型是否支持思考档**（曾经要求「必须是非思考模型」，按老板口径取消）。
+ * 调用走 `completeSimple` 且不传思考档 → 用模型自己的默认行为。
  */
 export function createNamer(options: { models: Models; namingModel?: string }): Namer | undefined {
   const ref = options.namingModel === undefined ? undefined : parseModelRef(options.namingModel);
@@ -81,12 +70,6 @@ export function createNamer(options: { models: Models; namingModel?: string }): 
   if (model === undefined) {
     console.warn(
       `[openstaffs] 自动命名不可用：模型目录查不到 ${options.namingModel}（供应商是否已配密钥？）`,
-    );
-    return undefined;
-  }
-  if (!isNonThinking(model)) {
-    console.warn(
-      `[openstaffs] 自动命名不可用：namingModel 必须是非思考模型（${options.namingModel} 支持思考档 ${thinkingLevelsOf(model).join("/")}）`,
     );
     return undefined;
   }

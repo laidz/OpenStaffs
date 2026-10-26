@@ -14,7 +14,7 @@ export type OrgPerson = { id: string; alias?: string; model: string };
 /** 部门节点：本部门直属人 + 子部门（递归）。根部门 path === ""。 */
 export type OrgDept = { path: string; name: string; people: OrgPerson[]; departments: OrgDept[] };
 export type ProjectSummary = { id: string; alias: string; members: { id: string; alias?: string }[] };
-export type RoomMessages = { roomKey: string; messages: RoomMessage[]; pinned: string[]; queued: QueuedItemView[] };
+export type RoomMessages = { roomKey: string; messages: RoomMessage[]; hidden: number; pinned: string[]; queued: QueuedItemView[] };
 export type SendResult = { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
 export type ChainRow = { id: string; started: string; ended: string | null; previous: string | null; title?: string; titleSource?: string };
 export type ContextItemView = {

@@ -214,6 +214,9 @@ describe("落库异常不连坐（Task 6 收口）", () => {
       listByRoom() {
         return [];
       },
+      currentWindow() {
+        return [];
+      },
       sessionOf() {
         return undefined;
       },

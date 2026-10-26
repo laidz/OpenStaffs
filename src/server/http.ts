@@ -298,19 +298,23 @@ async function handleRooms(
 
   if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
     // 房间视图改读自有消息库（P1）：一次投递 = 一行，按 seq 排序；不再合并各成员 transcript。
+    // 房间视图只看**当前一轮**（最近一次「新开会话」之后，见 store.currentWindow）：上一轮内容从聊天区收起，
+    // 仍在库里（会话详情 / 历史可回看），hidden = 被收起的条数（前端在消息区顶部给一条说明）。
     // 仍在排队的库行回填 roomMessageId（与 SSE 广播同口径）：刷新 / 换标签页 / 首次进房时，
     // 前端「排队中」占位据此贴到真气泡上，不出「真气泡 + 灰占位」两条；没有排队的库行不带。
     const queuedByStoreSeq = outbox.roomMessageIdByStoreSeq(roomKey);
-    const messages = deps.store.listByRoom(roomKey).map((m) => {
+    const visible = deps.store.currentWindow(roomKey);
+    const messages = visible.map((m) => {
       const view = toRoomMessage(m, bossName, deps.ws);
       const roomMessageId = queuedByStoreSeq.get(m.seq);
       return roomMessageId === undefined ? view : { ...view, roomMessageId };
     });
+    const hidden = deps.store.listByRoom(roomKey).length - visible.length;
     // pinned 只回当前视图里可见的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
     const pinnedKeys = new Set(readPins(deps.ws).pins[roomKey] ?? []);
     const pinned = messages.filter((m) => pinnedKeys.has(messageKey(m))).map(messageKey);
     // queued：还没投递给员工的老板消息（排队中）；刷新 / 重连 / 换标签页都能拿到真值。
-    json(res, 200, { roomKey, messages, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
+    json(res, 200, { roomKey, messages, hidden, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
     return;
   }
 
@@ -420,8 +424,8 @@ async function handleRooms(
       json(res, 400, { error: "convId / entryId / pinned 必填" });
       return;
     }
-    const messages = deps.store.listByRoom(roomKey).map((m) => toRoomMessage(m, bossName, deps.ws));
-    // 只允许 pin 房间视图里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
+    // 只允许 pin 房间视图（当前一轮）里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
+    const messages = deps.store.currentWindow(roomKey).map((m) => toRoomMessage(m, bossName, deps.ws));
     if (!messages.some((m) => m.convId === convId && m.entryId === entryId)) {
       json(res, 404, { error: "消息不存在" });
       return;
@@ -643,13 +647,14 @@ export function createHttpServer(deps: ServerDeps): http.Server {
           if (segments[1] === "pins" && method === "GET" && harness !== undefined) {
             const bossName = readBossName(deps.ws);
             const rooms: { key: string; messages: RoomMessage[] }[] = [];
+            // 红点 = 房间**当前视图**（当前一轮）里的 pin 数：与 GET /messages 口径一致，旧轮的 pin 不计入。
             for (const person of loadOrg(deps.ws).people) {
               const key = `dm:${person.id}`;
-              rooms.push({ key, messages: deps.store.listByRoom(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
+              rooms.push({ key, messages: deps.store.currentWindow(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
             }
             for (const project of listProjects(deps.ws)) {
               const key = `group:${project.id}`;
-              rooms.push({ key, messages: deps.store.listByRoom(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
+              rooms.push({ key, messages: deps.store.currentWindow(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
             }
             json(res, 200, pinCounts(rooms, readPins(deps.ws)));
             return;

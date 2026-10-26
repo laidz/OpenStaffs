@@ -97,11 +97,11 @@ function speakerName(ws: Workspace, speaker: RoomSpeaker): string {
   return speaker.alias ?? displayName(ws, speaker.id);
 }
 
-/** 读房间聊天记录。 */
+/** 读房间聊天记录（只含当前一轮）。 */
 const roomHistory: ToolDef = {
   name: "room_history",
   description:
-    "读某个房间的聊天记录（含发言人）。room 缺省 = 当前房间；也可传房间键 dm:<员工id> 或 group:<项目id>。limit 取最近若干条（缺省 50）。",
+    "读某个房间的聊天记录（含发言人）。只含**当前一轮**（最近一次老板点「新开会话」之后的消息；更早的在房间历史里，不在此工具范围）。room 缺省 = 当前房间；也可传房间键 dm:<员工id> 或 group:<项目id>。limit 取最近若干条（缺省 50）。",
   parameters: Type.Object({
     room: Type.Optional(Type.String({ description: "房间键：dm:<员工id> 或 group:<项目id>；缺省当前房间" })),
     limit: Type.Optional(Type.Number({ description: "最近 N 条，缺省 50" })),
@@ -121,7 +121,7 @@ const roomHistory: ToolDef = {
     fs.mkdirSync(stateDir(ctx.ws), { recursive: true });
     const store = openMessageStore(officeDbFile(ctx.ws));
     try {
-      const messages = store.listByRoom(roomKeyOf(relation)).map((m) => toRoomMessage(m, readBossName(ctx.ws), ctx.ws));
+      const messages = store.currentWindow(roomKeyOf(relation)).map((m) => toRoomMessage(m, readBossName(ctx.ws), ctx.ws));
       const recent = messages.slice(-limit);
       if (recent.length === 0) return "（暂无消息）";
       return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");

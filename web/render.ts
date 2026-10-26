@@ -115,6 +115,7 @@ export function messagesHtml(
   bossName = "老板",
   pinned: Iterable<string> = [],
   queued: QueuedItemView[] = [],
+  hidden = 0,
 ): string {
   const pinnedSet = new Set(pinned);
   const byMessage = new Map<string, QueuedItemView[]>();
@@ -138,6 +139,22 @@ export function messagesHtml(
 }
 
 /**
+ * 消息区顶部说明：新开会话后上一轮内容不再显示（隐藏条数来自服务端，0 = 没收起过）。
+ * 目的：让人一眼看出「是被收起了」而不是「记录丢了」；旧内容在「历史」里仍可回看。
+ */
+export function hiddenMessagesHtml(hidden: number): string {
+  if (hidden <= 0) return "";
+  return `<div class="log-divider" id="log-divider">上一轮会话内容已收起（${hidden} 条），点「历史」可回看</div>`;
+}
+
+/** 消息区整体（说明条 + 气泡 + 排队中）：「渲染整段」与「局部重画」共用，避免两处口径不一致。 */
+export function messageListHtml(state: State): string {
+  const body = messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
+  const divider = hiddenMessagesHtml(state.hiddenMessages);
+  return divider === "" ? body : divider + body;
+}
+
+/**
  * 流式 / 进行中气泡：昵称 + 正文（Markdown）+ 底部状态行（转圈 + 当前在做的事）。
  * - 昵称取成员的 alias（org 里没有该人时回落 id）——不再直接把 agent_id 顶在气泡上；
  * - 状态行在 run 期间**恒存在**（文案由 state.activity 保证非空），
@@ -158,13 +175,14 @@ export function liveHtml(state: State): string {
 
 /**
  * 「新开会话」已就绪时的提示文案（空串 = 未就绪）。
- * 语义：按钮只置标志，下一条消息**投递时**才真正建会话——空点不建、撤回/中断也不建。
+ * 语义：按钮只置标志，下一条消息**投递时**才真正建会话——空点不建、撤回/中断也不建；
+ * 建会话那一刻上一轮内容从聊天区收起（仍可到「历史」回看）。
  */
 export function freshSessionHint(state: State): string {
   if (!state.freshSession || state.roomKey === undefined) return "";
   return state.roomKey.startsWith("group:")
-    ? "下一条消息将开启新会话（@ 到的成员各开一条）；再点「新开会话」可取消"
-    : "下一条消息将开启新会话（当前会话将结束，可在历史中回看）；再点「新开会话」可取消";
+    ? "下一条消息将开启新会话（@ 到的成员各开一条；上一轮内容从聊天区收起，可在「历史」回看）；再点「新开会话」可取消"
+    : "下一条消息将开启新会话（当前会话将结束，上一轮内容从聊天区收起，可在「历史」回看）；再点「新开会话」可取消";
 }
 
 /** 上下文 token 数的紧凑展示：999 / 12.8K / 1.2M。 */
@@ -240,7 +258,7 @@ export function chatHtml(state: State): string {
     </header>
     ${sessionInfoHtml(state)}
     <div class="msg-list" id="msg-list">
-      <div id="messages-part">${messagesHtml(state.messages, state.bossName, state.pinned, state.queued)}</div>
+      <div id="messages-part">${messageListHtml(state)}</div>
       <div id="live-area">${liveHtml(state)}</div>
     </div>
     <div class="composer">

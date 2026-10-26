@@ -390,7 +390,7 @@ describe("房间 API", () => {
     }
   }, 30_000);
 
-  it("新开会话（发送时 newSession）：投递那一刻才建会话、视线随之清空；sessions / 历史 / pins 形状", async () => {
+  it("新开会话（发送时 newSession）：投递那一刻才建会话、聊天区只剩当前一轮；sessions / 历史 / pins 形状", async () => {
     const { base, close } = await startWithFaux(["alice"], ["alice"]);
     try {
       // 先发一条消息建立链
@@ -426,10 +426,16 @@ describe("房间 API", () => {
       });
       expect(fresh.status).toBe(202);
 
-      // 房间视图改读自有库 → 它是「房间历史」：新开会话不再清空它（会话视线改由 sessions/<convId>/messages 承载）。
-      const roomView = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[] };
-      expect(roomView.messages.map((m) => m.text)).toContain("第一轮"); // 历史保留（自有库）
-      expect(roomView.messages.map((m) => m.text)).toContain("重新开始");
+      // 房间视图 = 聊天窗口：新开会话后**上一轮内容从聊天区收起**（库里仍在，历史 / 会话详情可回看）。
+      const roomView = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[]; hidden: number };
+      expect(roomView.messages.map((m) => m.text)).not.toContain("第一轮"); // 上一轮不再显示
+      expect(roomView.messages[0]).toMatchObject({ text: "重新开始" }); // 新一轮从这条开始（后续回复也在窗口里）
+      expect(roomView.hidden).toBeGreaterThanOrEqual(2); // 收起条数（上一轮：提问 + 回复）
+
+      // 刷新 / 重进房间同口径（起点在库里，不是前端临时隐藏）
+      const again = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[] };
+      expect(again.messages.map((m) => m.text)).not.toContain("第一轮");
+      expect(again.messages[0]).toMatchObject({ text: "重新开始" });
 
       // 会话视线：链增长到 2 条，新会话里没有旧内容、只有新一轮
       const chainsAfter = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
@@ -452,6 +458,41 @@ describe("房间 API", () => {
       await close();
     }
   });
+
+  it("群聊：新开会话后聊天区只剩新一轮（@ 到的成员各开一条，旧内容收起但仍在历史里）", async () => {
+    const { base, close } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
+    try {
+      const post = (text: string, extra: Record<string, unknown> = {}): Promise<Response> =>
+        fetch(`${base}/api/rooms/group:yt/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, ...extra }),
+        });
+      const view = async (): Promise<{ messages: { text: string }[]; hidden: number }> =>
+        (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { text: string }[]; hidden: number };
+
+      await post("@alice 第一轮");
+      await waitFor(async () => {
+        const body = await view();
+        return body.messages.length >= 2 ? body : undefined;
+      });
+
+      expect((await post("@alice @bob 第二轮", { newSession: true })).status).toBe(202);
+      const fresh = await view();
+      expect(fresh.messages[0]).toMatchObject({ text: "@alice @bob 第二轮" }); // 群聊按 toIds 重建头部 @
+      expect(fresh.messages.some((m) => m.text.includes("第一轮"))).toBe(false);
+      expect(fresh.hidden).toBeGreaterThanOrEqual(2);
+
+      // alice：两轮 → 两条链行；bob：第二轮才第一次被 @ → 一条（新开会话仍是建了一条）
+      const chains = (await (await fetch(`${base}/api/rooms/group:yt/sessions`)).json()) as {
+        chains: { memberId: string; rows: unknown[] }[];
+      };
+      expect(chains.chains.find((chain) => chain.memberId === "alice")!.rows).toHaveLength(2);
+      expect(chains.chains.find((chain) => chain.memberId === "bob")!.rows).toHaveLength(1);
+    } finally {
+      await close();
+    }
+  }, 30_000);
 
   it("会话信息：模型全值 / 思考强度 / 上下文用量与窗口；未建会话为空", async () => {
     const { base, close } = await startWithFaux(["alice"], []);

@@ -83,6 +83,7 @@ export async function sendToRoom(
   }
 
   // 落库：一次投递 = 一行（正文已剥离头部 @；toIds 是本条消息头部 @ 块点到的参与者，含 '__boss'，可据此重建头部 @）。
+  // newSession=true → 这一行打上**本轮起点**标：房间视图 / room_history 只看起点之后的行（见 store.currentWindow）。
   // 返回值带回刚落的行（recorded）：调用方（http / permission-flow）据此广播库行（R-P1-12「谁写谁广播」；
   // 广播不放这里——sendToRoom 没有 hub）。
   let recorded: StoredMessage | undefined;
@@ -98,6 +99,7 @@ export async function sendToRoom(
         fromId: BOSS_PARTICIPANT,
         toIds,
         text: stripped,
+        ...(options.newSession === true ? { sessionStart: true } : {}),
       });
     }
   }

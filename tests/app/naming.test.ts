@@ -88,13 +88,10 @@ describe("createNamer", () => {
     }
   });
 
-  test("是思考模型 → 不可用（只允许非思考模型）", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(createNamer({ models: fakeModels({ model: thinkingModel }), namingModel: "faux/m" })).toBeUndefined();
-    } finally {
-      warn.mockRestore();
-    }
+  test("思考模型也可用（已取消「必须非思考模型」限制）", async () => {
+    const namer = createNamer({ models: fakeModels({ model: thinkingModel }), namingModel: "faux/m" });
+    expect(namer).toBeTypeOf("function");
+    await expect(namer!("帮我看看登录")).resolves.toBe("标题");
   });
 
   test("抛错 / 非 stop 结束 / 空标题 → undefined（失败不重试）", async () => {

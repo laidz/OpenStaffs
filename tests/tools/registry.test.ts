@@ -147,6 +147,26 @@ describe("room_history", () => {
     }
   });
 
+  it("只读当前一轮：最近一次「新开会话」起点之前的行不出现在工具输出里", async () => {
+    seedEmployee("alice");
+    const ws = createWorkspace(root);
+    seedStore(ws, [
+      { projectId: null, fromId: "__boss", toIds: ["alice"], text: "上一轮" },
+    ]);
+    // 模拟「新开会话」后的第一条：带 sessionStart 起点标记
+    fs.mkdirSync(stateDir(ws), { recursive: true });
+    const store = openMessageStore(officeDbFile(ws));
+    try {
+      store.append({ sendTime: new Date().toISOString(), projectId: null, fromId: "__boss", toIds: ["alice"], text: "新一轮", sessionStart: true });
+      store.append({ sendTime: new Date().toISOString(), projectId: null, fromId: "alice", toIds: ["__boss"], text: "新一轮的回复" });
+    } finally {
+      store.close();
+    }
+    const out = await tool("room_history").run({}, ctxFor(ws, "alice", dm("alice")));
+    expect(out).toBe("老板：新一轮\nalice：新一轮的回复");
+    expect(out).not.toContain("上一轮");
+  });
+
   it("`openstaffs/.data` 尚未创建（stateDir 不存在）→ 返回「（暂无消息）」，不抛「unable to open database file」", async () => {
     const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-tools-nostate-"));
     try {

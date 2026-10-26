@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, configPanelHtml, freshSessionHint, liveHtml, messageHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { chatHtml, configPanelHtml, freshSessionHint, hiddenMessagesHtml, liveHtml, messageHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "../../web/render.ts";
 import { initialState } from "../../web/state.ts";
 import type { EmployeeSession, SessionContextView } from "../../web/api.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
@@ -304,7 +304,20 @@ describe("排队中的消息（待发队列）与「新开会话」提示", () =
     const dm = { ...initialState, roomKey: "dm:alice" };
     expect(freshSessionHint(dm)).toBe("");
     expect(freshSessionHint({ ...dm, freshSession: true })).toContain("当前会话将结束");
+    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("上一轮内容从聊天区收起");
     expect(freshSessionHint({ ...initialState, roomKey: "group:yt", freshSession: true })).toContain("@ 到的成员各开一条");
+  });
+
+  it("消息区顶部说明条：新开会话后旧内容被收起时提示条数；0 条不渲染", () => {
+    expect(hiddenMessagesHtml(0)).toBe("");
+    expect(hiddenMessagesHtml(3)).toContain("上一轮会话内容已收起（3 条）");
+
+    const message: RoomMessage = { convId: "store", entryId: "9", roomKey: "dm:alice", speaker: { kind: "boss" }, text: "新一轮", bossDirected: false };
+    const base = { ...initialState, configured: true, roomKey: "dm:alice", messages: [message] };
+    const withoutHidden = messageListHtml(base);
+    expect(withoutHidden).not.toContain("log-divider");
+    const withHidden = messageListHtml({ ...base, hiddenMessages: 4 });
+    expect(withHidden.indexOf("log-divider")).toBeLessThan(withHidden.indexOf("新一轮")); // 说明条在气泡上方
   });
 });
 

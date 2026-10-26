@@ -44,6 +44,8 @@ export type State = {
   permissionRequests: PermissionRequestItem[];
   roomKey?: string;
   messages: RoomMessage[];
+  /** 当前房间被收起（不显示）的上一轮条数：> 0 时消息区顶部给一条说明（新开会话后旧内容不再显示）。 */
+  hiddenMessages: number;
   /** 排队中的老板消息（当前房间）：还没投递给员工，按投递顺序。 */
   queued: QueuedItemView[];
   /** 当前房间各成员活跃会话信息（模型 / 思考强度 / 上下文用量）；私聊最多一条。 */
@@ -69,6 +71,7 @@ export const initialState: State = {
   projects: [],
   permissionRequests: [],
   messages: [],
+  hiddenMessages: 0,
   sessions: [],
   queued: [],
   live: {},
@@ -84,7 +87,7 @@ export type UiEvent =
   | { type: "status"; configured: boolean; bossName: string }
   | { type: "org"; root: OrgDept }
   | { type: "projects"; list: ProjectSummary[] }
-  | { type: "room"; roomKey: string; messages: RoomMessage[]; pinned: string[]; queued?: QueuedItemView[] }
+  | { type: "room"; roomKey: string; messages: RoomMessage[]; hidden?: number; pinned: string[]; queued?: QueuedItemView[] }
   | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
   /** 会话标题变了（自动命名 / 时间缺省 / 手动改名）：只改对得上的那一条。 */
   | { type: "title"; roomKey: string; convId: string; title: string }
@@ -156,6 +159,7 @@ export function reduce(state: State, event: UiEvent): State {
         ...state,
         roomKey: event.roomKey,
         messages: event.messages,
+        hiddenMessages: event.hidden ?? 0,
         pinned: event.pinned,
         queued: event.queued ?? [],
         sessions: [],
@@ -178,7 +182,7 @@ export function reduce(state: State, event: UiEvent): State {
       };
     }
     case "close-room":
-      return { ...state, roomKey: undefined, messages: [], pinned: [], queued: [], sessions: [], freshSession: false, live: {} };
+      return { ...state, roomKey: undefined, messages: [], hiddenMessages: 0, pinned: [], queued: [], sessions: [], freshSession: false, live: {} };
     case "fresh-session":
       return state.freshSession === event.on ? state : { ...state, freshSession: event.on };
     case "pins":

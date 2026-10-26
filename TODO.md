@@ -57,6 +57,7 @@
 - **生效时机只有 3 档**：启动初始化 = 重启；会话装配 = 新开会话（快照是刻意的：保护 provider prompt cache、保证会话可复现）；运行中按需读取 = 即时。逐项归属见 `openstaffs-ops` 技能，别在别处另立一套说法。
 - **权限按工具 → 路径**：`attenuation` 只把 `write` 卡在有效集内；`bash` 是**软边界、不是沙箱**；`*.agent.config.json` 是硬保护（只有 staff0 与授权流程能写）。
 - **房间视图读自有库**（`openstaffs/.data/openstaffs.sqlite`：`messages` 消息流水 + `sessions` 会话元数据），不读各成员 transcript；transcript 只服务「某条会话的原文」端点。
+- **房间视图只看当前一轮**：房间 = 聊天窗口，一轮 = 最近一次「新开会话」之后。起点落库（`messages.session_start = 1`），房间视图 / `room_history` / 红点 都从起点算；上一轮内容仍在库里，「历史」与会话详情可回看（刷新 / 重启不回弹）。
 - **会话标题存在自有库 `sessions` 表**（不进 `conversation_ids.md`——那是会话状态机，标题是展示元数据）；写入只有一条通道：`src/app/sessions.ts` 的 `renameSession`（写库 + 广播 SSE `session.title`），自动命名与手动改名都走它；覆盖规则由 `title_source` 的条件 UPSERT 决定（`auto` 只盖 `fallback`，`manual` 只有 manual 能盖）。
 - **文档即契约**：能力变更同步 `src/skills/openstaffs/SKILL.md`、运维变更同步 `openstaffs-ops/SKILL.md`、上手同步 `README.md`、路线图同步 `docs/产品规划.md`（表见 `AGENTS.md`）。
 

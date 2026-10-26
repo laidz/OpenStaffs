@@ -1,6 +1,6 @@
 import { api, type ConfigScope, type ConfigView, type SessionContextView, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { configPanelHtml, contextItemsHtml, contextMetaHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
+import { configPanelHtml, contextItemsHtml, contextMetaHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { localDraftStore } from "./drafts.ts";
 import { connectEvents } from "./sse.ts";
@@ -163,7 +163,7 @@ function renderMessages(): void {
   const messagesPart = document.getElementById("messages-part");
   if (messagesPart === null) return;
   const stick = nearBottom();
-  messagesPart.innerHTML = messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
+  messagesPart.innerHTML = messageListHtml(state);
   if (stick) scrollToBottom();
 }
 
@@ -603,7 +603,7 @@ async function refreshAll(): Promise<void> {
       api.messages(roomKey),
       api.sessionInfo(roomKey).catch(() => undefined), // 信息条是辅助展示：失败不拖垮整页刷新
     ]);
-    dispatch({ type: "room", roomKey, messages: room.messages, pinned: room.pinned, queued: room.queued }, "all");
+    dispatch({ type: "room", roomKey, messages: room.messages, hidden: room.hidden, pinned: room.pinned, queued: room.queued }, "all");
     if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
   }
 }
@@ -615,7 +615,7 @@ async function enterRoom(roomKey: string): Promise<void> {
     api.messages(roomKey),
     api.sessionInfo(roomKey).catch(() => undefined),
   ]);
-  dispatch({ type: "room", roomKey, messages: room.messages, pinned: room.pinned, queued: room.queued }, "all");
+  dispatch({ type: "room", roomKey, messages: room.messages, hidden: room.hidden, pinned: room.pinned, queued: room.queued }, "all");
   if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
 }
 

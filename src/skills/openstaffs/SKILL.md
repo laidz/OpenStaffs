@@ -73,7 +73,7 @@ description: OpenStaffs 能力与协作手册——员工的工作区与写权�
 
 - `office_list`：列出办公室成员（id、展示名、**所在部门**——根部门的人显示 `（办公室直属）`）与项目（谁在、有哪些群、你在不在其中）。
 - `member_profile`：读某位成员的资料（id / 展示名 / 其定义 config 的 `prompt` 正文——人格 / 职责）。参数 `member` 是成员 id（`<名字>.agent.config.json` 的文件名主干）。
-- `room_history`：读某个房间的聊天记录（发言人 + 内容）。数据来自**自有消息库**（`openstaffs/.data/openstaffs.sqlite`；一条投递 = 一行，房间视图的消息键为 `store:<seq>`，不再读各成员 transcript）。`room` 缺省 = 当前房间，也可传 `dm:<员工id>` / `group:<项目id>`；`limit` 取最近若干条。
+- `room_history`：读某个房间的聊天记录（发言人 + 内容）。数据来自**自有消息库**（`openstaffs/.data/openstaffs.sqlite`；一条投递 = 一行，房间视图的消息键为 `store:<seq>`，不再读各成员 transcript）。**只含当前一轮**：最近一次「新开会话」之后的消息（更早的流水不在工具范围，老板可在聊天「历史」里看）。`room` 缺省 = 当前房间，也可传 `dm:<员工id>` / `group:<项目id>`；`limit` 取最近若干条。
 - `send_message`：发消息。`target` = `boss`（主动私聊负责人，会进其待办）/ `member:<成员id>`（在**当前群**里触发该成员，即 @他）/ `project:<项目id>`（投递到你在该项目群的会话）。
 - `request_permission`：向负责人申请写入某些路径的权限（**异步**：立即返回，负责人稍后在界面弹框中接受/拒绝；批准/拒绝后会以新消息通知你）。详见「写权限边界」一节的「申请额外写权限」。
 - `new_session`：重开一段新会话（下一轮起生效）。
