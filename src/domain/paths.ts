@@ -22,10 +22,6 @@ export function projectsDir(ws: Workspace): string {
   return path.join(ws.root, "projects");
 }
 
-export function employeeDir(ws: Workspace, id: string): string {
-  return path.join(agentsDir(ws), id);
-}
-
 export function conversationIdsFile(_ws: Workspace, dir: string): string {
   return path.join(dir, "conversation_ids.md");
 }

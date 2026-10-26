@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import {
-  agentConfigFile, agentIdOfConfigFile, departmentConfigFile, isConfigFileName, projectConfigFile, projectIdOfConfigFile, spaceConfigFile,
+  agentConfigFile, agentIdOfConfigFile, departmentConfigFile, isConfigFileName, projectConfigFile, spaceConfigFile,
 } from "../../src/config/naming.ts";
 
 test("四类配置文件的落点（spec §3 / D3 / D26）", () => {
@@ -15,8 +15,6 @@ test("四类配置文件的落点（spec §3 / D3 / D26）", () => {
 test("文件名反解 + 识别", () => {
   expect(agentIdOfConfigFile("/office/agents/eng/alice.agent.config.json")).toBe("alice");
   expect(agentIdOfConfigFile("/office/agents/eng/department.config.json")).toBeUndefined();
-  expect(projectIdOfConfigFile("/office/projects/seo.project.config.json")).toBe("seo");
-  expect(projectIdOfConfigFile("/office/projects/seo.agent.config.json")).toBeUndefined();
   expect(isConfigFileName("department.config.json")).toBe(true);
   expect(isConfigFileName("space.config.json")).toBe(true);
   expect(isConfigFileName("x.agent.config.json")).toBe(true);

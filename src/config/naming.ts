@@ -30,13 +30,6 @@ export function agentIdOfConfigFile(file: string): string | undefined {
   return id === "" ? undefined : id;
 }
 
-export function projectIdOfConfigFile(file: string): string | undefined {
-  const base = path.basename(file);
-  if (!base.endsWith(PROJECT_CONFIG_SUFFIX)) return undefined;
-  const id = base.slice(0, -PROJECT_CONFIG_SUFFIX.length);
-  return id === "" ? undefined : id;
-}
-
 export function isConfigFileName(base: string): boolean {
   return (
     base === SPACE_CONFIG_NAME ||

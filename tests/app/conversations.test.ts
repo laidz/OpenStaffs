@@ -9,7 +9,7 @@ import { readChain, startNewSession } from "../../src/domain/conversation-chain.
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
   accessFor, activeMemberSessions, employeeActiveSessions, findSessionOwner, instructionsFor, interruptRoom, newSession, openDm, openGroup,
-  relationCwd, relationKey, roomSessionInfo, roomTranscripts, sessionChains, sessionDefaults,
+  relationCwd, relationKey, roomSessionInfo, sessionChains, sessionDefaults,
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
 import { loadEmployee } from "../../src/domain/employee.ts";
@@ -474,10 +474,6 @@ describe("应用用例", () => {
       expect(active).toEqual([{ memberId: "alice", convId: a1 }]);
       expect(findSessionOwner(ws, { kind: "group", project: "yt" }, a1)).toBe("alice");
       expect(findSessionOwner(ws, { kind: "group", project: "yt" }, "conv:不存在")).toBeUndefined();
-
-      const transcripts = await roomTranscripts(ws, harness, { kind: "group", project: "yt" });
-      expect(transcripts).toHaveLength(1);
-      expect(transcripts[0]!.memberId).toBe("alice");
     } finally {
       await harness.close();
     }
@@ -503,34 +499,6 @@ describe("应用用例", () => {
 
       const result = await interruptRoom(ws, harness, { kind: "group", project: "yt" });
       expect(result.aborted.sort()).toEqual([a, b].sort());
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("roomTranscripts：链指向不存在的 convId 时跳过该成员（不让整房间的合并视图/红点 500）", async () => {
-    const ws = seedOffice(root, {
-      agents: [{ id: "alice" }, { id: "bob" }],
-      projects: [{ id: "yt", members: ["alice", "bob"] }],
-    });
-    const harness = harnessWithFaux();
-    await harness.open();
-    try {
-      const aliceConv = await openGroup(ws, harness, "yt", "alice");
-      // bob 的链被人为写坏：活跃行指向一个不存在的会话
-      const bobFile = path.join(root, "openstaffs/.data", "chains", "group-yt", "bob.md");
-      fs.mkdirSync(path.dirname(bobFile), { recursive: true });
-      fs.writeFileSync(
-        bobFile,
-        ["# 会话链", "", "| id | started | ended | previous |", "|----|---------|-------|----------|", "| conv:不存在 | 2026-10-16T00:00:00Z |  | - |", ""].join("\n"),
-      );
-
-      const transcripts = await roomTranscripts(ws, harness, { kind: "group", project: "yt" });
-      expect(transcripts.map((t) => t.memberId)).toEqual(["alice"]);
-      expect(transcripts[0]!.convId).toBe(aliceConv);
-
-      // 控制组：坏会话确实让 harness.transcript 抛错（跳过是必要的，而非恒真断言）
-      await expect(harness.transcript("conv:不存在")).rejects.toThrow();
     } finally {
       await harness.close();
     }

@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 /** 一条排队中的投递（老板的消息 × 一个目标成员）；只存在于内存，进程内即真相。 */
 export type QueuedDelivery = {
   /** Pi 的 submission id：撤回与出队的唯一句柄。 */
@@ -93,9 +91,4 @@ export class Outbox {
   get size(): number {
     return this.#items.size;
   }
-}
-
-/** 生成房间级去重键（与消息编排同源，便于测试单独使用）。 */
-export function newRoomMessageId(): string {
-  return `rm_${randomUUID()}`;
 }

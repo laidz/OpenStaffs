@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import type { OrgScan } from "../../src/domain/org-config.ts";
 import {
-  ancestryOf, buildOrg, departmentAt, departmentOfPerson, findPerson, headsOf, isInSubtree, isManagedDepartment,
-  listPeople, loadOrg, loadPerson, managedDepartmentsOf, managedDirsOf, managedSubtreeOf, managersOf, personDisplayName,
+  ancestryOf, buildOrg, departmentAt, findPerson, headsOf, isInSubtree,
+  listPeople, loadOrg, loadPerson, managedDepartmentsOf, managedSubtreeOf, personDisplayName,
 } from "../../src/domain/org.ts";
 
 /** 手搭扫描结果：不碰文件系统，专测结构运算。 */
@@ -41,11 +41,9 @@ describe("组织树", () => {
     expect(TREE.people.map((p) => p.id)).toEqual(["staff0", "alice", "bob", "carol"]);
   });
 
-  it("findPerson / loadPerson / personDisplayName / departmentOfPerson", () => {
+  it("findPerson / loadPerson / personDisplayName", () => {
     expect(findPerson(TREE, "alice")!.alias).toBe("爱丽丝");
     expect(findPerson(TREE, "nobody")).toBeUndefined();
-    expect(departmentOfPerson(TREE, "bob")!.path).toBe("eng/platform");
-    expect(departmentOfPerson(TREE, "staff0")!.path).toBe("");
   });
 
   it("人 id 重复：保留第一个 + warning（不抛、不双房间）", () => {
@@ -66,23 +64,15 @@ describe("负责人（head）", () => {
     expect(bad.warnings.join("\n")).toContain("bob");
   });
 
-  it("managersOf：沿祖先链取最近的有 head 的部门；全链无 → 空（= 老板）", () => {
-    expect(managersOf(TREE, "eng/platform")).toEqual(["bob"]); // 自身部门有 head
-    expect(managersOf(TREE, "eng")).toEqual(["alice"]);
-    expect(managersOf(TREE, "")).toEqual([]); // 根无 head → 老板
+  it("ancestryOf：自根到该部门；未知路径 → 空", () => {
     expect(ancestryOf(TREE, "eng/platform").map((d) => d.path)).toEqual(["", "eng", "eng/platform"]);
-    expect(managersOf(TREE, "nope")).toEqual([]);
+    expect(ancestryOf(TREE, "nope")).toEqual([]);
   });
 });
 
 describe("穿透管理权", () => {
   it("管理者的范围 = 其所在部门的整棵子树（任意深度）", () => {
     expect(managedDepartmentsOf(TREE, "alice")).toEqual(["eng"]);
-    expect(isManagedDepartment(TREE, "alice", "eng")).toBe(true);
-    expect(isManagedDepartment(TREE, "alice", "eng/platform")).toBe(true); // 孙级
-    expect(isManagedDepartment(TREE, "bob", "eng")).toBe(false); // 下级管不了上级
-    expect(isManagedDepartment(TREE, "bob", "eng/platform")).toBe(true);
-    expect(isManagedDepartment(TREE, "bob", "eng/other")).toBe(false);
     expect(managedDepartmentsOf(TREE, "staff0")).toEqual([]); // 不是任何部门的 head
   });
 
@@ -94,11 +84,6 @@ describe("穿透管理权", () => {
     expect(isInSubtree("eng", "")).toBe(false);
   });
 
-  it("managedDirsOf 给出绝对目录（access-control 直接用）", () => {
-    const ws = createWorkspace("/ws");
-    expect(managedDirsOf(TREE, ws, "alice")).toEqual([path.join("/ws", "agents", "eng")]);
-    expect(managedDirsOf(TREE, ws, "staff0")).toEqual([]);
-  });
 });
 
 describe("loadOrg（走盘）", () => {

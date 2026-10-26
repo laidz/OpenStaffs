@@ -1,8 +1,8 @@
 // src/domain/employee.ts —— 人 = 单一 `agents/.../<名字>.agent.config.json`（D1/D2/D5）。
-// 定位走 P2 的 org 模块（`loadPerson` / `listPeople`），字段解析走 P3 的 `src/config/*`；
+// 定位走 P2 的 org 模块（`loadPerson`），字段解析走 P3 的 `src/config/*`；
 // 记忆是框架原生能力（`work/<id>/memory/`），这里只解析开关。
 import { loadAgentConfig } from "../config/load.ts";
-import { listPeople, loadPerson } from "./org.ts";
+import { loadPerson } from "./org.ts";
 import { workDir, type Workspace } from "./paths.ts";
 import { readMemoryFlag } from "./config.ts";
 import type { PermissionTable } from "../config/schema.ts";
@@ -51,14 +51,4 @@ export function loadEmployee(ws: Workspace, id: EmployeeId): Employee {
     ...(fields?.prompt === undefined ? {} : { prompt: fields.prompt }),
     ...(permissions === undefined ? {} : { permissions }),
   };
-}
-
-/** 全部人（P2 的组织发现顺序；逐个补齐能力字段）。 */
-export function listEmployees(ws: Workspace): Employee[] {
-  return listPeople(ws).map((person) => loadEmployee(ws, person.id));
-}
-
-/** 人级 instructions = 内联 prompt（D5 取消员工侧 AGENTS.md / profile.md）。 */
-export function renderInstructions(person: Employee): string {
-  return person.prompt ?? "";
 }

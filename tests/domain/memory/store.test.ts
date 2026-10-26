@@ -58,13 +58,13 @@ describe("记忆存储", () => {
 
   it("扫描跳过坏文件；状态损坏按空处理", () => {
     createEntity(ws, "alice", { title: "ok", description: "d", body: "b" });
-    fs.writeFileSync(path.join(memoryDir(ws, "alice"), "AGENTS.md"), "目录说明，不是实体");
+    fs.writeFileSync(path.join(memoryDir(ws, "alice"), "NOTES.md"), "大写 id 也是非法实体，报错但不影响其他条目");
     fs.writeFileSync(path.join(memoryDir(ws, "alice"), "broken.md"), "没有头");
     fs.writeFileSync(path.join(memoryDir(ws, "alice"), "bad-id.md"), "---\nid: other\ntitle: t\ndescription: d\n---\n\nx");
     fs.writeFileSync(path.join(memoryDir(ws, "alice"), ".state.json"), "{坏");
     const loaded = loadMemory(ws, "alice");
     expect(loaded.entities.map((e) => e.title)).toEqual(["ok"]);
-    expect(loaded.errors).toHaveLength(2);
+    expect(loaded.errors).toHaveLength(3);
     expect(readState(ws, "alice")).toEqual({});
   });
 

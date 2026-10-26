@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, workDir } from "../../src/domain/paths.ts";
-import { listEmployees, loadEmployee, renderInstructions } from "../../src/domain/employee.ts";
+import { loadEmployee } from "../../src/domain/employee.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-emp-"));
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -103,13 +103,6 @@ describe("loadEmployee（单一 config 定义）", () => {
     expect(loadEmployee(ws, "pat").permissions).toEqual({ write: ["./out"], read: ["./"] });
   });
 
-  it("renderInstructions = prompt（缺省空串）", () => {
-    const ws = createWorkspace(tmp);
-    seed("alice", { prompt: "你是 alice。" });
-    expect(renderInstructions(loadEmployee(ws, "alice"))).toBe("你是 alice。");
-    seed("earl", {});
-    expect(renderInstructions(loadEmployee(ws, "earl"))).toBe("");
-  });
 });
 
 it("memoryEnabled：员工显式值覆盖空间默认；缺省为 true", () => {
@@ -127,21 +120,4 @@ it("memoryEnabled：员工显式值覆盖空间默认；缺省为 true", () => {
 
   seed("alice", { memory: true });
   expect(loadEmployee(ws, "alice").memoryEnabled).toBe(true);
-});
-
-it("listEmployees：按 id 排序、跳过隐藏项与无定义文件的目录", () => {
-  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-list-"));
-  try {
-    fs.mkdirSync(path.join(root2, "agents"), { recursive: true });
-    for (const id of ["bob", "alice"]) {
-      fs.writeFileSync(path.join(root2, "agents", `${id}.agent.config.json`), "{}\n");
-    }
-    fs.mkdirSync(path.join(root2, "agents", "eng"), { recursive: true }); // 无定义文件的部门目录
-    fs.mkdirSync(path.join(root2, "agents", ".hidden"), { recursive: true });
-    fs.writeFileSync(path.join(root2, "agents", ".hidden", "x.agent.config.json"), "{}\n");
-    const ws = createWorkspace(root2);
-    expect(listEmployees(ws).map((e) => e.id)).toEqual(["alice", "bob"]);
-  } finally {
-    fs.rmSync(root2, { recursive: true, force: true });
-  }
 });

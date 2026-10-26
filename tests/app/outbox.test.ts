@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Outbox, queuedItemView, newRoomMessageId } from "../../src/app/outbox.ts";
+import { Outbox, queuedItemView } from "../../src/app/outbox.ts";
 
 function delivery(submissionId: string, roomKey: string, roomMessageId: string, memberId = "alice") {
   return { submissionId, roomKey, memberId, roomMessageId, text: `给 ${memberId} 的话`, convId: `conv-${submissionId}`, storeSeq: 0 };
@@ -35,7 +35,7 @@ describe("待发表（Outbox）", () => {
 
   it("byRoomMessage：同一次多投递（一条消息发给多人）一起取回", () => {
     const outbox = new Outbox();
-    const rm = newRoomMessageId();
+    const rm = "rm_1";
     outbox.add(delivery("s1", "group:yt", rm, "alice"));
     outbox.add(delivery("s2", "group:yt", rm, "bob"));
     outbox.add(delivery("s9", "group:yt", "rm_other", "alice"));
@@ -66,10 +66,4 @@ describe("待发表（Outbox）", () => {
     expect(outbox.roomMessageIdByStoreSeq("dm:alice").size).toBe(0);
   });
 
-  it("newRoomMessageId：rm_ 前缀且不重复", () => {
-    const a = newRoomMessageId();
-    const b = newRoomMessageId();
-    expect(a.startsWith("rm_")).toBe(true);
-    expect(a).not.toBe(b);
-  });
 });

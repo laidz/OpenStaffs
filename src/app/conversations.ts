@@ -18,7 +18,6 @@ import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
 import { effectivePermissions } from "../permissions/effective.ts";
 import { runtimeGrantsFor } from "../permissions/runtime.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
-import type { MemberTranscript } from "./rooms.ts";
 
 export type { Relation };
 
@@ -256,20 +255,4 @@ export function findSessionOwner(ws: Workspace, relation: Relation, convId: stri
     if (chain.rows.some((row) => row.id === convId)) return chain.memberId;
   }
   return undefined;
-}
-
-/** 当前房间各成员活跃会话的 transcript（合并视图输入；只读不创建）。 */
-export async function roomTranscripts(ws: Workspace, harness: HarnessPort, relation: Relation): Promise<MemberTranscript[]> {
-  const out: MemberTranscript[] = [];
-  for (const session of activeMemberSessions(ws, relation)) {
-    const person = findPerson(loadOrg(ws), session.memberId);
-    const alias = person?.alias;
-    try {
-      const messages = await harness.transcript(session.convId);
-      out.push({ memberId: session.memberId, ...(alias === undefined ? {} : { alias }), convId: session.convId, messages });
-    } catch {
-      // 坏会话（如链指向不存在的 convId）跳过：一个坏会话不该让整房间的合并视图 / 红点 500。
-    }
-  }
-  return out;
 }

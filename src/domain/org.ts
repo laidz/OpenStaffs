@@ -101,11 +101,6 @@ export function departmentAt(tree: OrgTree, deptPath: string): OrgDepartment | u
   return tree.departments.find((department) => department.path === deptPath);
 }
 
-export function departmentOfPerson(tree: OrgTree, id: string): OrgDepartment | undefined {
-  const person = findPerson(tree, id);
-  return person === undefined ? undefined : departmentAt(tree, person.departmentPath);
-}
-
 /** 祖先链（自根到该部门，含自身）；未知路径 → []。 */
 export function ancestryOf(tree: OrgTree, deptPath: string): OrgDepartment[] {
   const segments = deptPath === "" ? [] : deptPath.split("/");
@@ -126,16 +121,6 @@ export function headsOf(tree: OrgTree, deptPath: string): string[] {
   return department.head.filter((id) => own.has(id));
 }
 
-/** X 的管理者（D7）：沿祖先链（含自身所在部门）向上找最近的有 head 的部门 → 其全部有效 head；全链无 → []（= 老板）。 */
-export function managersOf(tree: OrgTree, deptPath: string): string[] {
-  const chain = ancestryOf(tree, deptPath);
-  for (let i = chain.length - 1; i >= 0; i -= 1) {
-    const heads = headsOf(tree, chain[i]!.path);
-    if (heads.length > 0) return heads;
-  }
-  return [];
-}
-
 export function isInSubtree(ancestorPath: string, deptPath: string): boolean {
   if (ancestorPath === "") return true;
   return deptPath === ancestorPath || deptPath.startsWith(`${ancestorPath}/`);
@@ -144,15 +129,6 @@ export function isInSubtree(ancestorPath: string, deptPath: string): boolean {
 /** 管理者的管理范围（D7 穿透）：其担任 head 的部门路径列表。 */
 export function managedDepartmentsOf(tree: OrgTree, managerId: string): string[] {
   return tree.departments.filter((department) => headsOf(tree, department.path).includes(managerId)).map((d) => d.path);
-}
-
-export function isManagedDepartment(tree: OrgTree, managerId: string, deptPath: string): boolean {
-  return managedDepartmentsOf(tree, managerId).some((root) => isInSubtree(root, deptPath));
-}
-
-/** 管理者的可写目录（绝对路径；access-control 的 writableDirs 用）。 */
-export function managedDirsOf(tree: OrgTree, ws: Workspace, managerId: string): string[] {
-  return managedDepartmentsOf(tree, managerId).map((deptPath) => path.join(agentsDir(ws), deptPath));
 }
 
 /**

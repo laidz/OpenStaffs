@@ -85,7 +85,7 @@ export function loadMemory(ws: Workspace, agentId: string): LoadResult {
   }
   const entities: MemEntity[] = [];
   const errors: { file: string; error: string }[] = [];
-  for (const name of names.filter((n) => n.endsWith(".md") && !n.startsWith(".") && n !== PROFILE_FILE && n !== "AGENTS.md").sort()) {
+  for (const name of names.filter((n) => n.endsWith(".md") && !n.startsWith(".") && n !== PROFILE_FILE).sort()) {
     const id = name.slice(0, -3);
     if (!ID_PATTERN.test(id)) {
       errors.push({ file: name, error: `非法 id：${id}` });

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { accumulatePermissions, resolvePermissionTable } from "../../src/permissions/resolve.ts";
-import { DEFAULT_PERMISSIONS, defaultPathsFor, defaultPermissionTable } from "../../src/permissions/defaults.ts";
+import { DEFAULT_PERMISSIONS } from "../../src/permissions/defaults.ts";
 
 test("相对路径按 baseDir 归一；绝对路径原样；空工具名跳过", () => {
   const table = resolvePermissionTable(
@@ -24,11 +24,6 @@ test("累加：同名工具按来源顺序拼接、接受同值重复、不覆�
   expect(merged["read"]).toEqual(["/c"]);
 });
 
-test("默认值：write 空、read/bash 为 ./；未登记的新工具默认空（D14）", () => {
+test("默认值：write 空、read/bash 为 ./（D14）", () => {
   expect(DEFAULT_PERMISSIONS).toEqual({ write: [], read: ["./"], bash: ["./"] });
-  expect(defaultPathsFor("bash")).toEqual(["./"]);
-  expect(defaultPathsFor("future_tool")).toEqual([]);
-  expect(defaultPermissionTable(["future_tool"])).toEqual({
-    write: [], read: ["./"], bash: ["./"], future_tool: [],
-  });
 });
