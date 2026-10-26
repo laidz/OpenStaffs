@@ -87,7 +87,8 @@ describe("注入文本", () => {
   it("profile + 索引", () => {
     writeProfile(ws, "alice", "身份是测试");
     createEntity(ws, "alice", { title: "A", description: "做 A 时看", body: "正文" });
-    touch(ws, "alice", "a", "2026-10-25T10:00:00+08:00");
+    // 计时起点给一个「刚刚」的时间：写死具体日期会随墙钟漂移（2026-10-25T10:00 在次日 10:00 后就算作 1 天前 → 剩 89 天）。
+    touch(ws, "alice", "a", new Date(Date.now() - 60_000).toISOString());
     const text = renderMemoryBlock(ws, "alice");
     expect(text).toContain("## 你的记忆");
     expect(text).toContain("### 常驻 profile（全文）");
