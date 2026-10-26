@@ -60,7 +60,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 - **目录已合并**：机器私有不再是独立隐藏目录，统一收在 `openstaffs/.data/`（含全局配置、pin 状态、授权请求、基座会话库、消息自有库）。`openstaffs/` 的其余内容（`space.config.json`、`skills/`、`mcps.json`）属空间资产，可版本化、随空间整包迁移。
 - **新建空间**：启动时若没有 `openstaffs/space.config.json`，框架写入**空声明** `{}`（系统 prompt 由框架自持）。判断只看文件是否存在——已存在（含空文件 / 坏 JSON）一律不覆盖。
-- **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根（整个办公空间）有写权限**（「空间级附属 = 老板地盘」的有意例外；配置里写作相对路径 `..`——P3 的权限路径相对配置文件所在目录 `agents/` 解析），直属老板；未配 `model` 时用全局默认。
+- **0 号员工（首席管家）**：首次启动若没有 `agents/staff0.agent.config.json`，框架自动创建。它对**空间根（整个办公空间）有写权限**（「空间级附属 = 老板地盘」的有意例外；配置里写作相对路径 `..`——P3 的权限路径相对配置文件所在目录 `agents/` 解析），直属老板；未配 `model` 时用全局默认。**它可创建 / 修改 agent 与项目定义**：写 `*.agent.config.json` 时是硬保护的唯一例外，但仍必须用 `write`、合法 JSON、且 `permissions` 通过 attenuation（授不出空间外权限）。
 - **不做迁移**：旧版把机器私有放在空间根下的隐藏目录，那套位置**不再读取**（破坏性更新）；老板需要的话自行搬迁数据。
 
 ## 全局配置 `openstaffs/.data/config.json`
@@ -161,7 +161,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 
 - **负责人（主管）与穿透管理权**：某部门的 `head` 就是该部门的主管；主管对**自己担任 head 的部门整棵子树**（部门目录 + 其中的人，任意深度）有**写权**与**管理权**，**同级兄弟部门不可写**。沿祖先链向上找最近的 `head` 即某人的管理者；全链都没有 = 直接归老板。
 - **工作目录 `work/<名字>/`**：私聊与群聊的会话工作目录都落这里；私聊会话链（`conversation_ids.md`）也落这里（群聊链在机器私有区，见「项目」章节）；对**所有工具**开放。`memory/` 是该人的原生记忆目录，由 `memory_*` 工具维护（见「记忆（原生能力）」）。
-- **人的 `permissions` 由授权流程改写**：**任何人（含主管、含自己）都不可写 `<名字>.agent.config.json`**（唯一硬保护，防自授权）。授权弹框批准后由框架代写**发起者自己** agent config 的 `permissions[tool]`（不经过工具闸门）。**当前没有「主管直接写下级定义 / `permissions`」的通道**：人的定义只能由老板或框架的授权流程写。`department` / `space` / `project` 类 `*.config.json` 可用 **`write` 工具**写，但要求在该工具有效集内、JSON 合法、且 `permissions` 通过 attenuation（见「权限：按工具 → 路径」）；**bash 不得写配置**（见下）。
+- **人的 `permissions` 由授权流程改写**：**除空间管家 staff0 外，任何人（含主管、含自己）都不可写 `<名字>.agent.config.json`**（硬保护，防自授权）。授权弹框批准后由框架代写**发起者自己** agent config 的 `permissions[tool]`（不经过工具闸门）。**当前没有「主管直接写下级定义 / `permissions`」的通道**：人的定义只能由老板、staff0 或框架的授权流程写。staff0 的例外也只放行 `write`，仍需合法 JSON + attenuation。`department` / `space` / `project` 类 `*.config.json` 可用 **`write` 工具**写，但要求在该工具有效集内、JSON 合法、且 `permissions` 通过 attenuation（见「权限：按工具 → 路径」）；**bash 不得写配置**（见下）。
 - id 里**不要含空白或 `@`**（与提及语法冲突，无法被定向），也不要 `__` 开头（保留给 boss / system）。`@` 提及永远用 id，alias 不参与识别。
 
 ## 项目 = 扁平配置 `projects/<id>.project.config.json`
@@ -349,8 +349,8 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 - **累加**：`permissions` 的落盘路线 = **项目 config + 员工 config**，两层**累加**（接受同值重复，无覆盖 / 无优先级）；空间 / 部门的 `permissions` 不进权限路线。
 - **运行时额外授予**（不落盘、自动生效）：① 自己的工作目录 `work/<你>/` 对**所有工具**可用；② 主管对自己部门的**整棵子树**有 `write`（部门目录 + 其中的人；同级兄弟部门不可写）；③ 技能库根（空间技能 / 外部技能库 / 系统内置）对 `read` 开放——不给 read 开放技能库，`skills` 引用就不可用。
 - **attenuation（写入校验）**：用 **`write` 工具**写任何 `*.config.json` 的 `permissions` 时，**每个工具的值必须 ⊆ 写者该工具的有效集**（逐级收窄：授 `/a` 可授 `/a/b`，授 `/a/b` 不可授 `/a`；空集恒合法；路径比较大小写敏感）。**全工具统一**，与工具语义无关——**不可提权授予他人**。**bash 写配置一律被拦**（无法做 JSON + attenuation 校验）：命令里出现任何配置文件名（`space` / `department` / `*.project` / `*.agent`，含裸相对文件名）都被拒绝，必须改用 `write` 工具。
-- **硬保护**：**任何工具都写不了 `*.agent.config.json`**（含自己的）；用 `edit` 改任何 `*.config.json` 一律被拦（引导改用 `write` 整体写入，以便校验 attenuation）。
-- **config 写入流程**：用 `write` 写 `space` / `department` / `project` 类 `*.config.json` 时，会额外要求「合法 JSON + 顶层对象」，并对内容里的 `permissions` 做 attenuation 校验。这是**在你自己有效集内**写配置的通道——**不是**「主管写下级定义」的通道：下级（及所有人）的 `*.agent.config.json` 属硬保护，本工具与方法都写不了。
+- **硬保护**：**除空间管家 staff0 外，任何工具都写不了 `*.agent.config.json`**（含自己的）；staff0 也只能用 `write` 整体写。用 `edit` 改任何 `*.config.json` 一律被拦（引导改用 `write` 整体写入，以便校验 attenuation）。
+- **config 写入流程**：用 `write` 写 `space` / `department` / `project` / `agent` 类 `*.config.json` 时，会额外要求「合法 JSON + 顶层对象」，并对内容里的 `permissions` 做 attenuation 校验。这是**在你自己有效集内**写配置的通道——**不是**「主管写下级定义」的通道：除 staff0 外，下级（及所有人）的 `*.agent.config.json` 属硬保护，本工具与方法都写不了。
 - **人级授权**：员工超出有效集的路径用 `request_permission` 申请（可带 `tool`，缺省 `write`）→ 老板在弹框批准 → 框架把路径**追加进该员工 agent config 的 `permissions[tool]`**（不经过工具闸门）。也可由老板直接改配置。
 
 ## 运维操作与授权
@@ -363,7 +363,7 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 - 作为主管时，在自己管理的部门子树里创建 / 修改文件（部门目录 + 人，任意深度）；
 - 在你各层 `permissions` 表放行的路径里操作（如你的 `write` 表里含的其它目录）。
 
-> 你的展示名 / 模型 / 人格 / 权限（`alias` / `model` / `prompt` / `permissions`）都在自己的 `<名字>.agent.config.json` 里，**属受保护文件，你不可写**（主管也不能写）——这类改动请老板来做，或走 `request_permission`。
+> 你的展示名 / 模型 / 人格 / 权限（`alias` / `model` / `prompt` / `permissions`）都在自己的 `<名字>.agent.config.json` 里，**属受保护文件，除空间管家 staff0 外不可写**（主管也不能写）——这类改动请老板或 staff0 来做，或走 `request_permission`。
 
 **超出有效集的运维操作**（建新员工 / 调整组织 / 建新项目 / 改全局配置 / 动别人的文件……）：
 
@@ -385,7 +385,7 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 | 改了 `config.json` 不生效 | 进程级配置：重启服务；以重启后为准 |
 | 改了 `.agent.config.json` 不生效 | 会话创建时已固化：`prompt` / `model` / `thinkingLevel` 要**新开会话**生效；`alias` 是实时的，**刷新页面**即变 |
 | 写文件 / 命令被拦「访问控制」 | 目标不在你该工具的有效集内（各层 `permissions` 累加 + 运行时授予）；用 `request_permission` 申请，或请老板改配置 |
-| 写 `*.agent.config.json` 被拦 | 属预期：人的定义是**唯一硬保护**（含自己的）；请老板改，或走授权流程由框架代写 `permissions` |
+| 写 `*.agent.config.json` 被拦 | 属预期：人的定义是**硬保护**（含自己的）；除 staff0 外请老板改，或走授权流程由框架代写 `permissions` |
 | 写配置报「attenuation 校验失败」 | 你写 `permissions` 时授出了自己范围外的路径（**不可提权**）；收窄到你的有效集内再写 |
 | 某人不见了 | 文件名不是 `<名字>.agent.config.json`（普通 `.json` / 别的后缀不算人）；或落在隐藏条目（`.` 开头）里；或该 id 与别人**重复**（全局唯一，只保留先扫描到的那个） |
 | 改了人的 `prompt` / 技能没反应 | 会话创建时已固化：新开会话生效 |

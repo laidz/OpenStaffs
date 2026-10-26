@@ -11,8 +11,8 @@ import {
 const root = "/office";
 const cwd = "/office/work/alice";
 
-function access(permissions: Record<string, string[]>): AccessContext {
-  return { root, cwd, selfId: "alice", permissions };
+function access(permissions: Record<string, string[]>, selfId = "alice"): AccessContext {
+  return { root, cwd, selfId, permissions };
 }
 
 const base = access({
@@ -28,7 +28,7 @@ const outOfBounds = JSON.stringify({ permissions: { write: ["/etc"] } });
 
 test("write：界内放行、界外拦下（提示走授权申请）", () => {
   expect(gateToolCall(base, { name: "write", arguments: { path: "notes.md", content: "x" } })).toBeUndefined();
-  expect(gateToolCall(base, { name: "write", arguments: { path: "/office/agents/eng/dave.agent.config.json", content: "{}" } })?.block).toContain("主管");
+  expect(gateToolCall(base, { name: "write", arguments: { path: "/office/agents/eng/dave.agent.config.json", content: "{}" } })?.block).toContain("staff0");
   expect(gateToolCall(base, { name: "write", arguments: { path: "dave.agent.config.json", content: "{}" } })).toBeDefined();
   expect(gateToolCall(base, { name: "write", arguments: { path: "/etc/passwd", content: "x" } })?.block).toContain("request_permission");
 });
@@ -141,8 +141,8 @@ test("edit：任何配置名一律拦下（引导用 write 整体写入）；普
     expect(verdict, target).toBeDefined();
     expect(verdict?.block, target).toContain("write");
   }
-  // agent config：edit 同样拦（硬保护优先，文案指向主管/老板）。
-  expect(gateToolCall(base, { name: "edit", arguments: { path: "/office/agents/eng/DAVE.AGENT.CONFIG.JSON", edits: [] } })?.block).toContain("主管");
+  // agent config：edit 同样拦（硬保护优先，文案指向空间管家/老板）。
+  expect(gateToolCall(base, { name: "edit", arguments: { path: "/office/agents/eng/DAVE.AGENT.CONFIG.JSON", edits: [] } })?.block).toContain("staff0");
   expect(gateToolCall(base, { name: "edit", arguments: { path: "/office/work/alice/notes.md", edits: [] } })).toBeUndefined();
 });
 
@@ -192,4 +192,42 @@ test("R-P3-19：bash 命令里出现任何配置名（绝对 + 裸相对）→ �
 test("未映射的工具不进路径闸门（自有工具 / MCP 工具）", () => {
   expect(gateToolCall(base, { name: "send_message", arguments: { target: "boss", text: "x" } })).toBeUndefined();
   expect(gateToolCall(base, { name: "mcp__github__create_issue", arguments: {} })).toBeUndefined();
+});
+
+// staff0（空间管家）是硬保护的唯一例外：可建 / 改 agent 定义（含自己），
+// 但仍走 write 的 JSON + attenuation + 路径闸门；edit / bash 照旧拦。
+test("staff0：可写 agent 配置（含自己），仍受 JSON / attenuation / 路径约束", () => {
+  const staff0 = access({ write: ["/office"], read: ["/office"], bash: ["/office"] }, "staff0");
+  expect(
+    gateToolCall(staff0, { name: "write", arguments: { path: "/office/agents/eng/dave.agent.config.json", content: "{}" } }),
+  ).toBeUndefined();
+  expect(
+    gateToolCall(staff0, { name: "write", arguments: { path: "/office/agents/staff0.agent.config.json", content: "{}" } }),
+  ).toBeUndefined();
+
+  // 空间外 permissions：attenuation 拦下。
+  const escalate = gateToolCall(staff0, {
+    name: "write",
+    arguments: { path: "/office/agents/eng/dave.agent.config.json", content: outOfBounds },
+  });
+  expect(escalate?.block).toContain("attenuation");
+  // 坏 JSON：拦下。
+  expect(
+    gateToolCall(staff0, { name: "write", arguments: { path: "/office/agents/eng/dave.agent.config.json", content: "{坏" } })?.block,
+  ).toContain("JSON");
+  // edit：仍引导改用 write。
+  expect(
+    gateToolCall(staff0, { name: "edit", arguments: { path: "/office/agents/eng/dave.agent.config.json", edits: [] } })?.block,
+  ).toContain("write");
+  // bash：仍不得碰配置。
+  expect(
+    gateToolCall(staff0, {
+      name: "bash",
+      arguments: { command: "echo {} > /office/agents/eng/dave.agent.config.json" },
+    })?.block,
+  ).toContain("配置");
+  // 空间外的 agent 配置文件：路径闸门拦下。
+  expect(
+    gateToolCall(staff0, { name: "write", arguments: { path: "/tmp/dave.agent.config.json", content: "{}" } }),
+  ).toBeDefined();
 });

@@ -8,6 +8,7 @@ import {
 } from "../config/naming.ts";
 import { parseConfigFields } from "../config/schema.ts";
 import type { AccessContext } from "../domain/access-control.ts";
+import { STAFF0_ID } from "../domain/staff0.ts";
 import { checkAttenuation } from "../permissions/attenuation.ts";
 import { pathsFor } from "../permissions/effective.ts";
 import { matchesPath } from "../permissions/match.ts";
@@ -27,8 +28,10 @@ const AGENT_SUFFIX_LOWER = AGENT_CONFIG_SUFFIX.toLowerCase();
 const PROJECT_SUFFIX_LOWER = PROJECT_CONFIG_SUFFIX.toLowerCase();
 
 /**
- * 人定义文件 `*.agent.config.json`（大小写不敏感）——**唯一硬保护**（spec §6 / D8：
- * 人不可写任何 agent 配置，含自己的；主管写下级定义走框架的授权路径，不走人的 write 工具）。
+ * 人定义文件 `*.agent.config.json`（大小写不敏感）——唯一硬保护（staff0 例外）
+ * （spec §6 / D8：人不可写任何 agent 配置，含自己的；主管写下级定义走框架的授权路径，
+ * 不走人的 write 工具）。staff0 是「空间级事务」的例外：放行后仍走 write 的
+ * JSON + attenuation + 路径闸门，授不出空间外权限。
  * 大小写不敏感的原因：目的卷（如 macOS 默认 APFS）可能不敏感，`DAVE.AGENT.CONFIG.JSON`
  * 会覆盖 `dave.agent.config.json`。
  */
@@ -52,9 +55,9 @@ export function isConfigNameIgnoringCase(base: string): boolean {
   );
 }
 
-/** 硬保护（仅 `*.agent.config.json`）的拦截文案；target 为调用方传入的原始路径。 */
+/** 硬保护（`*.agent.config.json`，staff0 除外）的拦截文案；target 为调用方传入的原始路径。 */
 export function agentConfigBlockMessage(target: string): string {
-  return `访问控制：不可写 "${target}"（员工配置只能由上级主管或老板写）`;
+  return `访问控制：不可写 "${target}"（员工配置只能由空间管家 staff0 或老板写）`;
 }
 
 /** 越界写拦截文案（引导走授权申请通道）。 */
@@ -142,8 +145,8 @@ export function gateToolCall(
   const target = path.resolve(access.cwd, raw);
   const base = path.basename(target);
 
-  // 硬保护：`*.agent.config.json`（spec §6 / D8 唯一硬规则，R-P3-21）——先于其余分支。
-  if (writing && isAgentConfigName(base)) {
+  // 硬保护：`*.agent.config.json`（spec §6 / D8，R-P3-21）——先于其余分支；staff0 例外。
+  if (writing && isAgentConfigName(base) && access.selfId !== STAFF0_ID) {
     return { block: agentConfigBlockMessage(raw) };
   }
   // 识别为配置名（大小写不敏感）后：edit → 引导整体写；write → JSON + attenuation 校验。
