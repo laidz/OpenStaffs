@@ -66,8 +66,9 @@ function toContextItem(message: Message, kind?: string): ContextItem | undefined
       .trim();
     const toolCalls = blocks.flatMap((block) => {
       if (!block || (block as { type?: unknown }).type !== "toolCall") return [];
-      const call = block as { name?: unknown; arguments?: unknown };
-      return [{ name: String(call.name ?? ""), arguments: call.arguments ?? {} }];
+      const call = block as { id?: unknown; name?: unknown; arguments?: unknown };
+      // id 要留着：会话详情里用它把「调用」和「结果」配成一条（UI 不再分成两源）
+      return [{ ...(typeof call.id === "string" ? { id: call.id } : {}), name: String(call.name ?? ""), arguments: call.arguments ?? {} }];
     });
     return {
       role: "assistant",
@@ -111,6 +112,24 @@ function entryToChatMessage(entry: EntryRecord): ChatMessage | undefined {
   return undefined;
 }
 
+/** 工具参数里的人话提示：取第一个像样的字符串字段并截断（命令 > 路径 > 模式 > …），
+ *  供 UI 状态行展示「正在执行的到底是什么」。一个都没有就返回 undefined（不硬塞 JSON）。 */
+const HINT_KEYS = ["command", "path", "pattern", "query", "url", "prompt", "text", "content", "reason", "name"] as const;
+const HINT_MAX = 60;
+
+export function argsHint(args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
+  const record = args as Record<string, unknown>;
+  for (const key of HINT_KEYS) {
+    const value = record[key];
+    if (typeof value !== "string") continue;
+    const text = value.replace(/\s+/gu, " ").trim();
+    if (text === "") continue;
+    return [...text].length > HINT_MAX ? `${[...text].slice(0, HINT_MAX).join("")}…` : text;
+  }
+  return undefined;
+}
+
 /** Pi 事件 → 归一化事件（不泄漏 Pi 类型）。 */
 export function mapPiEvent(event: PiAgentEvent, convId: string): HarnessEvent[] {
   switch (event.type) {
@@ -119,6 +138,8 @@ export function mapPiEvent(event: PiAgentEvent, convId: string): HarnessEvent[] 
       for (const change of event.changes) {
         if (change.type === "text_delta") out.push({ type: "delta", convId, channel: "text", delta: change.delta });
         else if (change.type === "thinking_delta") out.push({ type: "delta", convId, channel: "thinking", delta: change.delta });
+        // 工具调用参数开始流出：状态行显「正在准备调用 X」（后面可能还要好几秒才真正执行）
+        else if (change.type === "toolcall_start") out.push({ type: "toolCall", convId, name: change.block.type === "toolCall" ? change.block.name : "" });
       }
       return out;
     }
@@ -136,8 +157,10 @@ export function mapPiEvent(event: PiAgentEvent, convId: string): HarnessEvent[] 
       return [{ type: "run", convId, phase: "start" }];
     case "run_end":
       return [{ type: "run", convId, phase: "end" }];
-    case "tool_execution_start":
-      return [{ type: "tool", convId, name: event.toolName, phase: "start" }];
+    case "tool_execution_start": {
+      const hint = argsHint(event.args);
+      return [{ type: "tool", convId, name: event.toolName, phase: "start", ...(hint === undefined ? {} : { hint }) }];
+    }
     case "tool_execution_end":
       return [{ type: "tool", convId, name: event.toolName, phase: "end" }];
     case "task_failed":

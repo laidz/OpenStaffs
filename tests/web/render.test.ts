@@ -374,8 +374,8 @@ describe("会话详情 / 定义文件面板", () => {
     cwd: "/office/work/alice",
     items: [
       { role: "user", text: "写个文件" },
-      { role: "assistant", text: "", toolCalls: [{ name: "write", arguments: { path: "a.md", content: "<x>" } }] },
-      { role: "tool", text: "ok", toolCallId: "call_1" },
+      { role: "assistant", text: "", toolCalls: [{ id: "call_1", name: "write", arguments: { path: "a.md", content: "<x>" } }] },
+      { role: "tool", text: "ok", toolCallId: "call_1", toolName: "write" },
       { role: "assistant", text: "完成" },
     ],
   };
@@ -389,11 +389,49 @@ describe("会话详情 / 定义文件面板", () => {
     expect(html).toContain("你是 alice。&lt;系统&gt;");
     expect(html).toContain("工具调用：write");
     expect(html).toContain("&lt;x&gt;");
-    expect(html).toContain("工具结果");
     expect(html).toContain("完成");
     expect(html).not.toContain("<系统>");
     // 顶部信息条的入口不在这里：详情就有「详情」按钮，不再需要面板内的会话列表
     expect(sessionInfoHtml({ ...initialState, configured: true, roomKey: "dm:alice", sessions: [{ memberId: "alice", ...dm }] })).toContain('data-session-detail="conv_dm"');
+  });
+
+  it("工具调用与结果合成一条（不默认展开）；配不上的结果仍单独成条；结果默认收起", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    // 配上的结果不再单独出一个「工具结果」条目：只在调用块里出现一次
+    expect(html).not.toContain('<strong>工具结果</strong>');
+    expect(html.split("工具调用：write").length - 1).toBe(1);
+    expect(html).toContain("已完成"); // 状态徽标
+    // 默认收起：折叠块不带 open
+    expect(html).toContain('<details class="ctx-block ctx-call">');
+    expect(html).not.toContain(" open");
+
+    // 配不上的结果（调用不在视图里）：独立成条且同样默认收起
+    const orphan = sessionPanelHtml({ ...initialState, configured: true }, {
+      ...context,
+      items: [{ role: "tool", text: "孤立结果", toolCallId: "call_x", toolName: "bash" }],
+    });
+    expect(orphan).toContain('<strong>工具结果</strong>');
+    expect(orphan).toContain("工具结果：bash");
+    expect(orphan).toContain("孤立结果");
+    expect(orphan).not.toContain(" open");
+  });
+
+  it("条目区新的在最上面（逆序）；配对不受顺序影响", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    const first = html.indexOf("完成"); // 最后一条 assistant
+    const last = html.indexOf("写个文件"); // 第一条 user
+    expect(first).toBeGreaterThan(-1);
+    expect(last).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(last); // 最新在上
+    // 逆序后调用与结果仍然合成一条
+    expect(html).not.toContain("<strong>工具结果</strong>");
+    expect(html.split("工具调用：write").length - 1).toBe(1);
+  });
+
+  it("系统提示词有边框容器（不再是裸的正文）", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, context);
+    expect(html).toContain('<div class="ctx-system-body">');
+    expect(html).toContain('class="ctx-text"');
   });
 
   it("会话详情：拿不到上下文时给出提示，不留空白", () => {

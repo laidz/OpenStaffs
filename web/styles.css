@@ -126,7 +126,7 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .item-ctx { border: 0; background: transparent; color: #8a9099; cursor: pointer; font-size: 12px; padding: 6px 8px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .item-ctx:hover { background: #e3e5e8; color: #333; }
 /* 定义文件面板（只读，原样 JSON） */
-.agent-context .config-text { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 12px; max-height: calc(100vh - 140px); overflow: auto; font-size: 12.5px; }
+.agent-context .config-text { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 12px; max-height: calc(100vh - 140px); max-width: 100%; overflow: auto; font-size: 12.5px; }
 /* 面板（会话详情 / 定义文件） */
 #session-panel-reload { border-color: #faad14; background: #fffbe6; color: #ad6800; }
 .agent-context { flex: 1; overflow: auto; padding: 12px 16px 24px; }
@@ -134,11 +134,21 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .ctx-meta { color: #8a9099; font-size: 12px; }
 .ctx-running { color: #d48806; }
 .ctx-error { color: #f5222d; font-size: 12px; }
-.ctx-system { margin-bottom: 10px; }
-.ctx-system summary { cursor: pointer; color: #5b6169; font-size: 13px; }
-.ctx-item { border: 1px solid #e3e5e8; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fff; }
-.ctx-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #5b6169; margin-bottom: 4px; }
-.ctx-text { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 13px; line-height: 1.5; }
-.ctx-item pre { max-height: 420px; overflow: auto; background: #f7f8fa; border-radius: 6px; padding: 8px; }
+.ctx-system { margin-bottom: 10px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fafbfc; padding: 8px 10px; }
+.ctx-system > summary { cursor: pointer; color: #5b6169; font-size: 13px; }
+.ctx-system-body { margin-top: 8px; }
+/* 系统提示词正文：自带一层边框 / 底色，不再裸在灰底上 */
+.ctx-system pre { margin: 0; background: #fff; border: 1px solid #eceef1; border-radius: 6px; padding: 10px 12px; max-height: 360px; overflow: auto; }
+.ctx-item { border: 1px solid #e3e5e8; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fff; min-width: 0; }
+.ctx-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #5b6169; margin-bottom: 4px; flex-wrap: wrap; }
+/* 长内容一律在容器内消化：默认换行，硬断不开的（URL / 长 id）也能断；超长块再给横向滚动 */
+.ctx-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; margin: 0; font-size: 13px; line-height: 1.5; max-width: 100%; }
+.ctx-item pre { max-height: 420px; overflow: auto; background: #f7f8fa; border-radius: 6px; padding: 8px; margin: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ctx-items { min-width: 0; }
 .ctx-block { margin-top: 6px; }
 .ctx-block summary { cursor: pointer; font-size: 12px; color: #1a73e8; }
+/* 工具调用块：展开后先参数后结果，中间一条细分割线 */
+.ctx-call > .ctx-args { margin-top: 6px; }
+.ctx-call > .ctx-result { margin-top: 6px; border-top: 1px dashed #dfe2e7; padding-top: 6px; }
+.ctx-call > .ctx-result::before { content: "结果"; display: block; font-size: 12px; color: #8a9099; margin-bottom: 4px; }
+.ctx-ok { color: #389e0d; font-size: 12px; }

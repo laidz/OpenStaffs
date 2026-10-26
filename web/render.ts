@@ -303,7 +303,56 @@ const ROLE_LABEL: Record<ContextItemView["role"], string> = {
   tool: "工具结果",
 };
 
-function contextItemHtml(item: ContextItemView): string {
+/** 一条工具调用的状态徽标：无结果 / 出错 / 已完成。 */
+function callBadge(result: ContextItemView | undefined): string {
+  if (result === undefined) return '<span class="ctx-meta">无结果</span>';
+  return result.isError === true ? '<span class="ctx-error">错误</span>' : '<span class="ctx-ok">已完成</span>';
+}
+
+/**
+ * 工具调用 + 它自己的结果（同一个 toolCallId）合成**一块**可折叠内容，默认收起。
+ * 原来「调用」与「结果」是两条并列条目，UI 上像两件不相干的事，且默认全展开、很吵。
+ */
+function toolCallHtml(call: { id?: string; name: string; arguments?: unknown }, result: ContextItemView | undefined): string {
+  const args = `<pre class="ctx-args">${escapeHtml(JSON.stringify(call.arguments ?? {}, null, 2))}</pre>`;
+  const output =
+    result === undefined
+      ? ""
+      : `<div class="ctx-result"><pre>${escapeHtml(result.text === "" ? "（空输出）" : result.text)}</pre></div>`;
+  return `<details class="ctx-block ctx-call"><summary>工具调用：${escapeHtml(call.name)} ${callBadge(result)}</summary>${args}${output}</details>`;
+}
+
+/** 孤立结果（对应调用不在本视图里）：仍单独成条，同样默认收起。 */
+function orphanResultHtml(item: ContextItemView): string {
+  return `<details class="ctx-block ctx-call"><summary>工具结果：${escapeHtml(item.toolName ?? "工具")} ${callBadge(item)}</summary><pre>${escapeHtml(item.text === "" ? "（空输出）" : item.text)}</pre></details>`;
+}
+
+/**
+ * 条目列表渲染：先把「工具结果」按 toolCallId 归位到对应的调用上，再逐条渲染。
+ * 只有**真能配上调用**的结果才合并（配不上就独立成条，绝不隐身），其余照常展示。
+ * 传进来的列表按「新内容在前」排列（调用方已 reverse），配对与排序无关。
+ */
+function contextItemsHtml(items: ContextItemView[]): string {
+  const results = new Map<string, ContextItemView>();
+  for (const item of items) {
+    if (item.role === "tool" && item.toolCallId !== undefined) results.set(item.toolCallId, item);
+  }
+  const callIds = new Set<string>();
+  for (const item of items) {
+    for (const call of item.toolCalls ?? []) {
+      if (call.id !== undefined) callIds.add(call.id);
+    }
+  }
+  return items
+    .map((item) => {
+      // 能配上调用的工具结果：已并入那一块，不再单列
+      if (item.role === "tool" && item.toolCallId !== undefined && callIds.has(item.toolCallId)) return "";
+      return contextItemHtml(item, results);
+    })
+    .join("");
+}
+
+function contextItemHtml(item: ContextItemView, results: Map<string, ContextItemView>): string {
   const meta = item.kind === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.kind)}</span>`;
   const toolName = item.toolName === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolName)}</span>`;
   const error = item.isError === true ? '<span class="ctx-error">错误</span>' : "";
@@ -311,34 +360,38 @@ function contextItemHtml(item: ContextItemView): string {
     item.thinking === undefined || item.thinking === ""
       ? ""
       : `<details class="ctx-block"><summary>思考</summary><pre>${escapeHtml(item.thinking)}</pre></details>`;
-  const text = item.text === "" ? "" : `<pre class="ctx-text">${escapeHtml(item.text)}</pre>`;
-  const calls = (item.toolCalls ?? [])
-    .map(
-      (call) =>
-        `<details class="ctx-block"><summary>工具调用：${escapeHtml(call.name)}</summary><pre>${escapeHtml(JSON.stringify(call.arguments ?? {}, null, 2))}</pre></details>`,
-    )
-    .join("");
-  const empty = text === "" && thinking === "" && calls === "" ? '<div class="ctx-meta">（空）</div>' : "";
+  // 工具结果的正文放进折叠块里（不再在条目里重复一份）
+  const text = item.role === "tool" || item.text === "" ? "" : `<pre class="ctx-text">${escapeHtml(item.text)}</pre>`;
+  const calls =
+    item.role === "tool"
+      ? orphanResultHtml(item)
+      : (item.toolCalls ?? []).map((call) => toolCallHtml(call, call.id === undefined ? undefined : results.get(call.id))).join("");
+  // 工具结果的内容在折叠块里，不算「空」
+  const empty = text === "" && thinking === "" && calls === "" && item.role !== "tool" ? '<div class="ctx-meta">（空）</div>' : "";
   return `<div class="ctx-item ctx-${item.role}">
     <div class="ctx-head"><strong>${ROLE_LABEL[item.role]}</strong>${meta}${toolName}${error}${item.toolCallId === undefined ? "" : `<span class="ctx-meta">${escapeHtml(item.toolCallId)}</span>`}</div>
     ${thinking}${text}${calls}${empty}
   </div>`;
 }
 
+/**
+ * 会话详情面板的正文：头信息 + 系统提示词（常驻页首，可折叠）+ 模型条目。
+ * 条目区**新的在上**（逆序）：打工的会话动辄几十条，最关心的永远是最新那条，不用每次滑到底。
+ */
 function contextBodyHtml(context: SessionContextView): string {
   const usage = context.contextWindow === undefined
     ? `${context.contextUsed} tokens`
     : `${context.contextUsed} / ${context.contextWindow} tokens`;
   const system = context.instructions.trim() === ""
     ? '<p class="hint">（没有系统提示词）</p>'
-    : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></details>`;
+    : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><div class="ctx-system-body"><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></div></details>`;
   return `<div class="ctx-header">
       <div><strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(sessionTime(context.started))}</span></div>
       <div class="ctx-meta">${escapeHtml(context.model)} · 思考 ${escapeHtml(context.thinkingLevel ?? "—")} · ${escapeHtml(usage)}${context.running ? ' · <span class="ctx-running">运行中</span>' : ""}</div>
       ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
     </div>
     ${system}
-    <div class="ctx-items">${context.items.map(contextItemHtml).join("")}</div>`;
+    <div class="ctx-items">${contextItemsHtml([...context.items].reverse())}</div>`;
 }
 
 /**

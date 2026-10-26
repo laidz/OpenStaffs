@@ -102,11 +102,14 @@ describe("前端状态归约", () => {
     expect(state.busy["alice"]).toBe(true);
     expect(state.live["c1"]?.activity).toBe("正在思考…");
     state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "write" } });
-    expect(state.live["c1"]?.tools).toEqual(["write"]);
+    expect(state.live["c1"]?.tools.map((tool) => tool.name)).toEqual(["write"]);
     expect(state.live["c1"]?.activity).toBe("正在执行 write…");
-    // 工具结束：栈弹出，但状态行**不消失**（退化成「正在思考…」）——否则气泡高度塌陷、UI 跳动
-    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "end" } });
+    // 工具结束：栈里移除，但状态行**不消失**（退化成「正在思考…」）——否则气泡高度塌陷、UI 跳动
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "end", name: "write" } });
     expect(state.live["c1"]?.tools).toEqual([]);
+    // 毫秒级工具一闪就过：结束后先把「刚跑完什么」摆出来（下一步的思考增量再盖回「正在思考」）
+    expect(state.live["c1"]?.activity).toBe("已完成 write");
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "thinking", delta: "嗯" } });
     expect(state.live["c1"]?.activity).toBe("正在思考…");
     state = reduce(state, { type: "sse", event: { type: "room.failed", roomKey: "dm:alice", convId: "c1", memberId: "alice", message: "模型不可用" } });
     expect(state.live["c1"]?.error).toBe("模型不可用");
@@ -125,6 +128,40 @@ describe("前端状态归约", () => {
     // 工具结束后又回到思考（模型接着算下一轮）
     state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "thinking", delta: "再" } });
     expect(state.live["c1"]?.activity).toBe("正在执行 shell…"); // 工具仍在跑：工具优先
+  });
+
+  it("状态行真实体现工具阶段：准备调用（参数流）→ 执行（带参数提示）→ 并行 → 结束回思考", () => {
+    let state = inRoom();
+    // 1) 模型开始生成工具调用：还在流参数，通常好几秒
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "toolCall", phase: "start", name: "bash" } });
+    expect(state.live["c1"]?.activity).toBe("正在准备调用 bash…");
+    expect(state.live["c1"]?.tools).toEqual([]); // 还没真开始跑：不进工具栈
+
+    // 2) 真正开始执行：带参数人话提示
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "bash", hint: "sleep 1.5; echo done" } });
+    expect(state.live["c1"]?.activity).toBe("正在执行 bash：sleep 1.5; echo done");
+
+    // 3) 并行第二个工具：显示数量 + 名字（执行中的提示词太长就只报名字）
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "read", hint: "a.md" } });
+    expect(state.live["c1"]?.activity).toBe("正在执行 2 个工具：bash、read");
+
+    // 4) 后开始的先结束：按名字移除，不误删另一个（并行不能简单弹栈）
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "end", name: "read" } });
+    expect(state.live["c1"]?.tools.map((tool) => tool.name)).toEqual(["bash"]);
+    expect(state.live["c1"]?.activity).toBe("正在执行 bash：sleep 1.5; echo done");
+
+    // 5) 最后一个也结束：先显「已完成 bash」，下一段思考增量再盖回「正在思考…」
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "end", name: "bash" } });
+    expect(state.live["c1"]?.activity).toBe("已完成 bash");
+    state = reduce(state, { type: "sse", event: { type: "room.delta", roomKey: "dm:alice", convId: "c1", memberId: "alice", channel: "thinking", delta: "下" } });
+    expect(state.live["c1"]?.activity).toBe("正在思考…");
+  });
+
+  it("工具真在跑时，「准备调用」不抢状态行（以执行真相为准）", () => {
+    let state = inRoom();
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "tool", phase: "start", name: "bash", hint: "ls" } });
+    state = reduce(state, { type: "sse", event: { type: "room.activity", roomKey: "dm:alice", convId: "c1", memberId: "alice", kind: "toolCall", phase: "start", name: "read" } });
+    expect(state.live["c1"]?.activity).toBe("正在执行 bash：ls");
   });
 
   it("run end 清掉残留的流式气泡（中断后不留幽灵）；错误气泡保留", () => {

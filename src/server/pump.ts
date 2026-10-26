@@ -189,14 +189,16 @@ export class Pump {
         }
         case "run":
         case "tool":
+        case "toolCall":
           if (event.type === "run") {
             if (event.phase === "start") this.#running.add(convId);
             else this.#running.delete(convId);
           }
           hub.broadcast({
             type: "room.activity", roomKey: ref.roomKey, convId, memberId: ref.memberId,
-            kind: event.type, phase: event.phase,
-            ...(event.type === "tool" ? { name: event.name } : {}),
+            kind: event.type, phase: event.type === "toolCall" ? "start" : event.phase,
+            ...(event.type === "tool" ? { name: event.name, ...(event.hint === undefined ? {} : { hint: event.hint }) } : {}),
+            ...(event.type === "toolCall" ? { name: event.name } : {}),
           });
           return;
         case "failed":

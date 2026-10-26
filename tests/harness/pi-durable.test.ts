@@ -4,7 +4,7 @@ import path from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPiHarness, mapPiEvent } from "../../src/harness/pi-durable.ts";
+import { argsHint, createPiHarness, mapPiEvent } from "../../src/harness/pi-durable.ts";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { ConversationSpec, HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
@@ -527,6 +527,58 @@ describe("Pi 事件映射", () => {
       { type: "run", convId: "c1", phase: "start" },
     ]);
     expect(mapPiEvent({ type: "snapshot", entries: [] } as never, "c1")).toEqual([]);
+  });
+
+  it("toolcall_start → toolCall（模型开始生成工具调用）；toolcall_delta 不进事件流", () => {
+    const block = { type: "toolCall", id: "t1", name: "bash", arguments: {} };
+    expect(
+      mapPiEvent({ type: "message_update", changes: [{ type: "toolcall_start", contentIndex: 0, block }] } as never, "c1"),
+    ).toEqual([{ type: "toolCall", convId: "c1", name: "bash" }]);
+    expect(
+      mapPiEvent(
+        { type: "message_update", changes: [{ type: "toolcall_delta", contentIndex: 0, path: ["command"], delta: "ls" }] } as never,
+        "c1",
+      ),
+    ).toEqual([]);
+  });
+
+  it("argsHint：取最像人话的参数字段并截断（无字符串字段则不塞提示）", () => {
+    expect(argsHint({ command: "ls  -la\n/tmp" })).toBe("ls -la /tmp");
+    expect(argsHint({ path: "a/b.md" })).toBe("a/b.md");
+    expect(argsHint({ command: "x".repeat(80) })).toBe(`${"x".repeat(60)}…`);
+    expect(argsHint({ count: 3, nested: { a: 1 } })).toBeUndefined();
+    expect(argsHint({ path: "   " })).toBeUndefined();
+    expect(argsHint(null)).toBeUndefined();
+    expect(argsHint([1, 2])).toBeUndefined();
+  });
+
+  it("真实跑一个工具：tool 事件 start 带参数提示（命令 / 路径），end 不带", async () => {
+    const workdir = path.join(root, "work", "alice");
+    fs.mkdirSync(workdir, { recursive: true });
+    fs.writeFileSync(path.join(workdir, "hello.txt"), "hi\n");
+    const { models } = fauxModels([
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo hi" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("跑完了"),
+    ]);
+    const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "tool-hint.sqlite"), models });
+    await harness.open();
+    try {
+      const convId = await harness.startSession(spec(workdir));
+      const events: HarnessEvent[] = [];
+      const unsubscribe = await harness.watch(convId, (event) => events.push(event));
+      try {
+        await harness.send(convId, "跑一下");
+      } finally {
+        await unsubscribe();
+      }
+      const start = events.find((event) => event.type === "tool" && event.phase === "start");
+      expect(start?.type === "tool" ? start.name : "").toBe("bash");
+      expect(start?.type === "tool" ? start.hint : "").toBe("echo hi");
+      const end = events.find((event) => event.type === "tool" && event.phase === "end");
+      expect(end?.type === "tool" ? end.hint : undefined).toBeUndefined();
+    } finally {
+      await harness.close();
+    }
   });
 });
 

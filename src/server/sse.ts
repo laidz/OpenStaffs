@@ -6,7 +6,7 @@ import type { PermissionRequestView } from "../app/permission-flow.ts";
 export type ServerEvent =
   | { type: "room.message"; roomKey: string; message: RoomMessage }
   | { type: "room.delta"; roomKey: string; convId: string; memberId: string; channel: "text" | "thinking"; delta: string }
-  | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool"; phase: "start" | "end"; name?: string }
+  | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool" | "toolCall"; phase: "start" | "end"; name?: string; hint?: string }
   | { type: "room.failed"; roomKey: string; convId: string; memberId: string; message: string; kind?: string }
   | { type: "room.pins"; roomKey: string; count: number }
   /** 老板的消息进了待发队列（员工在跑）：前端显示「排队中」。 */

@@ -3,22 +3,33 @@ import type { QueuedItemView } from "../src/app/outbox.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
 import type { EmployeeSession, EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
 
+/** 正在跑的工具（栈：支持并行调用）：`hint` 是参数里的人话提示（命令 / 路径…），有就上状态行。 */
+export type ToolActivity = { name: string; hint?: string };
+
 export type Live = {
   convId: string;
   memberId: string;
   text: string;
   thinking: string;
-  tools: string[];
-  /** 状态行文案（「正在思考…」/「正在执行 write…」）：run 期间**恒非空**，
+  tools: ToolActivity[];
+  /** 状态行文案（「正在思考…」/「正在准备调用 bash…」/「正在执行 bash：ls」）：run 期间**恒非空**，
    *  否则状态行随事件消失 → 气泡高度塌陷 → 消息列表跳动。 */
   activity: string;
   error?: string;
 };
 
-/** 状态行文案：正在跑的工具优先，其次按调用方给的默认动作（思考 / 输出）。 */
-function activityText(tools: string[], fallback: "thinking" | "text"): string {
-  const tool = tools[tools.length - 1];
-  if (tool !== undefined && tool !== "") return `正在执行 ${tool}…`;
+/** 正在跑的工具有人话文案；没工具在跑 → undefined（由调用方按当前阶段给文案）。 */
+export function runningText(tools: ToolActivity[]): string | undefined {
+  if (tools.length === 0) return undefined;
+  if (tools.length > 1) return `正在执行 ${tools.length} 个工具：${tools.map((tool) => tool.name).join("、")}`;
+  const only = tools[0]!;
+  return only.hint === undefined ? `正在执行 ${only.name}…` : `正在执行 ${only.name}：${only.hint}`;
+}
+
+/** 状态行文案：工具真实执行优先于一切（这是用户最想看到的事实），其次才是思考 / 输出。 */
+function activityText(tools: ToolActivity[], fallback: "thinking" | "text"): string {
+  const running = runningText(tools);
+  if (running !== undefined) return running;
   return fallback === "text" ? "正在输出…" : "正在思考…";
 }
 
@@ -115,6 +126,13 @@ function appendMessage(messages: RoomMessage[], incoming: RoomMessage): RoomMess
 
 function liveOf(state: State, convId: string, memberId: string): Live {
   return state.live[convId] ?? { convId, memberId, text: "", thinking: "", tools: [], activity: "" };
+}
+
+/** 工具结束：按名字移除最后一条同名项（并行调用时不是简单弹栈）；找不到就原样返回。 */
+function dropTool(tools: ToolActivity[], name: string | undefined): ToolActivity[] {
+  const index = name === undefined ? tools.length - 1 : tools.map((tool) => tool.name).lastIndexOf(name);
+  if (index < 0) return tools;
+  return [...tools.slice(0, index), ...tools.slice(index + 1)];
 }
 
 export function reduce(state: State, event: UiEvent): State {
@@ -256,10 +274,27 @@ function reduceSse(state: State, event: ServerEvent): State {
         }
         return { ...state, busy };
       }
-      // 工具起止：只改**工具栈**与状态行文案——状态行不会因为工具结束而消失（它退化成「正在思考…」）。
+      // 工具起止 / 调用参数开流：只改**工具栈**与状态行文案——状态行不会因为工具结束而消失（它退化成「正在思考…」）。
+      if (event.kind === "toolCall") {
+        const composing = liveOf(state, event.convId, event.memberId);
+        if (runningText(composing.tools) !== undefined) return state; // 已有工具真在跑：以执行真相为准
+        return {
+          ...state,
+          live: { ...state.live, [event.convId]: { ...composing, activity: `正在准备调用 ${event.name === "" || event.name === undefined ? "工具" : event.name}…` } },
+        };
+      }
       const existing = liveOf(state, event.convId, event.memberId);
-      const tools = event.phase === "start" ? [...existing.tools, event.name ?? ""] : existing.tools.slice(0, -1);
-      return { ...state, live: { ...state.live, [event.convId]: { ...existing, tools, activity: activityText(tools, "thinking") } } };
+      const tools =
+        event.phase === "start"
+          ? [...existing.tools, { name: event.name ?? "", ...(event.hint === undefined ? {} : { hint: event.hint }) }]
+          : dropTool(existing.tools, event.name);
+      // 结束时不立即改回「正在思考」：先诚实地把「刚跑完什么」摆一会（毫秒级工具一闪就过），
+      // 下一段思考增量到达自然会盖成「正在思考…」。
+      const activity =
+        event.phase === "start"
+          ? activityText(tools, "thinking")
+          : (runningText(tools) ?? (event.name === undefined || event.name === "" ? "正在思考…" : `已完成 ${event.name}`));
+      return { ...state, live: { ...state.live, [event.convId]: { ...existing, tools, activity } } };
     }
     case "room.failed": {
       const existing = liveOf(state, event.convId, event.memberId);

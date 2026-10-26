@@ -22,7 +22,7 @@ export type ContextItemView = {
   kind?: string;
   text: string;
   thinking?: string;
-  toolCalls?: { name: string; arguments: unknown }[];
+  toolCalls?: { id?: string; name: string; arguments: unknown }[];
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;

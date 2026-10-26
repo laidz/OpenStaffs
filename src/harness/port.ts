@@ -20,7 +20,7 @@ export type ContextItem = {
   kind?: string;
   text: string;
   thinking?: string;
-  toolCalls?: { name: string; arguments: unknown }[];
+  toolCalls?: { id?: string; name: string; arguments: unknown }[];
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
@@ -88,7 +88,10 @@ export type HarnessEvent =
   | { type: "delta"; convId: string; channel: "text" | "thinking"; delta: string }
   | { type: "message"; convId: string; message: ChatMessage }
   | { type: "run"; convId: string; phase: "start" | "end" }
-  | { type: "tool"; convId: string; name: string; phase: "start" | "end" }
+  | { type: "tool"; convId: string; name: string; phase: "start" | "end"; hint?: string }
+  /** 模型开始生成一个工具调用（参数还在流）：UI 据此显示「正在准备调用 X」——
+   *  这一步可能持续好几秒（长命令 / 长参数），不能算作「正在思考」。 */
+  | { type: "toolCall"; convId: string; name: string }
   | { type: "failed"; convId: string; message: string; kind: string }
   /** 输入受理状态变化（排队 → 落盘 → 结束）；待发队列据此展示与撤下。 */
   | { type: "submission"; convId: string; id: string; status: SubmissionStatus };

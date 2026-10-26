@@ -232,6 +232,26 @@ describe("落库异常不连坐（Task 6 收口）", () => {
   });
 });
 
+describe("工具活动广播（前端状态行的真相源）", () => {
+  it("tool start 带 name + hint、end 不带；toolCall（生成参数）广播 kind=toolCall / phase=start", async () => {
+    seedEmployee("alice");
+    const harness = new StubHarness();
+    const { pump, events } = makePump(harness);
+    await pump.register("conv_alice", { roomKey: "dm:alice", memberId: "alice" });
+
+    harness.emit("conv_alice", { type: "toolCall", convId: "conv_alice", name: "bash" });
+    harness.emit("conv_alice", { type: "tool", convId: "conv_alice", name: "bash", phase: "start", hint: "echo hi" });
+    harness.emit("conv_alice", { type: "tool", convId: "conv_alice", name: "bash", phase: "end" });
+
+    expect(events).toEqual([
+      { type: "room.activity", roomKey: "dm:alice", convId: "conv_alice", memberId: "alice", kind: "toolCall", phase: "start", name: "bash" },
+      { type: "room.activity", roomKey: "dm:alice", convId: "conv_alice", memberId: "alice", kind: "tool", phase: "start", name: "bash", hint: "echo hi" },
+      { type: "room.activity", roomKey: "dm:alice", convId: "conv_alice", memberId: "alice", kind: "tool", phase: "end", name: "bash" },
+    ]);
+    await pump.unregister("conv_alice");
+  });
+});
+
 describe("运行状态", () => {
   it("isRunning：run start/end 维护，unregister 清掉", async () => {
     seedEmployee("alice");
