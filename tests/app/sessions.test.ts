@@ -3,11 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fallbackTitle, nameNewSession, renameSession, type SessionTitleDeps, type TitleEvent } from "../../src/app/sessions.ts";
-import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 
-function tempStore(): { store: MessageStore; cleanup: () => void } {
+function tempStore(): { store: SessionStore; cleanup: () => void } {
   const dir = mkdtempSync(path.join(tmpdir(), "os-title-"));
-  const store = openMessageStore(path.join(dir, "openstaffs.sqlite"));
+  const store = openSessionStore(path.join(dir, "openstaffs.sqlite"));
+  // 标题与「会话」是同一张表同一行：每个用例先建出这几条会话。
+  for (const convId of ["conv_a", "conv_b", "conv_c", "conv_d"]) {
+    store.open({ convId, room: "dm:alice", memberId: "alice", kind: "dm", now: new Date().toISOString() });
+  }
   return { store, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -24,12 +28,12 @@ test("nameNewSession 先落时间标题并广播；命名成功后改成 auto �
     const deps: SessionTitleDeps = { store, notify: (event) => events.push(event), namer: async () => "修复登录 Bug" };
     nameNewSession(deps, "dm:alice", "conv_a", "帮我看看登录为什么 500");
     // 同步部分：fallback 已落库并广播（不 await）
-    expect(store.sessionOf("conv_a")?.titleSource).toBe("fallback");
+    expect(store.get("conv_a")?.titleSource).toBe("fallback");
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ roomKey: "dm:alice", convId: "conv_a", title: store.sessionOf("conv_a")!.title });
+    expect(events[0]).toEqual({ roomKey: "dm:alice", convId: "conv_a", title: store.get("conv_a")!.title });
     await flush();
-    expect(store.sessionOf("conv_a")?.title).toBe("修复登录 Bug");
-    expect(store.sessionOf("conv_a")?.titleSource).toBe("auto");
+    expect(store.get("conv_a")?.title).toBe("修复登录 Bug");
+    expect(store.get("conv_a")?.titleSource).toBe("auto");
     expect(events).toHaveLength(2);
   } finally {
     cleanup();
@@ -42,7 +46,7 @@ test("命名失败（undefined）只留 fallback 标题", async () => {
     const deps: SessionTitleDeps = { store, notify: () => {}, namer: async () => undefined };
     nameNewSession(deps, "dm:alice", "conv_b", "你好");
     await flush();
-    expect(store.sessionOf("conv_b")?.titleSource).toBe("fallback");
+    expect(store.get("conv_b")?.titleSource).toBe("fallback");
   } finally {
     cleanup();
   }
@@ -54,7 +58,7 @@ test("没有 namer（自动命名不可用）：只落 fallback，不报错", as
     const deps: SessionTitleDeps = { store, notify: () => {} };
     nameNewSession(deps, "dm:alice", "conv_d", "你好");
     await flush();
-    expect(store.sessionOf("conv_d")?.titleSource).toBe("fallback");
+    expect(store.get("conv_d")?.titleSource).toBe("fallback");
   } finally {
     cleanup();
   }
@@ -73,8 +77,8 @@ test("手动改名后再来的自动结果不覆盖", async () => {
     renameSession(deps, "dm:alice", "conv_c", "我自己的名字", "manual");
     release("自动名字");
     await flush();
-    expect(store.sessionOf("conv_c")?.title).toBe("我自己的名字");
-    expect(store.sessionOf("conv_c")?.titleSource).toBe("manual");
+    expect(store.get("conv_c")?.title).toBe("我自己的名字");
+    expect(store.get("conv_c")?.titleSource).toBe("manual");
   } finally {
     cleanup();
   }

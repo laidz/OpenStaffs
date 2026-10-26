@@ -7,7 +7,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
-import { startNewSession } from "../../src/domain/conversation-chain.ts";
+
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { projectConfigFile } from "../../src/config/naming.ts";
 import { seedOffice, writeJsonFile } from "../helpers/office.ts";
@@ -16,6 +16,7 @@ import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { Outbox } from "../../src/app/outbox.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import type { QueuedItemView } from "../../src/app/outbox.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 import { messagesHtml } from "../../web/render.ts";
@@ -40,17 +41,29 @@ function getStore(): MessageStore {
   return messageStore;
 }
 
+// 会话表（唯一真相）：与消息同库文件；每个用例一套。
+let sessionStore: SessionStore | undefined;
+function getSessions(): SessionStore {
+  if (sessionStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    sessionStore = openSessionStore(officeDbFile(createWorkspace(root)));
+  }
+  return sessionStore;
+}
+
 afterEach(() => {
   messageStore?.close();
   messageStore = undefined;
+  sessionStore?.close();
+  sessionStore = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "openstaffs/.data"), { recursive: true, force: true });
 });
 
-function start(deps: Omit<ServerDeps, "store">): Promise<{ base: string; close: () => Promise<void> }> {
-  const server = createHttpServer({ ...deps, store: getStore() });
+function start(deps: Omit<ServerDeps, "store" | "sessions">): Promise<{ base: string; close: () => Promise<void> }> {
+  const server = createHttpServer({ ...deps, store: getStore(), sessions: getSessions() });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -234,11 +247,11 @@ async function startWithFaux(
     add: () => ({ pending: 0, close: () => {} }),
     size: 0,
   } as unknown as SseHub;
-  const pump = new Pump({ ws, harness, hub, store: getStore() });
+  const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
   const server = createHttpServer({
-    ws, store: getStore(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319,
+    ws, store: getStore(), sessions: getSessions(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319,
     permissionRequests: store, pump, hub,
-    titles: { store: getStore(), notify: (event) => hub.broadcast({ type: "session.title", ...event }) },
+    titles: { store: getSessions(), notify: (event) => hub.broadcast({ type: "session.title", ...event }) },
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -564,7 +577,7 @@ describe("房间 API", () => {
       });
       expect(patched.status).toBe(200);
       expect(await patched.json()).toMatchObject({ convId, title: "我自己改的", titleSource: "manual" });
-      expect(getStore().sessionOf(convId)).toMatchObject({ title: "我自己改的", titleSource: "manual" });
+      expect(getSessions().get(convId)).toMatchObject({ title: "我自己改的", titleSource: "manual" });
       expect(events.some((event) => event.type === "session.title" && event.convId === convId)).toBe(true);
 
       const after = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { title?: string }[] }[] };
@@ -759,10 +772,11 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
       size: 0,
     } as unknown as SseHub;
     // 房间视图改读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
-    const pump = new Pump({ ws, harness, hub, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
     const server = createHttpServer({
       ws,
       store: getStore(),
+      sessions: getSessions(),
       getConfig: () => configured,
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -1005,10 +1019,10 @@ describe("员工会话上下文 API", () => {
       projects: [{ id: "yt", alias: "油管", members: ["alice"] }, { id: "seo", members: ["bob"] }],
     });
     const ws = createWorkspace(root);
-    fs.mkdirSync(path.join(root, "work", "alice"), { recursive: true });
-    startNewSession(path.join(root, "work", "alice", "conversation_ids.md"), "conv_dm", "2026-10-25T10:00:00+08:00");
-    startNewSession(path.join(stateDir(ws), "chains", "group-yt", "alice.md"), "conv_yt", "2026-10-25T10:01:00+08:00");
-    startNewSession(path.join(stateDir(ws), "chains", "group-seo", "bob.md"), "conv_bob", "2026-10-25T10:02:00+08:00");
+    const seeded = getSessions();
+    seeded.open({ convId: "conv_dm", room: "dm:alice", memberId: "alice", kind: "dm", now: "2026-10-25T10:00:00+08:00" });
+    seeded.open({ convId: "conv_yt", room: "group:yt", memberId: "alice", kind: "group", now: "2026-10-25T10:01:00+08:00" });
+    seeded.open({ convId: "conv_bob", room: "group:seo", memberId: "bob", kind: "group", now: "2026-10-25T10:02:00+08:00" });
 
     const harness = {
       sessionUsage: async (convId: string) => ({

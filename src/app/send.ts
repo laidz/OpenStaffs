@@ -7,10 +7,12 @@ import type { Workspace } from "../domain/paths.ts";
 import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
 import type { MessageStore } from "../store/messages.ts";
 import { BOSS_PARTICIPANT, type StoredMessage } from "../store/row.ts";
-import { openDm, openGroup, newSession, relationKey, type Relation, type SessionDefaults } from "./conversations.ts";
+import type { SessionStore } from "../store/sessions.ts";
+import { relationKey, resolveSession, type Relation, type SessionDefaults } from "./conversations.ts";
 import { parseAgentReply, stripLeadingMentions } from "./message-row.ts";
 import { nameNewSession, type SessionTitleDeps } from "./sessions.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
+import { roomKeyOf } from "./rooms.ts";
 
 /** per-key 串行队列：同 key 串行（FIFO）、异 key 并行；前序失败不连坐后续。 */
 export class KeyedQueue {
@@ -36,11 +38,6 @@ export class EmptyGroupError extends Error {}
 /** 群聊消息没有 @ 到任何成员时拒绝发送（不再广播）。 */
 export class NoTargetsError extends Error {}
 
-/** 房间键（与 store / SSE 同口径）：私聊 `dm:<id>`、群聊 `group:<项目>`（不含成员）。 */
-function roomKeyOf(relation: Relation): string {
-  return relation.kind === "dm" ? `dm:${relation.employeeId}` : `group:${relation.project}`;
-}
-
 export type DeliveryReport = { memberId: string; convId: string; submissionId: string; status: SubmissionStatus };
 
 /**
@@ -57,6 +54,8 @@ export async function sendToRoom(
   text: string,
   options: {
     queue: KeyedQueue;
+    /** 会话表（唯一真相）：发送路径靠它把 (房间, 成员) 解析成 convId。 */
+    sessions: SessionStore;
     defaults?: SessionDefaults;
     requestId?: string;
     newSession?: boolean;
@@ -108,13 +107,12 @@ export async function sendToRoom(
   const deliveries = await Promise.all(
     targets.map((target) =>
       options.queue.run(relationKey(relation, target.memberId), async (): Promise<DeliveryReport> => {
-        const group = relation.kind === "group" ? relation.project : undefined;
-        const opened =
-          options.newSession === true
-            ? await newSession(ws, harness, relation, target.memberId, options.defaults, options.mcp)
-            : group === undefined
-              ? await openDm(ws, harness, target.memberId, options.defaults, options.mcp)
-              : await openGroup(ws, harness, group, target.memberId, options.defaults, options.mcp);
+        const opened = await resolveSession(
+          { ws, harness, sessions: options.sessions, ...(options.defaults === undefined ? {} : { defaults: options.defaults }), ...(options.mcp === undefined ? {} : { mcp: options.mcp }) },
+          roomKeyOf(relation),
+          target.memberId,
+          options.newSession === true ? { newSession: true } : {},
+        );
         const convId = opened.convId;
         const meta: InputMeta = {
           kind: "chat.message",
@@ -150,6 +148,7 @@ export async function triggerFromGroupReply(
   harness: HarnessPort,
   options: {
     queue: KeyedQueue;
+    sessions: SessionStore;
     defaults?: SessionDefaults;
     mcp?: McpSessionResolver;
     project: string;
@@ -175,7 +174,11 @@ export async function triggerFromGroupReply(
   return await Promise.all(
     deliveries.map((delivery) =>
       options.queue.run(relationKey({ kind: "group", project: options.project }, delivery.to), async (): Promise<DeliveryReport> => {
-        const { convId } = await openGroup(ws, harness, options.project, delivery.to, options.defaults, options.mcp);
+        const { convId } = await resolveSession(
+          { ws, harness, sessions: options.sessions, ...(options.defaults === undefined ? {} : { defaults: options.defaults }), ...(options.mcp === undefined ? {} : { mcp: options.mcp }) },
+          `group:${options.project}`,
+          delivery.to,
+        );
         const receipt = await harness.submit(convId, `${label}：${delivery.body}`, meta);
         return { memberId: delivery.to, convId, submissionId: receipt.id, status: receipt.status };
       }),

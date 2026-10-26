@@ -4,14 +4,14 @@
  *
  * 覆盖规则由 store 的条件 UPSERT 保证（见 `TitleSource`）：飞行中的自动命名结果不会盖掉手动改名。
  */
-import type { MessageStore, SessionMeta, TitleSource } from "../store/messages.ts";
+import type { SessionRecord, SessionStore, TitleSource } from "../store/sessions.ts";
 import type { Namer } from "./naming.ts";
 
 /** 标题变更事件（广播给 UI；roomKey 用于前端过滤房间）。 */
 export type TitleEvent = { roomKey: string; convId: string; title: string };
 
 export type SessionTitleDeps = {
-  store: Pick<MessageStore, "setTitle" | "sessionOf">;
+  store: Pick<SessionStore, "setTitle" | "get">;
   /** 广播（缺省不广播：测试 / 无 hub 场景）。 */
   notify?: (event: TitleEvent) => void;
   /** 命名器；缺省 = 自动命名不可用（只落时间标题）。 */
@@ -31,9 +31,9 @@ export function renameSession(
   convId: string,
   title: string,
   source: TitleSource,
-): SessionMeta {
+): SessionRecord {
   const meta = deps.store.setTitle(convId, title, source);
-  deps.notify?.({ roomKey, convId, title: meta.title });
+  deps.notify?.({ roomKey, convId, title: meta.title ?? title });
   return meta;
 }
 

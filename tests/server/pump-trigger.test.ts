@@ -9,9 +9,10 @@ import { seedOffice } from "../helpers/office.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
-import { openGroup, sessionChains } from "../../src/app/conversations.ts";
+import { resolveSession } from "../../src/app/conversations.ts";
 import { toRoomMessage } from "../../src/app/rooms.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-trigger-"));
 
@@ -25,9 +26,21 @@ function getStore(): MessageStore {
   return store;
 }
 
+// 会话表（唯一真相）：与消息同库文件。
+let sessionStore: SessionStore | undefined;
+function getSessions(): SessionStore {
+  if (sessionStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    sessionStore = openSessionStore(officeDbFile(createWorkspace(root)));
+  }
+  return sessionStore;
+}
+
 afterEach(() => {
   store?.close();
   store = undefined;
+  sessionStore?.close();
+  sessionStore = undefined;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -69,19 +82,18 @@ describe("群回复 @触发（pump 集成）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
     try {
-      const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceConv } = await resolveSession({ ws, harness, sessions: getSessions() }, "group:yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
       await harness.submit(aliceConv, "请安排一下收尾");
 
       // bob 与 carol 都被触发：新会话收到带发送者标注的 chat.mention，并各自产出回复
       const readTarget = async (id: string) => {
-        const chain = sessionChains(ws, { kind: "group", project: "yt" }).find((c) => c.memberId === id);
-        const active = chain?.rows.filter((row) => row.ended === null).at(-1);
+        const active = getSessions().active("group:yt", id);
         if (active === undefined) return undefined;
-        const messages = await harness.transcript(active.id);
-        return messages.some((m) => m.role === "assistant") ? { convId: active.id, messages } : undefined;
+        const messages = await harness.transcript(active.convId);
+        return messages.some((m) => m.role === "assistant") ? { convId: active.convId, messages } : undefined;
       };
       const bobActive = await waitFor(() => readTarget("bob"));
       const carolActive = await waitFor(() => readTarget("carol"));
@@ -136,9 +148,9 @@ describe("群回复 @触发（pump 集成）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
     try {
-      const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
+      const { convId: aliceConv } = await resolveSession({ ws, harness, sessions: getSessions() }, "group:yt", "alice");
       await pump.register(aliceConv, { roomKey: "group:yt", memberId: "alice" });
       await harness.submit(aliceConv, "请回答");
       await waitFor(async () =>

@@ -9,13 +9,17 @@ import { PermissionRequestNotFoundError, permissionRequestView, resolvePermissio
 import { seedOffice } from "../helpers/office.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-flow-"));
 /** 用例里开的自有消息库实例（afterEach 关闭，避免句柄泄漏）。 */
 const stores: MessageStore[] = [];
+/** 用例里开的会话表实例（同上）。 */
+const sessionStores: SessionStore[] = [];
 afterEach(() => {
   for (const store of stores.splice(0)) store.close();
+  for (const store of sessionStores.splice(0)) store.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -54,6 +58,7 @@ class FakePort implements HarnessPort {
     return `conv-${this.starts.length}`;
   }
   async attach(convId: string): Promise<boolean> { return convId.startsWith("conv-"); }
+  bindSession(): void {}
   async append(): Promise<void> {}
   async abort(): Promise<void> {}
   sessionInfo(): undefined { return undefined; }
@@ -85,7 +90,9 @@ function setup() {
   fs.mkdirSync(stateDir(ws), { recursive: true });
   const messages = openMessageStore(officeDbFile(ws));
   stores.push(messages);
-  const deps = { ws, harness: port, store, queue: new KeyedQueue(), defaults, register, broadcast, messages, broadcastMessage };
+  const sessions = openSessionStore(officeDbFile(ws));
+  sessionStores.push(sessions);
+  const deps = { ws, harness: port, store, queue: new KeyedQueue(), defaults, register, broadcast, messages, broadcastMessage, sessions };
   return { ws, store, port, register, broadcast, broadcastMessage, messages, deps };
 }
 

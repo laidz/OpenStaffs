@@ -12,10 +12,11 @@ import type { PermissionRequest, PermissionRequestStore } from "../domain/permis
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
 import type { HarnessPort } from "../harness/port.ts";
-import { newSession, openDm, openGroup, relationCwd, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
+import { relationCwd, resolveSession, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
 import { stripLeadingMentions } from "../app/message-row.ts";
 import { parseRoomKey, roomKeyOf, toRoomMessage, type RoomMessage, type RoomSpeaker } from "../app/rooms.ts";
 import { openMessageStore } from "../store/messages.ts";
+import type { SessionStore } from "../store/sessions.ts";
 import { memoryTools } from "./memory.ts";
 import { BOSS_PARTICIPANT } from "../store/row.ts";
 
@@ -36,6 +37,8 @@ export type ToolContext = {
   permissions?: ToolPermissions;
   /** 房间消息广播（R-P1-12）：装配层注入 SSE 喇叭；缺省不广播（工具仍落库）。 */
   broadcast?: (roomKey: string, message: RoomMessage) => void;
+  /** 会话表（唯一真相）：send_message / new_session 用它把 (房间, 成员) 解析成 convId。 */
+  sessions: SessionStore;
 };
 
 /** 统一注册表条目。 */
@@ -53,6 +56,18 @@ function displayName(ws: Workspace, id: string): string {
 /** 新会话/新条会话的模型与思考强度兜底（全局配置）。 */
 function defaultsOf(ctx: ToolContext): SessionDefaults | undefined {
   return sessionDefaults(readConfig(ctx.ws));
+}
+
+/** `resolveSession` 的依赖（工具侧：ws + harness + 会话表 + 默认值 / MCP）。 */
+function sessionDepsOf(ctx: ToolContext): Parameters<typeof resolveSession>[0] {
+  const defaults = defaultsOf(ctx);
+  return {
+    ws: ctx.ws,
+    harness: ctx.harness,
+    sessions: ctx.sessions,
+    ...(defaults === undefined ? {} : { defaults }),
+    ...(ctx.mcp === undefined ? {} : { mcp: ctx.mcp }),
+  };
 }
 
 /** 列出办公室：成员（id、展示名、所在部门） + 项目。 */
@@ -169,7 +184,7 @@ const sendMessage: ToolDef = {
     const target = String(args["target"]);
     const text = String(args["text"]);
     if (target === "boss") {
-      const { convId } = await openDm(ctx.ws, ctx.harness, ctx.selfId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await resolveSession(sessionDepsOf(ctx), roomKeyOf(ctx.relation), ctx.selfId);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = dm:<自己>，收件人 = 老板）。
       recordAndBroadcast(ctx, { projectId: null, toIds: [BOSS_PARTICIPANT], text });
@@ -180,7 +195,7 @@ const sendMessage: ToolDef = {
       const memberId = memberMatch[1]!;
       if (ctx.relation.kind !== "group") throw new Error("member: 目标只能在群聊里用（当前是私聊）");
       if (!parseMembers(ctx.ws, ctx.relation.project).includes(memberId)) throw new Error(`不是本群成员：${memberId}`);
-      const { convId } = await openGroup(ctx.ws, ctx.harness, ctx.relation.project, memberId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await resolveSession(sessionDepsOf(ctx), `group:${ctx.relation.project}`, memberId);
       await ctx.harness.submit(convId, text, { kind: "chat.message", data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = group:<当前群>，收件人 = 被触发的成员）。
       recordAndBroadcast(ctx, { projectId: ctx.relation.project, toIds: [memberId], text });
@@ -189,7 +204,7 @@ const sendMessage: ToolDef = {
     const projectMatch = /^project:(.+)$/u.exec(target);
     if (projectMatch !== null) {
       const projectId = projectMatch[1]!;
-      const { convId } = await openGroup(ctx.ws, ctx.harness, projectId, ctx.selfId, defaultsOf(ctx), ctx.mcp);
+      const { convId } = await resolveSession(sessionDepsOf(ctx), `group:${projectId}`, ctx.selfId);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
       // 房间可见发言：落库 + 广播（房间 = group:<该项目>）。
       // toIds 取空：该目标只是把消息写进「自己在该项目群的会话」，没有具体投递对象（不触发任何人）；
@@ -207,7 +222,7 @@ const newSessionTool: ToolDef = {
   description: "重开一段新会话（结束当前、开新条，旧会话保留可回看）。适合上下文太长或想彻底换个话题时。下一轮起生效。",
   parameters: Type.Object({}),
   async run(_args, ctx) {
-    await newSession(ctx.ws, ctx.harness, ctx.relation, ctx.selfId, defaultsOf(ctx), ctx.mcp);
+    await resolveSession(sessionDepsOf(ctx), roomKeyOf(ctx.relation), ctx.selfId, { newSession: true });
     return "已重开会话（下一轮起使用新会话）。";
   },
 };

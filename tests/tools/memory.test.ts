@@ -2,11 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkspace } from "../../src/domain/paths.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { openStaffsToolDefs, type ToolContext } from "../../src/tools/registry.ts";
 import { seedOffice } from "../helpers/office.ts";
 import { touch } from "../../src/domain/memory/store.ts";
 import type { Relation } from "../../src/domain/types.ts";
+import { openSessionStore } from "../../src/store/sessions.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-memtools-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -20,7 +21,8 @@ function ctx(employee = "alice"): ToolContext {
   });
   const ws = createWorkspace(root);
   const relation: Relation = { kind: "dm", employeeId: employee };
-  return { ws, selfId: employee, relation, harness: {} as never };
+  fs.mkdirSync(stateDir(ws), { recursive: true });
+  return { ws, selfId: employee, relation, harness: {} as never, sessions: openSessionStore(officeDbFile(ws)) };
 }
 
 function tool(name: string) {

@@ -49,9 +49,10 @@ function renderDynamic(event: UiEvent): void {
       renderPermCards();
       return;
     }
-    // 新开会话标志：只影响按钮态与输入框上方的提示。
+    // 新开会话标志：按钮态 + 输入框上方提示 + **聊天区（上一轮记录立刻收起）**。
     if (event.type === "fresh-session") {
       renderFreshSession();
+      renderMessages();
       return;
     }
     // 会话信息条：模型 / 思考强度 / 上下文用量。
@@ -635,11 +636,11 @@ async function sendCurrent(): Promise<void> {
   if (button !== null) button.disabled = true;
   try {
     await api.send(roomKey, text, crypto.randomUUID(), fresh);
-    if (fresh) dispatch({ type: "fresh-session", on: false }); // 一次一条：用完即清
     // 发送期间用户又改了输入（或点了别的成员）则不覆盖：未改动才重置草稿（重建 DOM 后也要补回）。
     const untouched = input !== null && input.value.trim() === text;
     if (fresh) {
       // 新开会话换了整条会话：房间视图整套消息都变了，走全量重取（增量合并会留着旧会话的消息）。
+      // 不在提前清 fresh 标志：「房间」事件会一并清掉——否则会先重画出上一轮气泡才被覆盖，视觉上闪一下。
       await enterRoom(roomKey);
     } else {
       // R9 兜底：服务端 pump 订阅晚于 submit，新房间的首条 boss 消息不会经 SSE 推来。
@@ -649,6 +650,8 @@ async function sendCurrent(): Promise<void> {
     if (untouched) applyDraft(isGroup ? draftAfterSend(targets) : "");
     void refreshSessionInfo(roomKey); // 上下文随这轮投递变化
   } catch (error) {
+    // 投递/重取失败：把「新开会话」就绲态也清掉，避免聊天区一直停在已清空的样子。
+    if (fresh) dispatch({ type: "fresh-session", on: false });
     reportError(error);
   } finally {
     sending = false;

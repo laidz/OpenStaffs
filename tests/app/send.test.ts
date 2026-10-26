@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { seedOffice } from "../helpers/office.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom, triggerFromGroupReply } from "../../src/app/send.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
 import { openMessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 
 /** 每个用例一个独立的自有消息库文件（与临时空间夹具同源）。 */
 const storeDirs: string[] = [];
@@ -21,6 +22,29 @@ afterEach(() => {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-send-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+/** 会话表（唯一真相）：每个用例一份；发送路径经 `resolveSession` 读写它。 */
+let sessions: SessionStore;
+const sessionDirs: string[] = [];
+beforeEach(() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "os-sessions-"));
+  sessionDirs.push(dir);
+  sessions = openSessionStore(path.join(dir, "s.db"));
+});
+afterEach(() => {
+  sessions.close();
+  for (const dir of sessionDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** 包一层：把会话表补进每个调用点（生产代码里由装配层注入）。 */
+type SendOptions = Omit<Parameters<typeof sendToRoom>[4], "sessions">;
+type SendArgs = Parameters<typeof sendToRoom>;
+const send = (ws: SendArgs[0], harness: SendArgs[1], relation: SendArgs[2], text: SendArgs[3], options: SendOptions) =>
+  sendToRoom(ws, harness, relation, text, { sessions, ...options });
+type TriggerArgs = Parameters<typeof triggerFromGroupReply>;
+type TriggerOptions = Omit<TriggerArgs[2], "sessions">;
+const trigger = (ws: TriggerArgs[0], harness: TriggerArgs[1], options: TriggerOptions) =>
+  triggerFromGroupReply(ws, harness, { sessions, ...options });
 
 /** 人 = 一份 `<id>.agent.config.json`（新形态夹具，经 seedOffice）。 */
 function seedEmployee(id: string, alias?: string) {
@@ -42,13 +66,16 @@ class FakePort implements HarnessPort {
 
   async open(): Promise<void> {}
   async close(): Promise<void> {}
+  /** 会话 id 单调递增（不随 `starts` 清空而回退）：会话表里 conv_id 是主键，不能重号。 */
+  #seq = 0;
   async startSession(spec: ConversationSpec): Promise<string> {
     this.starts.push(spec);
-    return `conv-${this.starts.length}`;
+    return `conv-${++this.#seq}`;
   }
   async attach(convId: string): Promise<boolean> {
     return convId.startsWith("conv-");
   }
+  bindSession(): void {}
   async append(): Promise<void> {}
   async abort(): Promise<void> {}
   sessionInfo(): undefined {
@@ -88,7 +115,7 @@ describe("发送编排", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const port = new FakePort();
-    const result = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "@老板 你好", {
+    const result = await send(ws, port, { kind: "dm", employeeId: "alice" }, "@老板 你好", {
       queue: new KeyedQueue(),
       defaults,
       requestId: "r1",
@@ -107,12 +134,12 @@ describe("发送编排", () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const port = new FakePort();
-    const placed = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "在吗", { queue: new KeyedQueue(), defaults });
+    const placed = await send(ws, port, { kind: "dm", employeeId: "alice" }, "在吗", { queue: new KeyedQueue(), defaults });
     expect(placed.deliveries[0]).toMatchObject({ memberId: "alice", status: "placed" });
     expect(placed.deliveries[0]!.submissionId).toBeTruthy();
 
     port.status = "queued";
-    const queued = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "再问", { queue: new KeyedQueue(), defaults });
+    const queued = await send(ws, port, { kind: "dm", employeeId: "alice" }, "再问", { queue: new KeyedQueue(), defaults });
     expect(queued.deliveries[0]).toMatchObject({ memberId: "alice", status: "queued" });
   });
 
@@ -126,20 +153,20 @@ describe("发送编排", () => {
     const queue = new KeyedQueue();
 
     // 先各建一条会话（链上已有活跃会话）
-    await sendToRoom(ws, port, relation, "@alice @bob 先热身", { queue, defaults });
+    await send(ws, port, relation, "@alice @bob 先热身", { queue, defaults });
     expect(port.starts).toHaveLength(2);
     port.starts.length = 0;
 
     // 再发一条：newSession → 每人各开一条新会话（而不是复用）
-    const fresh = await sendToRoom(ws, port, relation, "@alice @bob 重新开始", { queue, defaults, newSession: true });
+    const fresh = await send(ws, port, relation, "@alice @bob 重新开始", { queue, defaults, newSession: true });
     expect(port.starts).toHaveLength(2);
     expect(fresh.deliveries.map((d) => d.memberId)).toEqual(["alice", "bob"]);
     expect(new Set(fresh.deliveries.map((d) => d.convId)).size).toBe(2);
 
     // 不开新会话时复用旧会话：两次普通发送落在同一条 convId 上
-    await sendToRoom(ws, port, relation, "@alice 接着聊", { queue, defaults });
+    await send(ws, port, relation, "@alice 接着聊", { queue, defaults });
     const reused = port.submits.at(-1)!.convId;
-    await sendToRoom(ws, port, relation, "@alice 继续聊", { queue, defaults });
+    await send(ws, port, relation, "@alice 继续聊", { queue, defaults });
     expect(port.submits.at(-1)!.convId).toBe(reused);
     expect(port.starts).toHaveLength(2); // 没开新会话：没有新增会话
   });
@@ -152,12 +179,12 @@ describe("发送编排", () => {
     const port = new FakePort();
     const queue = new KeyedQueue();
 
-    const mentioned = await sendToRoom(ws, port, { kind: "group", project: "yt" }, "@alice 做视频", { queue, defaults });
+    const mentioned = await send(ws, port, { kind: "group", project: "yt" }, "@alice 做视频", { queue, defaults });
     expect(mentioned.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
     expect(port.submits[0]!.text).toBe("@alice 做视频");
 
     port.submits.length = 0;
-    const both = await sendToRoom(ws, port, { kind: "group", project: "yt" }, "@alice @bob 全体汇报", { queue, defaults });
+    const both = await send(ws, port, { kind: "group", project: "yt" }, "@alice @bob 全体汇报", { queue, defaults });
     expect(both.deliveries.map((d) => d.memberId).sort()).toEqual(["alice", "bob"]);
     const rids = new Set(port.submits.map((s) => (s.meta?.data as { roomMessageId?: string } | undefined)?.roomMessageId));
     expect(rids).toEqual(new Set([both.roomMessageId]));
@@ -170,7 +197,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
+      await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
       const rows = store.listByRoom("group:seo");
       expect(rows).toHaveLength(1);
       expect(rows[0]!.fromId).toBe("__boss");
@@ -186,7 +213,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@老板 在吗", { queue: new KeyedQueue(), store });
+      await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@老板 在吗", { queue: new KeyedQueue(), store });
       const rows = store.listByRoom("dm:alice");
       expect(rows).toHaveLength(1);
       expect(rows[0]!.projectId).toBeNull();
@@ -205,7 +232,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @老板 开工", { queue: new KeyedQueue(), store });
+      await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @老板 开工", { queue: new KeyedQueue(), store });
       const rows = store.listByRoom("group:seo");
       expect(rows).toHaveLength(1);
       expect(rows[0]!.fromId).toBe("__boss");
@@ -221,7 +248,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      const result = await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
+      const result = await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
       expect(result.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
       expect(store.listByRoom("dm:alice")).toEqual([]);
     } finally {
@@ -236,7 +263,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      const result = await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue() });
+      const result = await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue() });
       expect(result.deliveries.map((d) => d.memberId).sort()).toEqual(["alice", "bob"]);
       expect(result.recorded).toBeUndefined();
       expect(store.listByRoom("group:seo")).toEqual([]);
@@ -252,7 +279,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      const result = await sendToRoom(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
+      const result = await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
       const rows = store.listByRoom("group:seo");
       expect(rows).toHaveLength(1);
       expect(result.recorded).toBeDefined();
@@ -269,7 +296,7 @@ describe("发送编排", () => {
     const ws = createWorkspace(root);
     const store = tempStore();
     try {
-      const result = await sendToRoom(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
+      const result = await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
       expect(result.recorded).toBeUndefined();
       expect(store.listByRoom("dm:alice")).toEqual([]);
     } finally {
@@ -284,10 +311,10 @@ describe("发送编排", () => {
     const port = new FakePort();
     const queue = new KeyedQueue();
     await expect(
-      sendToRoom(ws, port, { kind: "group", project: "yt" }, "全体汇报", { queue, defaults }),
+      send(ws, port, { kind: "group", project: "yt" }, "全体汇报", { queue, defaults }),
     ).rejects.toThrow(NoTargetsError);
     await expect(
-      sendToRoom(ws, port, { kind: "group", project: "yt" }, "@老板 收到", { queue, defaults }),
+      send(ws, port, { kind: "group", project: "yt" }, "@老板 收到", { queue, defaults }),
     ).rejects.toThrow(NoTargetsError);
     expect(port.submits).toEqual([]);
   });
@@ -296,7 +323,7 @@ describe("发送编排", () => {
     seedOffice(root, { projects: [{ id: "empty" }] });
     const ws = createWorkspace(root);
     await expect(
-      sendToRoom(ws, new FakePort(), { kind: "group", project: "empty" }, "在吗", { queue: new KeyedQueue(), defaults }),
+      send(ws, new FakePort(), { kind: "group", project: "empty" }, "在吗", { queue: new KeyedQueue(), defaults }),
     ).rejects.toThrow(EmptyGroupError);
   });
 
@@ -310,8 +337,8 @@ describe("发送编排", () => {
       release = resolve;
     });
 
-    const first = sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "一", { queue, defaults });
-    const second = sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "二", { queue, defaults });
+    const first = send(ws, port, { kind: "dm", employeeId: "alice" }, "一", { queue, defaults });
+    const second = send(ws, port, { kind: "dm", employeeId: "alice" }, "二", { queue, defaults });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(port.submits).toHaveLength(1); // 第二个还没进入
     release();
@@ -329,7 +356,7 @@ describe("发送编排", () => {
     port.gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const p = sendToRoom(ws, port, { kind: "group", project: "yt" }, "@alice @bob 全体动起来", { queue: new KeyedQueue(), defaults });
+    const p = send(ws, port, { kind: "group", project: "yt" }, "@alice @bob 全体动起来", { queue: new KeyedQueue(), defaults });
     const started = Date.now();
     while (port.submits.length < 2 && Date.now() - started < 2000) {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -347,7 +374,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     seedGroup("yt", ["alice", "bob"]);
     const ws = createWorkspace(root);
     const port = new FakePort();
-    const reports = await triggerFromGroupReply(ws, port, {
+    const reports = await trigger(ws, port, {
       queue: new KeyedQueue(),
       defaults,
       project: "yt",
@@ -374,7 +401,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const port = new FakePort();
     const store = tempStore();
     try {
-      const reports = await triggerFromGroupReply(ws, port, {
+      const reports = await trigger(ws, port, {
         queue: new KeyedQueue(),
         defaults,
         project: "yt",
@@ -399,7 +426,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const port = new FakePort();
     const queue = new KeyedQueue();
     const run = (text: string) =>
-      triggerFromGroupReply(ws, port, { queue, defaults, project: "yt", senderId: "alice", convId: "c", entryId: "1", text });
+      trigger(ws, port, { queue, defaults, project: "yt", senderId: "alice", convId: "c", entryId: "1", text });
 
     const reports = await run("@bob 你好");
     expect(reports.map((r) => r.memberId)).toEqual(["bob"]);
@@ -419,7 +446,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const store = tempStore();
     const named: string[] = [];
     const titles = {
-      store,
+      store: sessions,
       notify: () => {},
       namer: async (text: string) => {
         named.push(text);
@@ -429,13 +456,13 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const port = new FakePort();
     const queue = new KeyedQueue();
 
-    await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "帮我看看登录", { queue, defaults, titles });
+    await send(ws, port, { kind: "dm", employeeId: "alice" }, "帮我看看登录", { queue, defaults, titles });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(named).toEqual(["帮我看看登录"]);
-    expect(store.sessionOf("conv-1")?.title).toBe("登录排查");
+    expect(sessions.get("conv-1")?.title).toBe("登录排查");
 
     // 第二条消息复用同一会话 → 不再命名
-    await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "继续", { queue, defaults, titles });
+    await send(ws, port, { kind: "dm", employeeId: "alice" }, "继续", { queue, defaults, titles });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(named).toHaveLength(1);
   });
@@ -448,7 +475,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const store = tempStore();
     const named: string[] = [];
     const titles = {
-      store,
+      store: sessions,
       notify: () => {},
       namer: async (text: string) => {
         named.push(text);
@@ -456,7 +483,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
       },
     };
     const port = new FakePort();
-    await sendToRoom(ws, port, { kind: "group", project: "yt" }, "@alice @bob 看下这个", {
+    await send(ws, port, { kind: "group", project: "yt" }, "@alice @bob 看下这个", {
       queue: new KeyedQueue(),
       defaults,
       titles,
@@ -464,7 +491,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(named).toHaveLength(2);
     for (const delivery of ["conv-1", "conv-2"]) {
-      expect(store.sessionOf(delivery)?.title).toBe("协作安排");
+      expect(sessions.get(delivery)?.title).toBe("协作安排");
     }
   });
 
@@ -472,7 +499,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const port = new FakePort();
-    const result = await sendToRoom(ws, port, { kind: "dm", employeeId: "alice" }, "你好", {
+    const result = await send(ws, port, { kind: "dm", employeeId: "alice" }, "你好", {
       queue: new KeyedQueue(),
       defaults,
     });

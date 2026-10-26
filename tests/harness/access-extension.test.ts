@@ -17,6 +17,7 @@ const aliceCwd = path.join(root, "agents", "alice");
 function spec(): ConversationSpec {
   return {
     cwd: aliceCwd,
+    relation: { kind: "dm", employeeId: "alice" },
     instructions: "你是 alice。",
     model: { provider: "faux", modelId: "faux-model" },
     access: { root, cwd: aliceCwd, selfId: "alice", permissions: { write: [aliceCwd], read: [aliceCwd], bash: [aliceCwd] } },
@@ -91,6 +92,7 @@ describe("并发写保护（work/）", () => {
     try {
       const convId = await harness.startSession({
         cwd: workdir,
+        relation: { kind: "dm", employeeId: "alice" },
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
         access: { root, cwd: workdir, selfId: "alice", permissions: { write: [workdir], read: [workdir], bash: [] } },

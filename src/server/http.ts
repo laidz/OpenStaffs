@@ -14,7 +14,7 @@ import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage
 import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  employeeActiveSessions, findSessionOwner, interruptRoom, roomSessionInfo, sessionChains, sessionDefaults, type Relation,
+  employeeActiveSessions, findSessionOwner, interruptRoom, roomSessionInfo, sessionDefaults, sessionList, type Relation,
 } from "../app/conversations.ts";
 import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
 import type { SessionTitleDeps } from "../app/sessions.ts";
@@ -22,6 +22,7 @@ import { renameSession } from "../app/sessions.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView, resolvePermissionRequest, PermissionRequestNotFoundError } from "../app/permission-flow.ts";
 import type { MessageStore } from "../store/messages.ts";
+import type { SessionStore } from "../store/sessions.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { SseHub } from "./sse.ts";
 
@@ -39,6 +40,8 @@ export type ServerDeps = {
   queue: KeyedQueue;
   /** 自有消息库（P1）：全进程唯一实例，由 main.ts 创建并注入；老板发消息时落一行。 */
   store: MessageStore;
+  /** 会话表（唯一真相：convId ↔ 房间 ↔ 主人）：会话列表 / 信息条 / 改名 / 发送都读它。 */
+  sessions: SessionStore;
   publicDir: string;
   /** 实际监听端口（启动参数 / config / 默认值解析后的结果）；status 展示用。 */
   port: number;
@@ -201,11 +204,11 @@ async function handleEmployees(
       projectAlias: projects.get(relation.project) ?? relation.project,
     };
   };
-  const sessions = employeeActiveSessions(deps.ws, employeeId);
-  const titles = deps.store.sessionsOf(sessions.map((session) => session.convId));
+  const sessions = employeeActiveSessions(deps.ws, deps.sessions, employeeId);
+  const titles = deps.sessions.getMany(sessions.map((session) => session.convId));
   const titleOf = (convId: string): { title: string } | Record<string, never> => {
     const meta = titles.get(convId);
-    return meta === undefined ? {} : { title: meta.title };
+    return meta?.title === undefined ? {} : { title: meta.title };
   };
 
   if (segments.length === 4 && segments[3] === "sessions") {
@@ -330,6 +333,7 @@ async function handleRooms(
     try {
       const result = await sendToRoom(deps.ws, harness, relation, text, {
         queue: deps.queue,
+        sessions: deps.sessions,
         store: deps.store,
         defaults,
         newSession,
@@ -412,7 +416,7 @@ async function handleRooms(
   }
 
   if (rest.length === 1 && rest[0] === "interrupt" && method === "POST") {
-    json(res, 200, await interruptRoom(deps.ws, harness, relation));
+    json(res, 200, await interruptRoom(deps.ws, harness, deps.sessions, relation));
     return;
   }
 
@@ -438,21 +442,24 @@ async function handleRooms(
   }
 
   if (rest.length === 2 && rest[0] === "sessions" && rest[1] === "info" && method === "GET") {
-    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation, deps.store) });
+    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation, deps.sessions) });
     return;
   }
 
   if (rest.length === 1 && rest[0] === "sessions" && method === "GET") {
-    const chains = sessionChains(deps.ws, relation);
-    // 标题批量取一次（列表不因 N 条会话做 N 次查询）；没有标题的会话不带字段。
-    const titles = deps.store.sessionsOf(chains.flatMap((chain) => chain.rows.map((row) => row.id)));
+    // 会话表 = 唯一真相：按房间列出每个成员的会话链（成员顺序来自项目 config）。
+    const chains = sessionList(deps.ws, deps.sessions, relation);
     json(res, 200, {
       chains: chains.map((chain) => ({
         ...chain,
-        rows: chain.rows.map((row) => {
-          const meta = titles.get(row.id);
-          return meta === undefined ? row : { ...row, title: meta.title, titleSource: meta.titleSource };
-        }),
+        rows: chain.rows.map((row) => ({
+          id: row.convId,
+          started: row.started,
+          ended: row.ended,
+          previous: row.previous,
+          ...(row.title === undefined ? {} : { title: row.title }),
+          ...(row.titleSource === undefined ? {} : { titleSource: row.titleSource }),
+        })),
       })),
     });
     return;
@@ -477,7 +484,7 @@ async function handleRooms(
       json(res, 404, { error: "会话不存在" });
       return;
     }
-    if (findSessionOwner(deps.ws, relation, convId) === undefined) {
+    if (findSessionOwner(deps.sessions, relation, convId) === undefined) {
       json(res, 404, { error: "会话不存在" });
       return;
     }
@@ -498,7 +505,7 @@ async function handleRooms(
       json(res, 404, { error: "房间不存在" });
       return;
     }
-    const owner = findSessionOwner(deps.ws, relation, convId);
+    const owner = findSessionOwner(deps.sessions, relation, convId);
     if (owner === undefined) {
       json(res, 404, { error: "会话不存在" });
       return;
@@ -623,6 +630,7 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                     harness,
                     store,
                     messages: deps.store,
+                    sessions: deps.sessions,
                     queue: deps.queue,
                     defaults: sessionDefaults(config)!,
                     ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),

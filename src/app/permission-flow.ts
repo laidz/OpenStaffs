@@ -8,6 +8,7 @@ import { loadEmployee, type Employee } from "../domain/employee.ts";
 import { normalizeTool, type PermissionRequest, type PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { MessageStore } from "../store/messages.ts";
+import type { SessionStore } from "../store/sessions.ts";
 import type { SessionDefaults } from "./conversations.ts";
 import { parseRoomKey, toRoomMessage, type RoomMessage } from "./rooms.ts";
 import { sendToRoom, type KeyedQueue } from "./send.ts";
@@ -33,6 +34,8 @@ export type PermissionFlowDeps = {
   mcp?: McpSessionResolver;
   /** 自有消息库（P1）：审批结果也是老板投递，一并落库，房间视图才看得到（缺省不落库）。 */
   messages?: MessageStore;
+  /** 会话表：发送路径的唯一解析入口 `resolveSession` 需要它。 */
+  sessions: SessionStore;
   /** best-effort 订阅新触发的会话（与 HTTP 发送同口径）。 */
   register?: (convId: string, ref: { roomKey: string; memberId: string }) => Promise<void>;
   /** 处理完成广播（SSE permission.resolved）。 */
@@ -80,6 +83,7 @@ export async function resolvePermissionRequest(
     try {
       const result = await sendToRoom(deps.ws, deps.harness, relation, text, {
         queue: deps.queue,
+        sessions: deps.sessions,
         ...(deps.defaults === undefined ? {} : { defaults: deps.defaults }),
         ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
         ...(deps.messages === undefined ? {} : { store: deps.messages }),

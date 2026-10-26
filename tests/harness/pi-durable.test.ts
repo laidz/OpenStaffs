@@ -16,6 +16,7 @@ afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 function spec(cwd: string): ConversationSpec {
   return {
     cwd,
+    relation: { kind: "dm", employeeId: "alice" },
     instructions: "你是测试员工。",
     model: { provider: "faux", modelId: "faux-model" },
     access: { root, cwd, selfId: "alice", permissions: { write: [cwd], read: [cwd], bash: [cwd] } },
@@ -120,14 +121,14 @@ describe("Pi Durable HarnessPort", () => {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
       const convId = await harness.startSession(spec(cwd));
-      expect(await harness.attach(convId, access(cwd))).toBe(true);
+      expect(await harness.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(true);
       await harness.send(convId, "你好");
       expect(seenSystem).toContain("你是测试员工。");
 
       const other = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state2.sqlite"), models });
       await other.open();
       try {
-        expect(await other.attach(convId, access(cwd))).toBe(false);
+        expect(await other.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(false);
       } finally {
         await other.close();
       }
@@ -186,6 +187,7 @@ describe("Pi Durable HarnessPort", () => {
       fs.mkdirSync(cwd, { recursive: true });
       const empty: ConversationSpec = {
         cwd,
+        relation: { kind: "dm", employeeId: "nobody" },
         instructions: "无模型员工。",
         model: { provider: "", modelId: "" },
         access: access(cwd),
@@ -196,25 +198,27 @@ describe("Pi Durable HarnessPort", () => {
       await harness.close();
     }
   });
-  it("sessionInfo：私聊/群聊各归其位（startSession 与 attach 都登记）", async () => {
+  it("sessionInfo：房间归属由会话显式给出（同一 cwd 也能分清私聊 / 群聊），attach 与 bindSession 都登记", async () => {
     const { models } = fauxModels([fauxAssistantMessage("ok")]);
     const harness = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state-sinfo.sqlite"), models });
     await harness.open();
     try {
-      const dmCwd = path.join(root, "agents", "alice");
-      const groupCwd = path.join(root, "projects", "demo");
-      fs.mkdirSync(dmCwd, { recursive: true });
-      fs.mkdirSync(groupCwd, { recursive: true });
+      // 关键：群聊与私聊的 cwd 是同一个（员工自己的工作目录）——靠 cwd 推断房间就是串台。
+      const cwd = path.join(root, "work", "alice");
+      fs.mkdirSync(cwd, { recursive: true });
 
-      const dmConv = await harness.startSession(spec(dmCwd));
+      const dmConv = await harness.startSession(spec(cwd));
       expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
 
-      const groupSpec: ConversationSpec = { ...spec(groupCwd), cwd: groupCwd, access: { ...access(groupCwd), cwd: groupCwd } };
-      const groupConv = await harness.startSession(groupSpec);
+      const groupConv = await harness.startSession({ ...spec(cwd), relation: { kind: "group", project: "demo" } });
       expect(harness.sessionInfo(groupConv)).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" } });
 
-      expect(await harness.attach(dmConv, access(dmCwd))).toBe(true);
+      expect(await harness.attach(dmConv, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(true);
       expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+
+      // 重启后 pump 只订阅不停 attach：靠 bindSession 补登记（房间由会话链推出）
+      harness.bindSession("conv:restart", { selfId: "alice", relation: { kind: "group", project: "demo" } });
+      expect(harness.sessionInfo("conv:restart")).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" } });
       expect(harness.sessionInfo("conv:不存在")).toBeUndefined();
     } finally {
       await harness.close();
@@ -598,6 +602,7 @@ describe("会话完整上下文（context）", () => {
     try {
       const convId = await harness.startSession({
         cwd: workdir,
+        relation: { kind: "dm", employeeId: "alice" },
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },
         access: { root, cwd: workdir, selfId: "alice", permissions: { write: [workdir], read: [workdir], bash: [] } },

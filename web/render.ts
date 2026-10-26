@@ -147,8 +147,14 @@ export function hiddenMessagesHtml(hidden: number): string {
   return `<div class="log-divider" id="log-divider">上一轮会话内容已收起（${hidden} 条），点「历史」可回看</div>`;
 }
 
-/** 消息区整体（说明条 + 气泡 + 排队中）：「渲染整段」与「局部重画」共用，避免两处口径不一致。 */
+/** 消息区整体：说明条 + 气泡 + 排队中。
+ *  「新开会话」已就绪（未发送）= **聊天区立刻清空**（上一轮记录不再显示）；
+ *  再点一下取消 → `state.messages` 原封不动，直接重画就回来了。
+ *  发送第一条后才真正建会话，服务端也只返回新一轮（见 store.currentWindow）。 */
 export function messageListHtml(state: State): string {
+  if (state.freshSession) {
+    return `<div class="log-divider" id="log-divider">新一轮会话：发送第一条消息后开始（再点「新开会话」可取消，恢复上一轮记录）</div>`;
+  }
   const body = messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
   const divider = hiddenMessagesHtml(state.hiddenMessages);
   return divider === "" ? body : divider + body;
@@ -175,14 +181,14 @@ export function liveHtml(state: State): string {
 
 /**
  * 「新开会话」已就绪时的提示文案（空串 = 未就绪）。
- * 语义：按钮只置标志，下一条消息**投递时**才真正建会话——空点不建、撤回/中断也不建；
- * 建会话那一刻上一轮内容从聊天区收起（仍可到「历史」回看）。
+ * 语义：点击 → **聊天区立刻清空上一轮记录**（纯 UI 状态，可取消）；下一条消息**投递时**才真正建会话
+ * （空点不建、撤回/中断也不建）；建会话那一刻服务端也只返回新一轮（见 store.currentWindow）。
  */
 export function freshSessionHint(state: State): string {
   if (!state.freshSession || state.roomKey === undefined) return "";
   return state.roomKey.startsWith("group:")
-    ? "下一条消息将开启新会话（@ 到的成员各开一条；上一轮内容从聊天区收起，可在「历史」回看）；再点「新开会话」可取消"
-    : "下一条消息将开启新会话（当前会话将结束，上一轮内容从聊天区收起，可在「历史」回看）；再点「新开会话」可取消";
+    ? "发送第一条消息即开启新会话（@ 到的成员各开一条）；旧记录可在「历史」回看，再点「新开会话」可取消"
+    : "发送第一条消息即开启新会话（当前会话将结束）；旧记录可在「历史」回看，再点「新开会话」可取消";
 }
 
 /** 上下文 token 数的紧凑展示：999 / 12.8K / 1.2M。 */
@@ -252,7 +258,7 @@ export function chatHtml(state: State): string {
   return `<section class="chat">
     <header class="chat-head">
       <span class="title">${escapeHtml(title)}</span>${sessionTitleChip}
-      <button id="btn-new-session" class="btn-new-session${armed}" title="下一条消息开启新会话">新开会话</button>
+      <button id="btn-new-session" class="btn-new-session${armed}" title="清空聊天区并开启新会话（发送第一条后生效）">新开会话</button>
       <button id="btn-history">历史</button>
       <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
     </header>

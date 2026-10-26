@@ -12,30 +12,10 @@ export type MessageStore = {
    * 没有起点行（旧库 / 从没点过「新开会话」）= 整本房间流水。
    */
   currentWindow(room: string): StoredMessage[];
-  /** 会话元数据（自有库 `sessions` 表）：拿不到返回 undefined。 */
-  sessionOf(convId: string): SessionMeta | undefined;
-  /** 批量取（列表页避免 N 次查询）：只包含存在的会话。 */
-  sessionsOf(convIds: readonly string[]): Map<string, SessionMeta>;
-  /**
-   * 写标题（条件 UPSERT）：`manual` 恒覆盖；`fallback` / `auto` 只在行不存在或现状为 `fallback` 时覆盖。
-   * 返回**落库后的实际值**（未覆盖时是旧值）——调用方据此知道「没盖掉手动改名」。
-   */
-  setTitle(convId: string, title: string, source: TitleSource): SessionMeta;
   close(): void;
 };
 
-/** 标题来源：决定覆盖规则的唯一依据。 */
-export type TitleSource = "fallback" | "auto" | "manual";
-
-/** `sessions` 表的一行（会话级元数据；标题是当前唯一业务）。 */
-export type SessionMeta = { convId: string; title: string; titleSource: TitleSource; updatedAt: string };
-
 type Row = { id: string; seq: number; send_time: string; room: string; project_id: string | null; from_id: string; to_ids: string; text: string; session_start: number };
-type SessionRow = { conv_id: string; title: string; title_source: string; updated_at: string };
-
-function toSessionMeta(row: SessionRow): SessionMeta {
-  return { convId: row.conv_id, title: row.title, titleSource: row.title_source as TitleSource, updatedAt: row.updated_at };
-}
 
 function toStored(r: Row): StoredMessage {
   return {
@@ -69,12 +49,6 @@ export function openMessageStore(file: string): MessageStore {
       session_start INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_messages_room_seq ON messages(room, seq);
-    CREATE TABLE IF NOT EXISTS sessions (
-      conv_id      TEXT PRIMARY KEY,
-      title        TEXT NOT NULL,
-      title_source TEXT NOT NULL,
-      updated_at   TEXT NOT NULL
-    );
   `);
   // 旧库迁移（开发阶段：破坏性更新可接受，不为老结构留分支）：
   // session_id 是从未写入过的死列 → 删；session_start 是本轮起点标记 → 补。
@@ -95,16 +69,7 @@ export function openMessageStore(file: string): MessageStore {
       AND seq >= COALESCE((SELECT MAX(seq) FROM messages WHERE room = ? AND session_start = 1), 0)
     ORDER BY seq ASC
   `);
-  // 条件的 DO UPDATE：manual 恒覆盖；fallback / auto 只盖 fallback（原子，不怕命名与手改并发）。
-  const upsertTitle = db.prepare(`
-    INSERT INTO sessions (conv_id, title, title_source, updated_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(conv_id) DO UPDATE SET
-      title = excluded.title,
-      title_source = excluded.title_source,
-      updated_at = excluded.updated_at
-    WHERE excluded.title_source = 'manual' OR sessions.title_source = 'fallback'
-  `);
-  const selectTitle = db.prepare("SELECT * FROM sessions WHERE conv_id = ?");
+  // 条件的标题 UPSERT 归 `store/sessions.ts`（会话表与标题同一个真相）；这里只管消息流水。
   return {
     append(input) {
       const id = `m_${randomUUID()}`;
@@ -118,25 +83,6 @@ export function openMessageStore(file: string): MessageStore {
     },
     currentWindow(room) {
       return (selectWindow.all(room, room) as Row[]).map(toStored);
-    },
-    sessionOf(convId) {
-      const row = selectTitle.get(convId) as SessionRow | undefined;
-      return row === undefined ? undefined : toSessionMeta(row);
-    },
-    sessionsOf(convIds) {
-      const out = new Map<string, SessionMeta>();
-      for (const convId of convIds) {
-        const row = selectTitle.get(convId) as SessionRow | undefined;
-        if (row !== undefined) out.set(convId, toSessionMeta(row));
-      }
-      return out;
-    },
-    setTitle(convId, title, source) {
-      upsertTitle.run(convId, title, source, new Date().toISOString());
-      // 回读落库后的实际值：未覆盖（手动改名挡住 auto）时返回旧值。
-      const row = selectTitle.get(convId) as SessionRow | undefined;
-      if (row === undefined) throw new Error(`标题写入失败: ${convId}`);
-      return toSessionMeta(row);
     },
     close() { db.close(); },
   };

@@ -6,14 +6,15 @@ import { type AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspace, conversationIdsFile, officeDbFile, stateDir, workDir } from "../../src/domain/paths.ts";
-import { startNewSession } from "../../src/domain/conversation-chain.ts";
+import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
+
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { Outbox } from "../../src/app/outbox.ts";
-import { openDm } from "../../src/app/conversations.ts";
+import { resolveSession } from "../../src/app/conversations.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
 import { createHttpServer } from "../../src/server/http.ts";
@@ -30,9 +31,21 @@ function getStore(): MessageStore {
   return store;
 }
 
+// 会话表（唯一真相）：与消息同库文件；每个用例一份。
+let sessionStore: SessionStore | undefined;
+function getSessions(): SessionStore {
+  if (sessionStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    sessionStore = openSessionStore(officeDbFile(createWorkspace(root)));
+  }
+  return sessionStore;
+}
+
 afterEach(() => {
   store?.close();
   store = undefined;
+  sessionStore?.close();
+  sessionStore = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
@@ -138,10 +151,11 @@ describe("SSE 全链路", () => {
     await harness.open();
 
     const hub = new SseHub();
-    const pump = new Pump({ ws, harness, hub, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
     const server = createHttpServer({
       ws,
       store: getStore(),
+      sessions: getSessions(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -229,10 +243,11 @@ describe("待发队列全链路（Pi submission 事件驱动）", () => {
 
     const hub = new SseHub();
     const outbox = new Outbox();
-    const pump = new Pump({ ws, harness, hub, outbox, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, outbox, store: getStore(), sessions: getSessions() });
     const server = createHttpServer({
       ws,
       store: getStore(),
+      sessions: getSessions(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -323,6 +338,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const server = createHttpServer({
       ws,
       store: getStore(),
+      sessions: getSessions(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -369,10 +385,10 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
     let convId: string | undefined;
     try {
-      convId = (await openDm(ws, harness, "alice", { model: "faux/faux-model" })).convId;
+      convId = (await resolveSession({ ws, harness, sessions: getSessions(), defaults: { model: "faux/faux-model" } }, "dm:alice", "alice")).convId;
       await pump.register(convId, { roomKey: "dm:alice", memberId: "alice" });
       await harness.submit(convId, "你好");
       // 若抛错穿透到 Pi 的 listener，订阅会被静默终结 → 只会看到第一次广播就再无事件。
@@ -395,6 +411,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       release = resolve;
     });
     const harness = {
+      bindSession: () => {},
       watch: async (convId: string) => {
         watchCalls++;
         await gate; // 卡住 watch：两次 register 落在同一 in-flight 窗口
@@ -403,7 +420,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         };
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore(), sessions: getSessions() });
     const first = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     const second = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     release();
@@ -423,6 +440,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       release = resolve;
     });
     const harness = {
+      bindSession: () => {},
       watch: async (convId: string) => {
         watchCalls++;
         await gate;
@@ -431,7 +449,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
         };
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore(), sessions: getSessions() });
     const inFlight = pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
     await pump.unregister("c1"); // watch 尚未建立：占位被清
     release();
@@ -449,13 +467,14 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     let watchCalls = 0;
     let fail = true;
     const harness = {
+      bindSession: () => {},
       watch: async () => {
         watchCalls++;
         if (fail) throw new Error("会话不存在");
         return async () => {};
       },
     } as unknown as HarnessPort;
-    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore(), sessions: getSessions() });
     await expect(pump.register("c1", { roomKey: "dm:alice", memberId: "alice" })).rejects.toThrow("会话不存在");
     fail = false;
     await pump.register("c1", { roomKey: "dm:alice", memberId: "alice" });
@@ -471,6 +490,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const server = createHttpServer({
       ws,
       store: getStore(),
+      sessions: getSessions(),
       getConfig: () => ({ providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 }),
       getHarness: () => harness,
       queue: new KeyedQueue(),
@@ -503,6 +523,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const outbox = new Outbox();
     let listener: ((event: HarnessEvent) => void) | undefined;
     const harness = {
+      bindSession: () => {},
       watch: async (_convId: string, fn: (event: HarnessEvent) => void) => {
         listener = fn;
         return async () => {};
@@ -514,7 +535,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    const pump = new Pump({ ws, harness, hub, outbox, store: getStore() });
+    const pump = new Pump({ ws, harness, hub, outbox, store: getStore(), sessions: getSessions() });
     const item = { roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗", convId: "c1", storeSeq: 1 };
     try {
       outbox.add({ ...item, submissionId: "11" });
@@ -549,10 +570,11 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     writeEmployee("bob");
     const ws = createWorkspace(root);
     const now = new Date().toISOString();
-    startNewSession(conversationIdsFile(ws, workDir(ws, "alice")), "bad-session", now);
-    startNewSession(conversationIdsFile(ws, workDir(ws, "bob")), "good-session", now);
+    getSessions().open({ convId: "bad-session", room: "dm:alice", memberId: "alice", kind: "dm", now });
+    getSessions().open({ convId: "good-session", room: "dm:bob", memberId: "bob", kind: "dm", now });
     const watched: string[] = [];
     const harness = {
+      bindSession: () => {},
       watch: async (convId: string) => {
         if (convId === "bad-session") throw new Error("会话不存在");
         watched.push(convId);
@@ -563,7 +585,7 @@ describe("推流韧性（Task 10 裁决 A1/A3 + 修复轮 F1/F2）", () => {
     const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       errors.push(args.map((arg) => String(arg)).join(" "));
     });
-    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore() });
+    const pump = new Pump({ ws, harness, hub: new SseHub(), store: getStore(), sessions: getSessions() });
     try {
       await expect(pump.registerAll()).resolves.toBeUndefined();
       expect(watched).toEqual(["good-session"]); // 坏链之后的会话照常订阅

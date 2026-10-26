@@ -31,14 +31,8 @@ export type PiHarnessOptions = {
   toolSearch?: boolean;
 };
 
-/** 由会话 cwd 推断关系（根目录下：agents/<id> = 私聊；projects/<id> = 群聊）。 */
-function relationFor(root: string, selfId: string, cwd: string): Relation {
-  const segments = path.relative(root, cwd).split(path.sep);
-  if (segments[0] === "projects" && segments.length === 2 && segments[1] !== undefined && segments[1] !== "") {
-    return { kind: "group", project: segments[1] };
-  }
-  return { kind: "dm", employeeId: selfId };
-}
+/** 会话归属的登记表（「我是谁、我在哪个房间」）：只由 startSession / attach / bindSession 写入，**不从 cwd 推断**。
+ *  群聊与私聊共用员工工作目录（D25/D27：项目没有工作目录），cwd 分不出房间，猜就是串台。 */
 
 function textOf(message: Message | undefined): string {
   const content = (message as { content?: unknown } | undefined)?.content;
@@ -252,21 +246,18 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
         ctx,
       );
       accessByConv.set(String(conv.id), spec.access);
-      sessionInfoByConv.set(String(conv.id), {
-        selfId: spec.access.selfId,
-        relation: relationFor(options.root, spec.access.selfId, spec.cwd),
-      });
+      sessionInfoByConv.set(String(conv.id), { selfId: spec.access.selfId, relation: spec.relation });
       return String(conv.id);
     },
-    async attach(convId, access) {
+    async attach(convId, access, relation) {
       const found = await harness!.conversation(convId as unknown as ConversationId, ctx);
       if (!found) return false;
       accessByConv.set(String(found.id), access);
-      sessionInfoByConv.set(String(found.id), {
-        selfId: access.selfId,
-        relation: relationFor(options.root, access.selfId, access.cwd),
-      });
+      sessionInfoByConv.set(String(found.id), { selfId: access.selfId, relation });
       return true;
+    },
+    bindSession(convId, session) {
+      sessionInfoByConv.set(convId, session);
     },
     sessionInfo(convId) {
       return sessionInfoByConv.get(convId);

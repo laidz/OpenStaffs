@@ -5,6 +5,10 @@ export type ModelRef = { provider: string; modelId: string };
 
 export type ConversationSpec = {
   cwd: string;
+  /** 这条会话属于哪个房间（私聊 / 群聊）。会话快照固化，**不靠 cwd 猜**：群聊与私聊共用员工工作目录。
+   *  工具层（`sessionInfo`）据此判断「我在群里还是私聊」，决定 `room_history` 缺省房间、
+   *  `send_message member:` 是否允许、`request_permission` 记到哪个房间。 */
+  relation: Relation;
   instructions: string;
   model: ModelRef;
   thinkingLevel?: string;
@@ -103,8 +107,11 @@ export interface HarnessPort {
   close(): Promise<void>;
   /** 新建会话：spec 在创建事务内原子固化（快照）。返回 convId。 */
   startSession(spec: ConversationSpec): Promise<string>;
-  /** 读回既有会话并注册 access（绝不重配置）；不存在返回 false。 */
-  attach(convId: string, access: AccessContext): Promise<boolean>;
+  /** 读回既有会话并注册 access / 关系（绝不重配置）；不存在返回 false。 */
+  attach(convId: string, access: AccessContext, relation: Relation): Promise<boolean>;
+  /** 只登记「会话属于谁、在哪个房间」（不读会话本体、不改 access）：重启后 pump 只订阅不停 attach，
+   *  但工具层仍需要这份归属信息，否则工具会报「未注册的会话」。 */
+  bindSession(convId: string, session: { selfId: string; relation: Relation }): void;
   /** 会话所属（员工 + 关系）；未注册返回 undefined。工具据此判断"我在哪、我是谁"。 */
   sessionInfo(convId: string): { selfId: string; relation: Relation } | undefined;
   /** 会话实际在用的模型 / 思考强度 / 上下文用量 / 模型窗口（展示层数据）。 */

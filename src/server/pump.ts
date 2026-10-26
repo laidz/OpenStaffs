@@ -1,5 +1,4 @@
-import { findPerson, listPeople, loadOrg } from "../domain/org.ts";
-import { listProjects } from "../domain/project.ts";
+import { findPerson, loadOrg } from "../domain/org.ts";
 import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor, readBossName } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
@@ -7,10 +6,11 @@ import type { Workspace } from "../domain/paths.ts";
 import type { ChatMessage, HarnessEvent, HarnessPort } from "../harness/port.ts";
 import { KeyedQueue, triggerFromGroupReply } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
-import { activeMemberSessions, type SessionDefaults } from "../app/conversations.ts";
+import type { SessionDefaults } from "../app/conversations.ts";
 import { parseRoomKey, toRoomMessage } from "../app/rooms.ts";
 import { parseAgentReply } from "../app/message-row.ts";
 import type { MessageStore } from "../store/messages.ts";
+import type { SessionStore } from "../store/sessions.ts";
 import type { StoredMessage } from "../store/row.ts";
 import type { SseHub } from "./sse.ts";
 
@@ -38,6 +38,8 @@ type Deps = {
    * 必填：全进程唯一实例由 main.ts 创建并注入（装配层负责建 stateDir）。
    */
   store: MessageStore;
+  /** 会话表（唯一真相）：重启扫描 / 解析房间成员都靠它。 */
+  sessions: SessionStore;
 };
 
 /** in-flight 注册的占位：promise 供并发复用；state.cancelled 标记 in-flight 期间的 unregister。 */
@@ -65,6 +67,10 @@ export class Pump {
 
   async register(convId: string, ref: { roomKey: string; memberId: string }): Promise<void> {
     if (this.#refs.has(convId)) return;
+    // 订阅时补登记「这条会话属于谁、在哪个房间」：重启后 pump 只订阅不停 attach，
+    // 但工具层（`sessionInfo`）必须知道房间，否则员工的 room_history / request_permission 会搞错房间。
+    const relation = parseRoomKey(ref.roomKey);
+    if (relation !== undefined) this.#deps.harness.bindSession(convId, { selfId: ref.memberId, relation });
     const inFlight = this.#pending.get(convId);
     if (inFlight !== undefined) return inFlight.promise;
     // 内部展示名改走 org（人 = 文件后 alias 由人级配置决定）；随订阅带上，回调侧不必再扫盘。
@@ -110,16 +116,9 @@ export class Pump {
 
   /** 启动/重启后扫描全部活跃会话并订阅；单个会话失败只记日志，不锁死启动。 */
   async registerAll(): Promise<void> {
-    const ws = this.#deps.ws;
-    for (const person of listPeople(ws)) {
-      for (const session of activeMemberSessions(ws, { kind: "dm", employeeId: person.id })) {
-        await this.#registerSafe(session.convId, { roomKey: `dm:${person.id}`, memberId: person.id });
-      }
-    }
-    for (const project of listProjects(ws)) {
-      for (const session of activeMemberSessions(ws, { kind: "group", project: project.id })) {
-        await this.#registerSafe(session.convId, { roomKey: `group:${project.id}`, memberId: session.memberId });
-      }
+    // 一条查询拿全（会话表是唯一真相）：不再遍历「人 × 项目 × 链文件」，也就不会漏订阅。
+    for (const session of this.#deps.sessions.listActive()) {
+      await this.#registerSafe(session.convId, { roomKey: session.room, memberId: session.memberId });
     }
   }
 
@@ -233,6 +232,7 @@ export class Pump {
       const defaults = this.#getDefaults();
       const reports = await triggerFromGroupReply(this.#deps.ws, this.#deps.harness, {
         queue: this.#queue,
+        sessions: this.#deps.sessions,
         ...(defaults === undefined ? {} : { defaults }),
         ...(this.#deps.mcp === undefined ? {} : { mcp: this.#deps.mcp }),
         project: relation.project,

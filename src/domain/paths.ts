@@ -22,15 +22,6 @@ export function projectsDir(ws: Workspace): string {
   return path.join(ws.root, "projects");
 }
 
-export function conversationIdsFile(_ws: Workspace, dir: string): string {
-  return path.join(dir, "conversation_ids.md");
-}
-
-/** 项目 = 扁平配置文件（D26），没有目录；群会话链改放机器私有区。 */
-export function groupConversationIdsFile(ws: Workspace, name: string, agentId: string): string {
-  return path.join(stateDir(ws), "chains", `group-${name}`, `${agentId}.md`);
-}
-
 /** 空间级附属目录名：老板的能力与附属（skills/、mcps.json）；可见、可版本化、随空间整包迁移。 */
 export const SPACE_DIR_NAME = "openstaffs";
 

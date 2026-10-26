@@ -8,10 +8,12 @@ import type { HarnessEvent, HarnessPort } from "../../src/harness/port.ts";
 import type { ServerEvent, SseHub } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 
 let root: string;
 let ws: Workspace;
 let store: MessageStore;
+let sessions: SessionStore;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-pump-"));
@@ -19,10 +21,12 @@ beforeEach(() => {
   // openMessageStore 不建父目录（接线方保证 stateDir 存在），这里对齐 main.ts 的接线前提。
   fs.mkdirSync(path.join(root, "openstaffs/.data"), { recursive: true });
   store = openMessageStore(officeDbFile(ws));
+  sessions = openSessionStore(officeDbFile(ws));
 });
 
 afterEach(() => {
   store.close();
+  sessions.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -52,6 +56,11 @@ class StubHarness {
   async attach(): Promise<boolean> {
     return false;
   }
+  /** 订阅时补登记的会话归属（房间判定不能靠 cwd 猜）。 */
+  readonly bound: { convId: string; selfId: string; relation: unknown }[] = [];
+  bindSession(convId: string, session: { selfId: string; relation: unknown }): void {
+    this.bound.push({ convId, ...session });
+  }
   async submit(convId: string, text: string): Promise<{ id: string; status: "queued" }> {
     this.submits.push({ convId, text });
     return { id: `sub_${++this.#n}`, status: "queued" };
@@ -76,7 +85,7 @@ function makePump(harness: StubHarness, storeOverride?: MessageStore): { pump: P
     add: () => ({ pending: 0, close: () => {} }),
     size: 0,
   } as unknown as SseHub;
-  const pump = new Pump({ ws, harness: harness as unknown as HarnessPort, hub, store: storeOverride ?? store });
+  const pump = new Pump({ ws, harness: harness as unknown as HarnessPort, hub, store: storeOverride ?? store, sessions });
   return { pump, events };
 }
 
@@ -98,6 +107,25 @@ const toolAppend = (text: string): HarnessEvent => ({
   type: "message",
   convId: "conv_alice",
   message: { id: "e3", role: "assistant", kind: "chat.message", text, data: { author: "alice" } },
+});
+
+describe("订阅时补登记会话归属（房间判定不能靠 cwd 猜）", () => {
+  it("register 按 roomKey 把「我是谁 / 在哪个房间」登记给 harness（重启后工具才知道自己在群里）", async () => {
+    seedEmployee("alice");
+    seedGroup("seo", ["alice"]);
+    const harness = new StubHarness();
+    const { pump } = makePump(harness);
+    try {
+      await pump.register("conv_alice", { roomKey: "group:seo", memberId: "alice" });
+      expect(harness.bound).toEqual([{ convId: "conv_alice", selfId: "alice", relation: { kind: "group", project: "seo" } }]);
+      await pump.unregister("conv_alice");
+      await pump.register("conv_dm", { roomKey: "dm:alice", memberId: "alice" });
+      expect(harness.bound.at(-1)).toEqual({ convId: "conv_dm", selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+    } finally {
+      await pump.unregister("conv_alice");
+      await pump.unregister("conv_dm");
+    }
+  });
 });
 
 describe("user 条目不再回显（R-P1-12）", () => {
@@ -216,15 +244,6 @@ describe("落库异常不连坐（Task 6 收口）", () => {
       },
       currentWindow() {
         return [];
-      },
-      sessionOf() {
-        return undefined;
-      },
-      sessionsOf() {
-        return new Map();
-      },
-      setTitle() {
-        throw new Error("database is locked");
       },
       close() {},
     });

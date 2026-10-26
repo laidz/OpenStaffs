@@ -5,13 +5,13 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkspace, officeDbFile, stateDir, type Workspace } from "../../src/domain/paths.ts";
-import { readChain } from "../../src/domain/conversation-chain.ts";
 import { PermissionRequestStore, readPermissionRequests } from "../../src/domain/permission-requests.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
-import { openDm, openGroup } from "../../src/app/conversations.ts";
+import { resolveSession } from "../../src/app/conversations.ts";
 import type { RoomMessage } from "../../src/app/rooms.ts";
 import { openMessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import { openStaffsToolDefs, type ToolContext } from "../../src/tools/registry.ts";
 import type { Relation } from "../../src/domain/types.ts";
 import { seedOffice } from "../helpers/office.ts";
@@ -42,7 +42,13 @@ function tool(name: string) {
 }
 
 function ctxFor(ws: Workspace, selfId: string, relation: Relation, harness = {} as HarnessPort): ToolContext {
-  return { ws, harness, selfId, relation };
+  return { ws, harness, selfId, relation, sessions: sessionsOf(ws) };
+}
+
+/** 会话表（唯一真相）：按空间开库（调用方保证 stateDir 已存在或可建）。 */
+function sessionsOf(ws: Workspace): SessionStore {
+  fs.mkdirSync(stateDir(ws), { recursive: true });
+  return openSessionStore(officeDbFile(ws));
 }
 
 /** 往自有消息库塞行（room_history 读库）：先建 stateDir，开库写完即关。 */
@@ -188,7 +194,7 @@ describe("send_message", () => {
     try {
       const out = await tool("send_message").run({ target: "boss", text: "汇报一下" }, ctxFor(ws, "alice", dm("alice"), harness));
       expect(out).toContain("老板");
-      const { convId: dmConv } = await openDm(ws, harness, "alice");
+      const { convId: dmConv } = await resolveSession({ ws, harness, sessions: sessionsOf(ws) }, "dm:alice", "alice");
       const history = await harness.transcript(dmConv);
       const posted = history.find((m) => m.text === "汇报一下");
       expect((posted?.data as { author?: string } | undefined)?.author).toBe("alice");
@@ -208,7 +214,7 @@ describe("send_message", () => {
     await harness.open();
     try {
       await tool("send_message").run({ target: "member:bob", text: "bob 帮我看下" }, ctxFor(ws, "alice", { kind: "group", project: "demo" }, harness));
-      const { convId: bobConv } = await openGroup(ws, harness, "demo", "bob");
+      const { convId: bobConv } = await resolveSession({ ws, harness, sessions: sessionsOf(ws) }, "group:demo", "bob");
       const history = await harness.transcript(bobConv);
       const delivered = history.find((m) => m.text === "bob 帮我看下");
       expect((delivered?.data as { author?: string } | undefined)?.author).toBe("alice");
@@ -330,17 +336,20 @@ describe("send_message", () => {
 });
 
 describe("new_session", () => {
-  it("结束当前会话、开新条（链变长）", async () => {
+  it("结束当前会话、开新条（会话表里同 owner 只有一条活跃）", async () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const harness = fauxHarness();
     await harness.open();
     try {
-      const { convId: before } = await openDm(ws, harness, "alice");
+      const sessions = sessionsOf(ws);
+      const { convId: before } = await resolveSession({ ws, harness, sessions }, "dm:alice", "alice");
       await tool("new_session").run({}, ctxFor(ws, "alice", dm("alice"), harness));
-      const chain = readChain(path.join(root, "work", "alice", "conversation_ids.md"));
-      expect(chain).toHaveLength(2);
-      expect(chain[1]!.previous).toBe(before);
+      const rows = sessions.list("dm:alice");
+      expect(rows).toHaveLength(2);
+      expect(rows[1]!.previous).toBe(before);
+      expect(rows[0]!.ended).not.toBeNull(); // 旧会话已结束
+      expect(rows[1]!.ended).toBeNull(); // 新会话活跃
     } finally {
       await harness.close();
     }

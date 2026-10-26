@@ -5,6 +5,7 @@ import type { PermissionRequest, PermissionRequestStore } from "../domain/permis
 import type { HarnessPort } from "../harness/port.ts";
 import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
 import type { RoomMessage } from "../app/rooms.ts";
+import type { SessionStore } from "../store/sessions.ts";
 
 /**
  * 把 OpenStaffs 统一注册表适配成 Pi Extension（装进 harness registry）。
@@ -19,6 +20,8 @@ export function createOpenStaffsToolsExtension(options: {
   permissions?: { store: PermissionRequestStore; notify: (request: PermissionRequest) => void };
   /** 房间消息广播（R-P1-12）：员工发言（send_message）落库后广播库行；缺省不广播。 */
   broadcast?: (roomKey: string, message: RoomMessage) => void;
+  /** 会话表（唯一真相）：工具里 send_message / new_session 靠它解析会话。 */
+  sessions: SessionStore;
 }): Extension {
   return defineExtension({
     name: "openstaffs-tools",
@@ -38,6 +41,7 @@ export function createOpenStaffsToolsExtension(options: {
             harness,
             selfId: info.selfId,
             relation: info.relation,
+            sessions: options.sessions,
             ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
             ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
             ...(options.broadcast === undefined ? {} : { broadcast: options.broadcast }),

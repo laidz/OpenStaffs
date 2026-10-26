@@ -23,17 +23,17 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 │     ├─ department.config.json  # 部门声明（可选：alias / head）
 │     └─ <名字>.agent.config.json
 ├─ projects/<项目 id>.project.config.json   # 项目 = 群聊（**扁平文件**：owner / members / 能力 / 权限）
-├─ work/<名字>/                  # 各人的工作目录（会话 cwd、私聊会话链、memory/ 原生记忆）
+├─ work/<名字>/                  # 各人的工作目录（会话 cwd、memory/ 原生记忆）
 └─ openstaffs/                   # 空间附属 + 机器私有（可见的部分可版本化、随空间整包迁移）
    ├─ space.config.json          # 空间声明（prompt / skills / mcp / permissions；首次启动写入空声明）
    ├─ skills/<技能名>/SKILL.md   # 共享技能库（各层 config 按名引用）
    ├─ mcps.json                  # MCP 全局定义（各层 config 按名引用）
    └─ .data/                     # 机器私有（gitignore；老板维护，你只读）
       ├─ config.json             # 全局配置：providers / model / thinkingLevel / memory / port / bossName / skillPaths / mcp
-      ├─ chains/group-<项目>/<人>.md # 群会话链（机器维护；私聊链在 work/<人>/conversation_ids.md）
+      ├─ openstaffs.sqlite       # 自有库：消息流水（messages）+ **会话表（sessions，会话的唯一真相）**；机器维护，不要手改
+      ├─ legacy-chains/          # 一次性迁移备份：老的会话链 markdown（已导入会话表，可删）
       ├─ state.json              # 老板的 pin 标记（机器维护，不要手改）
       ├─ permission-requests.json # 待处理授权请求（机器维护，处理完即删）
-      ├─ openstaffs.sqlite       # 自有库：消息流水（messages）+ 会话元数据（sessions，含标题）；机器维护，不要手改
       └─ state.sqlite            # 基座会话库：某条会话的原文与模型上下文（机器维护，不要手改）
 ```
 
@@ -162,7 +162,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `head` | **负责人名单**（字符串数组）：只能写**本级直属成员**的人 id；写子部门成员 / 写不存在的 id 一律**视为无** |
 
 - **负责人（主管）与穿透管理权**：某部门的 `head` 就是该部门的主管；主管对**自己担任 head 的部门整棵子树**（部门目录 + 其中的人，任意深度）有**写权**与**管理权**，**同级兄弟部门不可写**。沿祖先链向上找最近的 `head` 即某人的管理者；全链都没有 = 直接归老板。
-- **工作目录 `work/<名字>/`**：私聊与群聊的会话工作目录都落这里；私聊会话链（`conversation_ids.md`）也落这里（群聊链在机器私有区，见「项目」章节）；对**所有工具**开放。`memory/` 是该人的原生记忆目录，由 `memory_*` 工具维护（见「记忆（原生能力）」）。
+- **工作目录 `work/<名字>/`**：私聊与群聊的会话工作目录都落这里（项目没有工作目录）；对**所有工具**开放。会话本身不落文件，统一记在自有库 `sessions` 表。`memory/` 是该人的原生记忆目录，由 `memory_*` 工具维护（见「记忆（原生能力）」）。
 - **人的 `permissions` 由授权流程改写**：**除空间管家 staff0 外，任何人（含主管、含自己）都不可写 `<名字>.agent.config.json`**（硬保护，防自授权）。授权弹框批准后由框架代写**发起者自己** agent config 的 `permissions[tool]`（不经过工具闸门）。**当前没有「主管直接写下级定义 / `permissions`」的通道**：人的定义只能由老板、staff0 或框架的授权流程写。staff0 的例外也只放行 `write`，仍需合法 JSON + attenuation。`department` / `space` / `project` 类 `*.config.json` 可用 **`write` 工具**写，但要求在该工具有效集内、JSON 合法、且 `permissions` 通过 attenuation（见「权限：按工具 → 路径」）；**bash 不得写配置**（见下）。
 - id 里**不要含空白或 `@`**（与提及语法冲突，无法被定向），也不要 `__` 开头（保留给 boss / system）。`@` 提及永远用 id，alias 不参与识别。
 
@@ -178,7 +178,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 | `prompt` | | 群级任务规范（群聊会话注入） |
 | `skills` / `mcp` / `permissions` | | 该群的能力与权限（技能名 / server 名 / 按工具路径，见「统一配置」） |
 
-- 群聊里每名成员各自一条会话链、相互不可见；链落 `openstaffs/.data/chains/group-<项目>/<人>.md`（机器维护）。要传递信息，写进各自工作目录的文件或发消息（见 openstaffs 技能）。
+- 群聊里每名成员各自一条会话（各自一个 `conv_id`），相互不可见；会话行在自有库 `sessions` 表（`room = group:<项目>`、`member_id = 成员`）。要传递信息，写进各自工作目录的文件或发消息（见 openstaffs 技能）。
 - `members` 里的 id 必须是某个人的 id（`<名字>.agent.config.json` 的文件名主干）；写错 / 写不存在的人 → 群聊发送会报「员工不存在」。
 - 群成员回复开头的 `@成员 id` 会触发对方开工（与老板发送同规则）；没写 @ 开头的群回复在显示与待办口径上补当前称谓（缺省 `@老板`）、视为发给老板。
 - 项目**没有共享工作目录**：每个人的会话 cwd 都是自己的 `work/<名字>/`。
@@ -188,7 +188,7 @@ description: OpenStaffs 运维参考——办公空间的文件结构、统一�
 - **「新开会话」是「下一条消息开启新会话」**：点按钮只置就绪态（按钮高亮 + 输入框上方提示），**不落盘、不建会话**；再点一次取消。真正建会话发生在**这条消息投递到员工的那一刻**——私聊 = 该员工，群聊 = 这条消息 @ 到的每个成员（各开一条）。
   - 好处：空点不产生空会话；排队中被撤回 / 中断，也不产生会话。
   - 那一刻聊天区**只剩新一轮**：这条消息在自有库里被标成「本轮起点」（`messages.session_start = 1`），房间视图与 `room_history` 只读起点之后的行；上一轮内容从聊天区收起（消息区顶部提示收起了几条），仍可在「历史」/ 会话详情里回看。起点在库里 → 刷新 / 切房间 / 重启后依然是「只剩当前一轮」。
-  - 就绪态只对下一条消息有效（发完即清）；换房间 / 离开房间也会清。
+  - 就绪态 = **点一下聊天区就清空**（纯 UI，可取消：再点一下旧记录原样回来）；真正建会话只发生在发第一条的那一刻。发完 / 换房间 / 离开房间标志也会清。
   - 员工侧 `new_session` 工具不受影响（仍是立即重开，下一轮起生效）。
 - **会话信息条**：聊天标题下方显示当前房间各活跃会话**实际在用**的模型全值（`供应商/模型 id`）、思考强度、已用上下文 / 模型窗口与占比（如「12.8K / 128K，10%」）。
 - **会话标题（自动命名 + 手动改名）**：每条会话都有标题，存在自有库 `openstaffs.sqlite` 的 `sessions` 表（`conv_id` / `title` / `title_source` / `updated_at`）。
@@ -413,6 +413,8 @@ MCP server 是外部进程，通过 stdio 提供工具。**定义只有一份：
 | 「排队中」气泡撤掉了但消息还在 | 属预期：老板发送即落自有库（消息真相），撤回只撤掉**还没开始的投递**；排队标识消失、这条发言仍留在房间历史里 |
 | 员工回复只出现在「会话原文 / 历史」、房间视图里看不到 | 该员工的会话**订阅失败**（坏链 / 建立订阅失败，日志有 `会话订阅失败（convId=…）`）：agent 回复靠 pump 订阅落库，没订阅就没有库行，而房间视图只读自有库（不做会话原文对账）→ 该条回复只在「某条会话的原文」视图可见，房间视图与之不一致属**已知取舍**。**重启服务**（`registerAll` 重新扫描订阅）即补齐订阅、后续回复恢复正常 |
 | 点了「新开会话」但会话没换 | 属预期：该按钮只置「下一条消息开启新会话」，**发出一条消息**才真正建会话（空点不建、撤回也不建） |
+| 员工在群里却按私聊行事（群里的 `room_history` 读到私聊内容、`send_message member:` 报「当前是私聊」、授权卡片出现在私聊） | 旧的会话归属是**由 cwd 推断**的（`projects/<id>` = 群聊、其余 = 私聊），而群聊与私聊共用员工工作目录（`work/<id>`）→ 群聊全被判成私聊。已修为**随会话快照显式固化**（`ConversationSpec.relation`；startSession / attach 登记，重启后 pump 订阅时靠 `bindSession` 补登记）；**重启进程**后生效 |
+| 员工/群聊的会话对不上、历史里少了会话 | 会话的唯一真相是自有库 `sessions` 表（`conv_id` = Pi 的 conversation id）；旧会话链 markdown 已退役。排查直接看库：`SELECT room, member_id, conv_id, started, ended FROM sessions ORDER BY started`。首次升级时旧链会自动导入并把文件搬到 `.data/legacy-chains/` |
 | 点了「新开会话」后聊天区只剩新一轮，旧消息不见了 | 属预期：房间视图只看**当前一轮**（最近一次「新开会话」起点的 `messages.session_start = 1` 之后），旧内容没丢——在「历史」里可回看（会话详情也能看原文）；消息区顶部会提示收起了几条 |
 | 想一次看全部聊天流水 | 现在没有这个开关：房间 = 聊天窗口，只显示当前一轮；要通读去「历史」。以后确实需要再考虑加「显示历史」开关 |
 | 群聊报「群还没有成员」 | 项目 config（`projects/<id>.project.config.json`）缺失或 `members` 为空 |

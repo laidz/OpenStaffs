@@ -14,6 +14,8 @@ import type { SessionTitleDeps } from "../app/sessions.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { openMessageStore, type MessageStore } from "../store/messages.ts";
+import { openSessionStore, type SessionStore } from "../store/sessions.ts";
+import { importLegacyChains } from "../store/chain-import.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
 import { McpManager } from "../harness/mcp-manager.ts";
 import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
@@ -58,8 +60,14 @@ async function main(): Promise<void> {
   // 开库失败（坏库 / 非 SQLite 文件 / 权限）走与下方一致的「启动失败」提示后退出，而不是裸崩未处理 rejection。
   fs.mkdirSync(stateDir(ws), { recursive: true });
   let store: MessageStore;
+  let sessionStore: SessionStore;
   try {
     store = openMessageStore(officeDbFile(ws));
+    // 会话表 = 会话的唯一真相（convId 就是 Pi 的 conversation id）；与消息同一库文件。
+    sessionStore = openSessionStore(officeDbFile(ws));
+    // 一次性迁移：老的会话链 markdown（`work/<人>/conversation_ids.md`、`.data/chains/group-*/<人>.md`）导入会话表后退役。
+    const imported = importLegacyChains(ws, sessionStore);
+    if (imported.imported > 0) console.log(`[openstaffs] 会话链已迁移入库：${imported.imported} 条（旧文件已备份到 .data/legacy-chains）`);
   } catch (error) {
     console.error(`[openstaffs] 启动失败：${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -67,7 +75,7 @@ async function main(): Promise<void> {
   let pump: Pump | undefined;
   let mcp: McpManager | undefined;
   // 会话标题依赖：new 会话命名 / 改名端点写入，全进程一份（与 HTTP 注入同一个）。
-  let titles: SessionTitleDeps = { store };
+  let titles: SessionTitleDeps = { store: sessionStore };
 
   let harness: ReturnType<typeof createPiHarness> | undefined;
   if (config !== undefined) {
@@ -77,7 +85,7 @@ async function main(): Promise<void> {
       const namingModel = loadSpaceConfig(ws)?.fields.namingModel;
       const namer = createNamer({ models, ...(namingModel === undefined ? {} : { namingModel }) });
       titles = {
-        store,
+        store: sessionStore,
         notify: (event) => hub.broadcast({ type: "session.title", ...event }),
         ...(namer === undefined ? {} : { namer }),
       };
@@ -90,6 +98,7 @@ async function main(): Promise<void> {
         ws,
         getHarness: () => harness!,
         mcp,
+        sessions: sessionStore,
         permissions: {
           store: permissionRequests,
           notify: (request) => hub.broadcast({ type: "permission.request", request: permissionRequestView(ws, request) }),
@@ -113,6 +122,7 @@ async function main(): Promise<void> {
         queue,
         outbox,
         store,
+        sessions: sessionStore,
         mcp,
         getDefaults: () => sessionDefaults(getConfig()),
       });
@@ -129,6 +139,7 @@ async function main(): Promise<void> {
   const server = createHttpServer({
     ws,
     store,
+    sessions: sessionStore,
     getConfig,
     getHarness: () => harness,
     queue,
@@ -158,6 +169,7 @@ async function main(): Promise<void> {
     await mcp?.close().catch(() => undefined);
     await harness?.close().catch(() => undefined);
     store.close();
+    sessionStore.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };

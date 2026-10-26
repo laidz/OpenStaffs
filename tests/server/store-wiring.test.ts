@@ -9,6 +9,7 @@ import { seedOffice } from "../helpers/office.ts";
 import type { HarnessPort } from "../../src/harness/port.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
+import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import { createHttpServer } from "../../src/server/http.ts";
 
 const configured: WorkspaceConfig = { providers: { faux: { apiKey: "k" } }, model: "faux/faux-model", port: 4319 };
@@ -16,6 +17,7 @@ const configured: WorkspaceConfig = { providers: { faux: { apiKey: "k" } }, mode
 let root: string;
 let ws: Workspace;
 let store: MessageStore;
+let sessions: SessionStore;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-wiring-"));
@@ -23,10 +25,12 @@ beforeEach(() => {
   // 接线前提（对齐 main.ts）：openMessageStore 不建父目录，注入前必须先有 stateDir。
   fs.mkdirSync(stateDir(ws), { recursive: true });
   store = openMessageStore(officeDbFile(ws));
+  sessions = openSessionStore(officeDbFile(ws));
 });
 
 afterEach(() => {
   store.close();
+  sessions.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -58,6 +62,7 @@ async function start(): Promise<{ base: string; close: () => Promise<void> }> {
   const server = createHttpServer({
     ws,
     store,
+    sessions,
     getConfig: () => configured,
     getHarness: () => stubHarness(),
     queue: new KeyedQueue(),

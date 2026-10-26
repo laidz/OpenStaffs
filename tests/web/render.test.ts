@@ -296,16 +296,30 @@ describe("排队中的消息（待发队列）与「新开会话」提示", () =
 
     const armed = chatHtml({ ...base, freshSession: true, queued: [queued] });
     expect(armed).toContain('class="btn-new-session armed"');
-    expect(armed).toContain("下一条消息将开启新会话");
-    expect(armed).toContain("排队中：alice");
+    expect(armed).toContain("发送第一条消息即开启新会话");
+    expect(armed).not.toContain("排队中：alice"); // 已点「新开会话」→ 聊天区清空（旧记录与排队占位都不再显示）
   });
 
   it("freshSessionHint：私聊 / 群聊文案区分；未就绪返回空串", () => {
     const dm = { ...initialState, roomKey: "dm:alice" };
     expect(freshSessionHint(dm)).toBe("");
     expect(freshSessionHint({ ...dm, freshSession: true })).toContain("当前会话将结束");
-    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("上一轮内容从聊天区收起");
+    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("旧记录可在「历史」回看");
     expect(freshSessionHint({ ...initialState, roomKey: "group:yt", freshSession: true })).toContain("@ 到的成员各开一条");
+  });
+
+  it("点了「新开会话」就清空聊天区（旧记录立刻不显示）；取消后恢复；发送后服务端也只回新一轮", () => {
+    const old: RoomMessage = { convId: "store", entryId: "1", roomKey: "dm:alice", speaker: { kind: "boss" }, text: "上一轮的话", bossDirected: false };
+    const base = { ...initialState, configured: true, roomKey: "dm:alice", messages: [old] };
+    expect(messageListHtml(base)).toContain("上一轮的话");
+
+    // 已就绪 = 聊天区只剩一行说明（上一轮记录不再显示）
+    const armed = messageListHtml({ ...base, freshSession: true });
+    expect(armed).not.toContain("上一轮的话");
+    expect(armed).toContain("新一轮会话：发送第一条消息后开始");
+
+    // 点第二次取消：state.messages 从未被动过 → 记录原样回来
+    expect(messageListHtml({ ...base, freshSession: false })).toContain("上一轮的话");
   });
 
   it("消息区顶部说明条：新开会话后旧内容被收起时提示条数；0 条不渲染", () => {
