@@ -1,16 +1,17 @@
 import { api, type ConfigScope, type ConfigView, type SessionContextView, type Status } from "./api.ts";
 import { initialState, reduce, selectView, type State, type UiEvent } from "./state.ts";
-import { configPanelHtml, contextItemsHtml, contextMetaHtml, escapeHtml, freshSessionHint, localDateTime, layoutHtml, liveHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
+import { configPanelHtml, contextItemsHtml, contextMetaHtml, escapeHtml, historyHtml, layoutHtml, liveHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "./render.ts";
 import { draftAfterSend, groupSendable, targetsOf, toggleTarget } from "./composer.ts";
 import { localDraftStore } from "./drafts.ts";
 import { connectEvents } from "./sse.ts";
+import { parseRoute, routeUrl, type Route } from "./route.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
 
 const app = document.getElementById("app")!;
 let state: State = initialState;
 let status: Status | undefined;
 let sending = false;
-/** 输入框草稿的本地缓存（按房间键）：切会话 / 进详情 / 全量重画后自动填回。 */
+/** 输入框草稿的本地缓存（按主题键）：切会议 / 进详情 / 全量重画后自动填回。 */
 const drafts = localDraftStore();
 /** 会话详情（只读）：聊天顶部信息条的「详情」进入，内容就是那一条会话；undefined = 不在面板。 */
 type SessionPanelState = { memberId: string; convId: string; context?: SessionContextView };
@@ -19,9 +20,19 @@ let sessionPanelSeq = 0;
 /** 定义文件面板：左侧栏人员 / 部门 / 项目的 {} 进入。 */
 let configPanel: (ConfigView & { label: string }) | undefined;
 
+/** 切 URL（默认 pushState；新建会议落定 / 迁移等场景用 replace）。 */
+function navigate(route: Route, mode: "push" | "replace" = "push"): void {
+  const url = routeUrl(route);
+  if (url === "" || url === window.location.pathname + window.location.search) return;
+  if (mode === "push") window.history.pushState(route, "", url);
+  else window.history.replaceState(route, "", url);
+  if ("subjectKey" in route && route.subjectKey !== undefined) localStorage.setItem("openstaffs.subject", route.subjectKey);
+  if ("meetingId" in route) localStorage.setItem("openstaffs.meeting", route.meetingId);
+}
+
 function dispatch(event: UiEvent, mode: "all" | "dynamic" = "dynamic"): void {
   const next = reduce(state, event);
-  // 跨房间事件 / 去重命中：reducer 返回同一 state 引用 → 零重建（spec §8.2）
+  // 跨会议事件 / 去重命中：reducer 返回同一 state 引用 → 零重建
   if (next === state) return;
   state = next;
   if (mode === "all") renderAll();
@@ -37,11 +48,11 @@ function renderAll(): void {
   }
   app.innerHTML = layoutHtml(state);
   bindEvents();
-  restoreDraft(); // 全量重画会重建（空的）输入框：把该房间的本地草稿填回去
+  restoreDraft(); // 全量重画会重建（空的）输入框：把该主题的本地草稿填回去
   scrollToBottom();
 }
 
-/** SSE 高频更新（spec §8.2）：按事件只更新受影响的容器，绝不重建输入框与消息列表。 */
+/** SSE 高频更新：按事件只更新受影响的容器，绝不重建输入框与消息列表。 */
 function renderDynamic(event: UiEvent): void {
   if (event.type !== "sse") {
     // 授权事件只影响右下角卡片堆叠，不碰侧栏。
@@ -49,30 +60,29 @@ function renderDynamic(event: UiEvent): void {
       renderPermCards();
       return;
     }
-    // 新开会话标志：按钮态 + 输入框上方提示 + **聊天区（上一轮记录立刻收起）**。
-    if (event.type === "fresh-session") {
-      renderFreshSession();
+    // 「新建会议」标志：按钮态 + 聊天区（清空 / 恢复）。
+    if (event.type === "new-meeting") {
+      renderNewMeeting();
       renderMessages();
+      renderChatHead();
       return;
     }
-    // 会话信息条：模型 / 思考强度 / 上下文用量。
     if (event.type === "sessions") {
       renderSessionInfo();
       return;
     }
-    // 会话标题（本地改名成功）：信息条与私聊顶部跟着变。
     if (event.type === "title") {
       renderSessionInfo();
       renderChatHead();
       return;
     }
-    // pin 事件同时改当前房间气泡高亮与侧栏红点，两处都要局部更新。
+    // pin 事件同时改当前会议气泡高亮与侧栏红点，两处都要局部更新。
     if (event.type === "pin") {
       renderMessages();
       renderSidebar();
       return;
     }
-    // UI 事件（org/projects/pins 等）只影响侧栏；需要整页的调用点走 "all" 档。
+    // UI 事件（org/projects/pins/subject/meeting 等）只影响侧栏；需要整页的调用点走 "all" 档。
     renderSidebar();
     return;
   }
@@ -81,73 +91,51 @@ function renderDynamic(event: UiEvent): void {
     case "permission.resolved":
       renderPermCards();
       return;
-    case "room.delta":
-    case "room.failed":
+    case "meeting.delta":
+    case "meeting.failed":
       renderLive();
       return;
-    case "room.activity":
+    case "meeting.activity":
       // run 起止改忙碌点（侧栏）；tool 起止改 live 的工具行。run 结束刷新上下文用量。
       if (event.event.kind === "run") {
         renderSidebar();
         renderLive(); // run 结束会清掉残影（中断 / 正式消息先到）——DOM 也得跟着消失
-        if (event.event.phase === "end") void refreshSessionInfo(event.event.roomKey);
+        if (event.event.phase === "end") void refreshSessionInfo(event.event.meetingId);
       } else renderLive();
       return;
-    case "room.message":
+    case "meeting.message":
       renderMessages();
       renderLive(); // 员工正式消息到达 → 清掉对应 live 气泡
-      void refreshSessionInfo(event.event.roomKey); // 上下文随回复增长
+      void refreshSessionInfo(event.event.meetingId); // 上下文随回复增长
       return;
-    case "room.pins":
+    case "meeting.pins":
       renderSidebar();
       return;
-    case "room.queued":
+    case "meeting.queued":
       renderMessages(); // 待发消息进入消息区（排队中）
       return;
-    case "room.dequeued":
+    case "meeting.dequeued":
       renderMessages(); // 出队：占位撤下 / 排队标识摘掉
-      if (event.event.reason === "delivered") void syncAfterDelivered(event.event.roomKey, event.event.submissionId);
       return;
-    case "session.title":
-      // 标题变了（新会话的时间标题 / 命名结果 / 另一标签页手改）：重画受影响的那块。
-      renderSessionInfo(); // 信息条（内含标题）
-      renderChatHead(); // 私聊顶部的当前会话标题
-      if (sessionPanel !== undefined && sessionPanel.convId === event.event.convId) void openSessionPanel(sessionPanel.memberId, sessionPanel.convId);
+    case "meeting.title":
+      // 标题变了（新会议的时间标题 / 命名结果 / 另一标签页手改）：重画受影响的那块。
+      renderSessionInfo();
+      renderChatHead();
+      if (sessionPanel !== undefined) void prependPanelItems();
       return;
+    case "meeting.deleted": {
+      // 会议被删（本人或另一标签页）：历史页原地刷新列表；聊天页整体重画（消息区 / 空态跟着变）。
+      const route = parseRoute(window.location.search);
+      if (route.view === "history") {
+        const subjectKey = route.subjectKey ?? state.subjectKey;
+        if (subjectKey !== undefined) void openHistory(subjectKey, "none");
+        return;
+      }
+      renderAll();
+      return;
+    }
     default:
       return;
-  }
-}
-
-/**
- * 出队（投递开始）后的兜底：**诚实结论——当前不可达**。
- * 时序：`dispatch` 先 `reduce` 再 `renderDynamic`；而 `room.dequeued` 的 reducer 分支
- * （web/state.ts）已把该项从 `state.queued` 移除 → 这里 `find` 必为 `undefined` → 提前 return，
- * 其后的 roomMessageId 比对与重拉（`syncRoomMessages`）**从不执行**（该时序问题非本 diff 引入，属既有代码）。
- * 等价保障（不依赖本分支）：① 写路径「谁写谁广播」——发言落库后即以 `room.message` 推达库行
- * （老板侧附**仅 UI 用**的 roomMessageId 副本），真气泡据此出现；② 进房间 / 重连时 `GET /messages` 全量重拉。
- * 代码保留不动：修正时序（让 reducer 保留该项后再判）属既有 `reduce`→`renderDynamic` 顺序的重构，不在本任务范围。
- */
-async function syncAfterDelivered(roomKey: string, submissionId: string): Promise<void> {
-  if (state.roomKey !== roomKey) return;
-  const delivered = state.queued.find((item) => item.submissionId === submissionId);
-  if (delivered === undefined) return;
-  if (state.messages.some((message) => message.roomMessageId === delivered.roomMessageId)) return;
-  await syncRoomMessages(roomKey);
-}
-
-/** 重拉房间消息，只把**尚未见过**的喂入 reducer（复用发送后的补齐口径）。 */
-async function syncRoomMessages(roomKey: string): Promise<void> {
-  try {
-    const { messages } = await api.messages(roomKey);
-    const known = new Set(state.messages.map((m) => `${m.convId}:${m.entryId}`));
-    for (const message of messages) {
-      if (!known.has(`${message.convId}:${message.entryId}`)) {
-        dispatch({ type: "sse", event: { type: "room.message", roomKey, message } });
-      }
-    }
-  } catch {
-    // 重拉失败不影响结论：等 SSE 或下次进房间补齐。
   }
 }
 
@@ -156,7 +144,7 @@ function renderSidebar(): void {
   const sidebar = document.getElementById("sidebar");
   if (sidebar === null) return;
   sidebar.outerHTML = sidebarHtml(state);
-  bindSidebar(); // outerHTML 重建了侧栏，需重新挂载房间点击 / {} 入口 / 部门折叠
+  bindSidebar(); // outerHTML 重建了侧栏，需重新挂载主题点击 / {} 入口 / 部门折叠
 }
 
 /** 消息列表局部更新；nearBottom 必须在重建 DOM 之前测量。 */
@@ -168,20 +156,9 @@ function renderMessages(): void {
   if (stick) scrollToBottom();
 }
 
-/** 「新开会话」已就绪态：按钮高亮 + 输入框上方提示（就地改 DOM，不重建输入框）。 */
-function renderFreshSession(): void {
-  document.getElementById("btn-new-session")?.classList.toggle("armed", state.freshSession);
-  const hint = document.getElementById("fresh-hint");
-  const text = freshSessionHint(state);
-  if (text === "") {
-    hint?.remove();
-    return;
-  }
-  const existing = hint ?? document.createElement("div");
-  if (hint === null) document.querySelector(".composer")?.prepend(existing);
-  existing.className = "fresh-hint";
-  existing.id = "fresh-hint";
-  existing.textContent = text;
+/** 「新建会议」已就绪态：按钮高亮（清空由 renderMessages 负责，不重建输入框）。 */
+function renderNewMeeting(): void {
+  document.getElementById("btn-new-meeting")?.classList.toggle("armed", state.freshMeeting);
 }
 
 /** 流式气泡局部更新（增量文本 / 工具行 / 失败气泡）。 */
@@ -199,25 +176,24 @@ function renderSessionInfo(): void {
   if (holder === null) return;
   holder.outerHTML = sessionInfoHtml(state);
   bindSessionDetailButtons(); // outerHTML 重建了信息条，重新挂详情入口
-  bindTitles(); // 标题按钮也是重建的
 }
 
-/** 聊天头部：私聊的「当前会话标题」跟着会话信息变（群聊不显，头部只有房间名）。 */
+/** 聊天头部：会议标题跟着 state 变（新建会议 pending 时收起标题）。 */
 function renderChatHead(): void {
   const head = document.querySelector<HTMLElement>(".chat-head");
   if (head === null) return;
-  const current = document.querySelector<HTMLElement>("[data-rename-conv].chat-title");
-  const session = state.roomKey?.startsWith("dm:") === true ? state.sessions[0] : undefined;
-  if (session === undefined) {
+  const current = head.querySelector<HTMLElement>("[data-rename-meeting]");
+  const meeting = state.freshMeeting ? undefined : state.meeting;
+  if (meeting === undefined) {
     current?.remove();
     return;
   }
-  const title = session.title ?? "未命名";
+  const title = meeting.title ?? "未命名";
   if (current === null) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "session-title chat-title";
-    button.dataset.renameConv = session.convId;
+    button.dataset.renameMeeting = meeting.meetingId;
     button.title = "点击改名";
     button.textContent = title;
     head.querySelector(".title")?.after(button);
@@ -225,13 +201,14 @@ function renderChatHead(): void {
     return;
   }
   current.textContent = title;
-  current.dataset.renameConv = session.convId;
+  current.dataset.renameMeeting = meeting.meetingId;
 }
 
-/** 重拉当前房间的会话信息；辅助展示，失败静默等下一次事件。 */async function refreshSessionInfo(roomKey: string): Promise<void> {
+/** 重拉当前会议的会话信息；辅助展示，失败静默等下一次事件。 */
+async function refreshSessionInfo(meetingId: string): Promise<void> {
   try {
-    const { sessions } = await api.sessionInfo(roomKey);
-    dispatch({ type: "sessions", roomKey, sessions });
+    const { sessions } = await api.sessionInfo(meetingId);
+    dispatch({ type: "sessions", meetingId, sessions });
   } catch {
     // 信息条失败不打扰用户：下一条消息 / run 结束会再试。
   }
@@ -261,29 +238,28 @@ function composerInput(): HTMLTextAreaElement | null {
   return document.getElementById("composer-input") as HTMLTextAreaElement | null;
 }
 
-/** 当前房间的成员上下文：群聊给出成员 id 列表（非群聊为空）。 */
-function roomMembers(): { isGroup: boolean; memberIds: string[] } {
-  const roomKey = state.roomKey;
-  if (roomKey?.startsWith("group:") === true) {
-    const project = state.projects.find((p) => `group:${p.id}` === roomKey);
-    return { isGroup: true, memberIds: (project?.members ?? []).map((m) => m.id) };
-  }
-  return { isGroup: false, memberIds: [] };
+/** 当前主题的成员上下文：群聊给出成员 id 列表（非群聊为空）。有会议按会议快照，没有按项目当前成员。 */
+function subjectMembers(): { isGroup: boolean; memberIds: string[] } {
+  const subjectKey = state.subjectKey;
+  if (subjectKey?.startsWith("group:") !== true) return { isGroup: false, memberIds: [] };
+  if (state.meeting !== undefined && !state.freshMeeting) return { isGroup: true, memberIds: state.meeting.participants };
+  const project = state.projects.find((p) => `group:${p.id}` === subjectKey);
+  return { isGroup: true, memberIds: (project?.members ?? []).map((member) => member.id) };
 }
 
 /** 当前群聊正文里 @ 到的成员（非群聊恒为空）；与后端路由解析完全一致。 */
 function composerTargets(): string[] {
   const input = composerInput();
-  const { isGroup, memberIds } = roomMembers();
+  const { isGroup, memberIds } = subjectMembers();
   return input !== null && isGroup ? targetsOf(input.value, memberIds) : [];
 }
 
 /**
  * 群聊门禁：正文是定向的唯一真相源——复选框与发送按钮都从正文推导（勾选会写入/移除正文开头的 @ 前缀块）。
- * 无有效 @（未勾选任何成员）或只有 @ 没有正文时禁发：原来的“不 @ 则广播”在 UI 里永远到不了。
+ * 无有效 @（未勾选任何成员）或只有 @ 没有正文时禁发。
  */
 function syncComposerUi(): void {
-  const { isGroup, memberIds } = roomMembers();
+  const { isGroup, memberIds } = subjectMembers();
   const input = composerInput();
   const targets = composerTargets();
   if (isGroup) {
@@ -296,9 +272,9 @@ function syncComposerUi(): void {
   if (button !== null) button.disabled = sending || !canSend;
 }
 
-function bindRoomButtons(): void {
-  for (const element of app.querySelectorAll<HTMLElement>("[data-room]")) {
-    element.addEventListener("click", () => guard(enterRoom(element.dataset.room!)));
+function bindSubjectButtons(): void {
+  for (const element of app.querySelectorAll<HTMLElement>("[data-subject]")) {
+    element.addEventListener("click", () => guard(openSubject(element.dataset.subject!)));
   }
 }
 
@@ -321,7 +297,7 @@ function bindSessionDetailButtons(): void {
 
 /** 侧栏整体挂载（全量渲染与面板渲染共用）。 */
 function bindSidebar(): void {
-  bindRoomButtons();
+  bindSubjectButtons();
   bindConfigButtons();
   bindDeptToggles();
 }
@@ -334,11 +310,11 @@ function bindDeptToggles(): void {
 }
 
 /**
- * 会话标题的**原地改名**：点标题 → 就地换成输入框（预填当前值、全选）；
+ * 会议标题的**原地改名**：点标题 → 就地换成输入框（预填当前值、全选）；
  * Enter / 失焦保存，Esc 取消；失败保留输入内容并就地提示（不丢字）。
  */
 function bindTitles(): void {
-  for (const element of app.querySelectorAll<HTMLButtonElement>("button[data-rename-conv]")) {
+  for (const element of app.querySelectorAll<HTMLButtonElement>("button[data-rename-meeting]")) {
     if (element.dataset.titleBound === "1") continue; // 已挂过（局部重画复用同一按钮）
     element.dataset.titleBound = "1";
     element.addEventListener("click", (event) => {
@@ -350,9 +326,8 @@ function bindTitles(): void {
 
 /** 把标题按钮就地换成输入框，并在保存时走改名接口。 */
 function startRename(button: HTMLButtonElement): void {
-  const convId = button.dataset.renameConv;
-  const roomKey = state.roomKey;
-  if (convId === undefined || roomKey === undefined) return;
+  const meetingId = button.dataset.renameMeeting;
+  if (meetingId === undefined) return;
   const previous = button.textContent ?? "";
   const input = document.createElement("input");
   input.type = "text";
@@ -378,13 +353,13 @@ function startRename(button: HTMLButtonElement): void {
     }
     saving = true;
     try {
-      const saved = await api.renameSession(roomKey, convId, title);
+      const saved = await api.renameMeeting(meetingId, title);
       settled = true;
       // 先换回按钮（把输入框收走），再通知 state：局部重画时 DOM 已是最终形态。
       button.textContent = saved.title;
       restore();
-      // 服务端已广播 session.title；这里也本地更新（不依赖事件到达时机）。
-      dispatch({ type: "title", roomKey, convId: saved.convId, title: saved.title });
+      // 服务端已广播 meeting.title；这里也本地更新（不依赖事件到达时机）。
+      dispatch({ type: "title", meetingId, title: saved.title });
     } catch (error) {
       saving = false; // 允许重试；输入框保留用户输入
       input.classList.add("session-title-input-error");
@@ -433,8 +408,11 @@ function bindEvents(): void {
       area.focus();
     });
   }
-  document.getElementById("btn-new-session")?.addEventListener("click", () => dispatch({ type: "fresh-session", on: !state.freshSession }));
-  document.getElementById("btn-history")?.addEventListener("click", () => guard(openHistory()));
+  document.getElementById("btn-new-meeting")?.addEventListener("click", () => guard(toggleNewMeeting()));
+  document.getElementById("btn-history")?.addEventListener("click", () => {
+    const subjectKey = state.subjectKey;
+    if (subjectKey !== undefined) guard(openHistory(subjectKey, "push"));
+  });
   document.getElementById("btn-interrupt")?.addEventListener("click", () => guard(interruptCurrent()));
   // 气泡工具栏用事件委托挂在消息容器上：renderMessages 整体重建 innerHTML 时监听器不丢。
   document.getElementById("msg-list")?.addEventListener("click", (event) => {
@@ -446,13 +424,14 @@ function bindEvents(): void {
 
 /** 气泡工具栏 / 排队撤回：先本地即时反馈（乐观更新），失败回滚并提示。 */
 async function messageAction(button: HTMLButtonElement): Promise<void> {
-  const roomKey = state.roomKey;
+  const meetingId = state.meetingId;
+  if (meetingId === undefined) return;
   if (button.dataset.action === "unqueue") {
-    const roomMessageId = button.dataset.roomMessage;
-    if (roomKey === undefined || roomMessageId === undefined) return;
+    const messageId = button.dataset.roomMessage;
+    if (messageId === undefined) return;
     button.disabled = true;
     try {
-      await api.cancelQueued(roomKey, roomMessageId); // 成功后服务端广播 room.dequeued，占位随之撤下
+      await api.cancelQueued(meetingId, messageId); // 成功后服务端广播 meeting.dequeued，占位随之撤下
     } catch (error) {
       button.disabled = false;
       reportError(error);
@@ -462,7 +441,7 @@ async function messageAction(button: HTMLButtonElement): Promise<void> {
   const msgEl = button.closest<HTMLElement>(".msg");
   const convId = msgEl?.dataset.convId;
   const entryId = msgEl?.dataset.entryId;
-  if (msgEl === null || roomKey === undefined || convId === undefined || entryId === undefined) return;
+  if (msgEl === null || convId === undefined || entryId === undefined) return;
   const key = `${convId}:${entryId}`;
   if (button.dataset.action === "copy") {
     const message = state.messages.find((m) => `${m.convId}:${m.entryId}` === key);
@@ -475,11 +454,11 @@ async function messageAction(button: HTMLButtonElement): Promise<void> {
     return;
   }
   const pinned = !state.pinned.includes(key);
-  dispatch({ type: "pin", roomKey, key, pinned });
+  dispatch({ type: "pin", meetingId, key, pinned });
   try {
-    await api.pin(roomKey, convId, entryId, pinned);
+    await api.pin(meetingId, convId, entryId, pinned);
   } catch (error) {
-    dispatch({ type: "pin", roomKey, key, pinned: !pinned }); // 回滚
+    dispatch({ type: "pin", meetingId, key, pinned: !pinned }); // 回滚
     reportError(error);
   }
 }
@@ -532,21 +511,18 @@ function onServerEvent(event: ServerEvent): void {
 /** 面板里新内容的刷新节流：流式期间事件密集，合并成一次重画。 */
 let panelRefreshTimer: number | undefined;
 
-/**
- * 会话详情面板的实时跟随：这条会话有新内容 → 自动拉一次上下文，**直接 prepend 进列表**（新的在上）。
- * 没有「刷新 / 有新内容」按钮：面板是只读的，不需要人手动点。
- */
+/** 会话详情面板的实时跟随：这条会话有新内容 → 自动拉一次上下文。 */
 function followPanelContent(event: ServerEvent): void {
   const panel = sessionPanel;
   if (panel === undefined) return;
   const touched =
-    event.type === "room.delta" ||
-    event.type === "room.failed" ||
-    event.type === "room.activity" ||
-    (event.type === "room.message" && event.message.speaker.kind === "employee" && event.message.speaker.id === panel.memberId);
+    event.type === "meeting.delta" ||
+    event.type === "meeting.failed" ||
+    event.type === "meeting.activity" ||
+    (event.type === "meeting.message" && event.message.speaker.kind === "employee" && event.message.speaker.id === panel.memberId);
   if (!touched) return;
   // 增量 / 工具事件按会话过滤；正式消息按成员过滤（库行视图 convId 恒为 store）
-  if (event.type !== "room.message" && event.convId !== panel.convId) return;
+  if (event.type !== "meeting.message" && event.convId !== panel.convId) return;
   if (panelRefreshTimer !== undefined) window.clearTimeout(panelRefreshTimer);
   panelRefreshTimer = window.setTimeout(() => {
     panelRefreshTimer = undefined;
@@ -554,11 +530,7 @@ function followPanelContent(event: ServerEvent): void {
   }, 350);
 }
 
-/**
- * 拉一次最新上下文并**原地**更新条目区（不重建整个面板）。
- * - 条目区是「新的在上」，所以新内容天然 prepend 到顶部；
- * - 已展开的折叠块（data-key）保持展开；用户不在顶部时调整 scrollTop，阅读位置不跳。
- */
+/** 拉一次最新上下文并**原地**更新条目区（不重建整个面板）。 */
 async function prependPanelItems(): Promise<void> {
   const panel = sessionPanel;
   if (panel === undefined) return;
@@ -580,10 +552,8 @@ async function prependPanelItems(): Promise<void> {
   for (const details of live.querySelectorAll<HTMLDetailsElement>("details[data-key]")) {
     if (openKeys.has(details.dataset.key ?? "")) details.open = true;
   }
-  // 顶部信息行的用量 / 运行中跟着变（只改那一行，不动卡片其他部分）
   const meta = document.getElementById("ctx-meta-line");
   if (meta !== null) meta.innerHTML = contextMetaHtml(context);
-  // 不在顶部阅读时：保持原来的阅读位置（新内容加在上面会把下面的内容推下去）
   if (scroller !== null && !stuckTop) scroller.scrollTop += live.scrollHeight - before;
 }
 
@@ -598,60 +568,92 @@ async function refreshAll(): Promise<void> {
   dispatch({ type: "projects", list: projects });
   dispatch({ type: "pins", pins });
   dispatch({ type: "permissions", list: permissions.requests });
-  if (state.roomKey !== undefined) {
-    const roomKey = state.roomKey;
-    const [room, info] = await Promise.all([
-      api.messages(roomKey),
-      api.sessionInfo(roomKey).catch(() => undefined), // 信息条是辅助展示：失败不拖垮整页刷新
-    ]);
-    dispatch({ type: "room", roomKey, messages: room.messages, hidden: room.hidden, pinned: room.pinned, queued: room.queued }, "all");
-    if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
+  const route = parseRoute(window.location.search);
+  if (route.view === "history") await openHistory(route.subjectKey ?? state.subjectKey ?? "", "none");
+  else if (route.view === "meeting") await loadMeeting(route.meetingId);
+  else if (route.view === "subject") await enterSubject(route.subjectKey);
+}
+
+/** 打开某主题：拉当前会议 + 历史；有当前会议就进它，否则停在「暂无记录」（等第一条消息）。 */
+async function openSubject(subjectKey: string): Promise<void> {
+  sessionPanel = undefined;
+  configPanel = undefined;
+  await enterSubject(subjectKey);
+}
+
+async function enterSubject(subjectKey: string): Promise<void> {
+  const view = await api.subject(subjectKey);
+  dispatch({ type: "subject", subjectKey: view.key, ...(view.current === undefined ? {} : { current: view.current }), meetings: view.meetings }, "all");
+  if (view.current !== undefined) {
+    navigate({ view: "meeting", meetingId: view.current.meetingId });
+    await loadMeeting(view.current.meetingId);
+    return;
+  }
+  navigate({ view: "subject", subjectKey: view.key });
+}
+
+/** 打开某场会议（历史会议同样可继续聊）。 */
+async function openMeeting(meetingId: string): Promise<void> {
+  sessionPanel = undefined;
+  configPanel = undefined;
+  await loadMeeting(meetingId);
+}
+
+async function loadMeeting(meetingId: string): Promise<void> {
+  const [view, info] = await Promise.all([
+    api.messages(meetingId),
+    api.sessionInfo(meetingId).catch(() => undefined),
+  ]);
+  const subjectKey = view.meeting.kind === "dm" ? `dm:${view.meeting.subjectId}` : `group:${view.meeting.subjectId}`;
+  const subject = await api.subject(subjectKey).catch(() => undefined);
+  if (state.subjectKey !== subjectKey && subject !== undefined) {
+    dispatch({ type: "subject", subjectKey, ...(subject.current === undefined ? {} : { current: subject.current }), meetings: subject.meetings }, "all");
+  }
+  dispatch({ type: "meeting", meetingId, meeting: view.meeting, messages: view.messages, pinned: view.pinned, queued: view.queued }, "all");
+  if (info !== undefined) dispatch({ type: "sessions", meetingId, sessions: info.sessions });
+}
+
+/** 「新建会议」：点一下 = 清空聊天区等第一条；再点一下 = 取消（恢复当前会议）。 */
+async function toggleNewMeeting(): Promise<void> {
+  const subjectKey = state.subjectKey;
+  if (subjectKey === undefined) return;
+  if (!state.freshMeeting) {
+    dispatch({ type: "new-meeting", on: true }, "all");
+    navigate({ view: "subject", subjectKey });
+    return;
+  }
+  dispatch({ type: "new-meeting", on: false });
+  const current = state.meeting;
+  if (current !== undefined) {
+    navigate({ view: "meeting", meetingId: current.meetingId }, "replace");
+    await loadMeeting(current.meetingId);
   }
 }
 
-async function enterRoom(roomKey: string): Promise<void> {
-  sessionPanel = undefined;
-  configPanel = undefined;
-  const [room, info] = await Promise.all([
-    api.messages(roomKey),
-    api.sessionInfo(roomKey).catch(() => undefined),
-  ]);
-  dispatch({ type: "room", roomKey, messages: room.messages, hidden: room.hidden, pinned: room.pinned, queued: room.queued }, "all");
-  if (info !== undefined) dispatch({ type: "sessions", roomKey, sessions: info.sessions });
-}
-
 async function sendCurrent(): Promise<void> {
-  if (sending || state.roomKey === undefined) return;
-  const roomKey = state.roomKey;
+  const subjectKey = state.subjectKey;
+  if (sending || subjectKey === undefined) return;
   const input = composerInput();
   const text = input?.value.trim() ?? "";
   if (text === "") return;
-  const isGroup = roomKey.startsWith("group:");
+  const isGroup = subjectKey.startsWith("group:");
   const targets = composerTargets();
   // 兜底门禁：群聊需「有效对象 + 前缀外的正文」（按钮已禁用、Enter 也走这里）；后端同样会拒绝无对象。
-  if (isGroup && !groupSendable(input?.value ?? "", roomMembers().memberIds)) return;
-  const fresh = state.freshSession; // 「新开会话」：这条消息投递时对目标成员真正建会话（撤回/中断则不建）
+  if (isGroup && !groupSendable(input?.value ?? "", subjectMembers().memberIds)) return;
+  const newMeeting = state.freshMeeting; // 「新建会议」：这条消息落定时才真正建会议
   const button = document.getElementById("composer-send") as HTMLButtonElement | null;
   sending = true;
   if (button !== null) button.disabled = true;
   try {
-    await api.send(roomKey, text, crypto.randomUUID(), fresh);
-    // 发送期间用户又改了输入（或点了别的成员）则不覆盖：未改动才重置草稿（重建 DOM 后也要补回）。
+    const result = await api.sendToSubject(subjectKey, text, crypto.randomUUID(), newMeeting);
+    // 发送期间用户又改了输入（或点了别的成员）则不覆盖：未改动才重置草稿。
     const untouched = input !== null && input.value.trim() === text;
-    if (fresh) {
-      // 新开会话换了整条会话：房间视图整套消息都变了，走全量重取（增量合并会留着旧会话的消息）。
-      // 不在提前清 fresh 标志：「房间」事件会一并清掉——否则会先重画出上一轮气泡才被覆盖，视觉上闪一下。
-      await enterRoom(roomKey);
-    } else {
-      // R9 兜底：服务端 pump 订阅晚于 submit，新房间的首条 boss 消息不会经 SSE 推来。
-      // 重拉当前房间，仅把**尚未见过**的消息喂入 reducer（复合键过滤：只为新消息触发一次重渲）。
-      await syncRoomMessages(roomKey);
-    }
+    if (newMeeting) dispatch({ type: "new-meeting", on: false });
+    navigate({ view: "meeting", meetingId: result.meetingId }, newMeeting ? "replace" : "push");
+    await loadMeeting(result.meetingId);
     if (untouched) applyDraft(isGroup ? draftAfterSend(targets) : "");
-    void refreshSessionInfo(roomKey); // 上下文随这轮投递变化
   } catch (error) {
-    // 投递/重取失败：把「新开会话」就绲态也清掉，避免聊天区一直停在已清空的样子。
-    if (fresh) dispatch({ type: "fresh-session", on: false });
+    if (newMeeting) dispatch({ type: "new-meeting", on: false });
     reportError(error);
   } finally {
     sending = false;
@@ -659,26 +661,25 @@ async function sendCurrent(): Promise<void> {
   }
 }
 
-/** 当前房间的本地草稿存回浏览器（空内容 = 删除）。没有房间 / 没有输入框时什么都不做。 */
+/** 当前主题的本地草稿存回浏览器（空内容 = 删除）。 */
 function saveComposerDraft(): void {
-  const roomKey = state.roomKey;
+  const subjectKey = state.subjectKey;
   const area = composerInput();
-  if (roomKey === undefined || area === null) return;
-  drafts.save(roomKey, area.value);
+  if (subjectKey === undefined || area === null) return;
+  drafts.save(subjectKey, area.value);
 }
 
-/** 把当前房间的本地草稿填回输入框（renderAll 重建 DOM 后调用）；顺带同步群聊勾选与发送按钮态。 */
+/** 把当前主题的本地草稿填回输入框（renderAll 重建 DOM 后调用）；顺带同步群聊勾选与发送按钮态。 */
 function restoreDraft(): void {
-  const roomKey = state.roomKey;
+  const subjectKey = state.subjectKey;
   const area = composerInput();
-  if (roomKey === undefined || area === null) return;
-  const draft = drafts.load(roomKey);
-  if (draft === "") return;
-  area.value = draft;
+  if (subjectKey === undefined || area === null) return;
+  const draft = drafts.load(subjectKey);
+  if (draft !== "") area.value = draft;
   syncComposerUi(); // 群聊：正文是勾选态的唯一真相源，勾回来才能继续发
 }
 
-/** 发送成功后写入草稿（room 事件可能重建过输入框，故重新取元素）；保留勾选对象的 @ 前缀便于接着发。 */
+/** 发送成功后写入草稿（事件可能重建过输入框，故重新取元素）；保留勾选对象的 @ 前缀便于接着发。 */
 function applyDraft(draft: string): void {
   const area = composerInput();
   if (area === null) return;
@@ -689,8 +690,8 @@ function applyDraft(draft: string): void {
 }
 
 async function interruptCurrent(): Promise<void> {
-  if (state.roomKey === undefined) return;
-  await api.interrupt(state.roomKey);
+  if (state.meetingId === undefined) return;
+  await api.interrupt(state.meetingId);
 }
 
 /** 会话详情（只读）：入口 = 聊天顶部信息条的「详情」，内容就是那一条会话。 */
@@ -724,8 +725,7 @@ async function renderSessionPanel(): Promise<void> {
 async function openConfigPanel(scope: ConfigScope, id: string): Promise<void> {
   sessionPanel = undefined;
   const view = await api.config(scope, id);
-  const label =
-    scope === "agent" ? id : scope === "department" ? (id === "" ? "根部门" : id) : id;
+  const label = id === "" ? "根部门" : id;
   configPanel = { ...view, label };
   renderConfigPanel();
 }
@@ -744,47 +744,56 @@ function renderConfigPanel(): void {
   });
 }
 
-/** 成员展示名：优先 alias（组织树里的昵称），回落到 id。 */
-function memberName(memberId: string): string {
-  return state.employees.find((person) => person.id === memberId)?.alias ?? memberId;
-}
-
-async function openHistory(): Promise<void> {
-  if (state.roomKey === undefined) return;
-  const roomKey = state.roomKey;
-  const { chains } = await api.sessions(roomKey);
-  const rows = chains
-    .flatMap((chain) => chain.rows.map((row) => ({ ...row, memberId: chain.memberId })))
-    .sort((a, b) => (a.started < b.started ? 1 : -1));
-  app.innerHTML = `<div class="layout">${sidebarHtml(state)}<div class="panel">
-    <h3>历史会话（只读）</h3>
-    ${rows
-      .map(
-        (row) =>
-          `<div class="session"><span><button type="button" class="session-title history-title" data-rename-conv="${escapeHtml(row.id)}" title="点击改名">${escapeHtml(row.title ?? "未命名")}</button> · ${escapeHtml(memberName(row.memberId))} · ${escapeHtml(localDateTime(row.started))}${row.ended === null ? "（进行中）" : ""}</span><button data-conv="${escapeHtml(row.id)}">查看</button></div>`,
-      )
-      .join("") || `<p class="hint">还没有会话。</p>`}
-    <p><button id="btn-history-back">返回聊天</button></p>
-  </div></div>${permissionCardsHtml(state)}`;
-  document.getElementById("btn-history-back")?.addEventListener("click", () => renderAll());
-  bindSidebar(); // 面板内也带一份侧栏（房间 / {} 定义 / 部门折叠）
-  bindPermCards(); // 全局授权卡片在只读视图里也可见可点
+/**
+ * 历史会议页（独立视图，URL = `?view=history&subject=…`）。
+ * `mode` 决定是否写 URL：点「历史」= push；删完原地刷新 = none；手改 URL 进来 = none。
+ */
+async function openHistory(subjectKey: string, mode: "push" | "replace" | "none" = "push"): Promise<void> {
+  if (subjectKey === "") return;
+  sessionPanel = undefined;
+  configPanel = undefined;
+  const view = await api.subject(subjectKey);
+  // dynamic：只更新侧栏高亮，不触发 renderAll（否则会先画回聊天再被历史页覆盖）
+  dispatch({ type: "subject", subjectKey: view.key, ...(view.current === undefined ? {} : { current: view.current }), meetings: view.meetings });
+  if (mode !== "none") navigate({ view: "history", subjectKey: view.key }, mode);
+  app.innerHTML = historyHtml(state);
+  document.getElementById("btn-history-back")?.addEventListener("click", () => guard(backToChat()));
+  bindSidebar(); // 面板内也带一份侧栏（主题 / {} 定义 / 部门折叠）
+  bindPermCards(); // 全局授权卡片也可见可点
   bindTitles(); // 历史行的标题可改名（点击保存后重拉列表）
-  for (const element of app.querySelectorAll<HTMLElement>("[data-conv]")) {
-    const convId = element.dataset.conv!;
-    element.addEventListener("click", () => guard(loadHistoryView(roomKey, convId)));
+  for (const element of app.querySelectorAll<HTMLElement>("[data-meeting]")) {
+    const meetingId = element.dataset.meeting!;
+    element.addEventListener("click", () => {
+      navigate({ view: "meeting", meetingId });
+      guard(openMeeting(meetingId));
+    });
+  }
+  for (const element of app.querySelectorAll<HTMLElement>("[data-delete-meeting]")) {
+    element.addEventListener("click", () => guard(removeMeeting(element.dataset.deleteMeeting!)));
   }
 }
 
-async function loadHistoryView(roomKey: string, convId: string): Promise<void> {
-  const { messages } = await api.history(roomKey, convId);
-  app.innerHTML = `<div class="layout">${sidebarHtml(state)}<div class="panel">
-    <p><button id="btn-history-back">返回列表</button></p>
-    ${messagesHtml(messages, state.bossName)}
-  </div></div>${permissionCardsHtml(state)}`;
-  document.getElementById("btn-history-back")?.addEventListener("click", () => guard(openHistory()));
-  bindSidebar(); // 详情视图同样带一份侧栏
-  bindPermCards(); // 全局授权卡片在只读视图里也可见可点
+/** 从历史页返回聊天：回到该主题最新一场会议（没有就停在「暂无记录」）。 */
+async function backToChat(): Promise<void> {
+  const subjectKey = state.subjectKey;
+  if (subjectKey === undefined) {
+    renderAll();
+    return;
+  }
+  await enterSubject(subjectKey);
+}
+
+/** 删除会议（老板专属）：不可恢复；删的是当前会议就回该主题最新一场 / 暂无记录。 */
+async function removeMeeting(meetingId: string): Promise<void> {
+  const confirmed = window.confirm("删除这场会议？该会议的消息、会话映射与 pin 会一并删除，不可恢复。");
+  if (!confirmed) return;
+  await api.deleteMeeting(meetingId);
+  const subjectKey = state.subjectKey;
+  if (subjectKey === undefined) {
+    renderAll();
+    return;
+  }
+  await openHistory(subjectKey, "none"); // 删除入口只在历史页：原地刷新，不回聊天
 }
 
 async function main(): Promise<void> {
@@ -811,9 +820,61 @@ async function main(): Promise<void> {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void refreshPins().catch(() => {});
     });
+    window.addEventListener("popstate", () => void applyRoute());
+
+    await applyRoute();
   } catch (error) {
     app.innerHTML = `<main class="setup"><h1>OpenStaffs</h1><p>服务不可用：${escapeHtml(error instanceof Error ? error.message : String(error))}</p></main>`;
   }
+}
+
+/** 按 URL 打开（首屏 / 浏览器前进后退都走它）。 */
+async function applyRoute(): Promise<void> {
+  const route = parseRoute(window.location.search);
+  if (route.view === "history") {
+    const subjectKey = route.subjectKey
+      ?? localStorage.getItem("openstaffs.subject")
+      ?? (state.employees[0] === undefined ? undefined : `dm:${state.employees[0].id}`);
+    if (subjectKey !== undefined) {
+      await openHistory(subjectKey, route.subjectKey === undefined ? "replace" : "none");
+      return;
+    }
+  }
+  if (route.view === "meeting") {
+    await openMeeting(route.meetingId);
+    return;
+  }
+  if (route.view === "subject") {
+    await openSubject(route.subjectKey);
+    return;
+  }
+  // 无参数：上次看的会议 → 上次的主题 → 第一个员工 / 项目。
+  const lastMeeting = localStorage.getItem("openstaffs.meeting");
+  if (lastMeeting !== null) {
+    try {
+      await openMeeting(lastMeeting);
+      navigate({ view: "meeting", meetingId: lastMeeting }, "replace");
+      return;
+    } catch {
+      // 会议已随库重建消失（开发阶段破坏性更新）：落到下面按主题找。
+    }
+  }
+  const lastSubject = localStorage.getItem("openstaffs.subject");
+  if (lastSubject !== null) {
+    try {
+      await openSubject(lastSubject);
+      return;
+    } catch {
+      // 同上
+    }
+  }
+  const first = state.employees[0];
+  if (first !== undefined) {
+    await enterSubject(`dm:${first.id}`);
+    return;
+  }
+  const project = state.projects[0];
+  if (project !== undefined) await enterSubject(`group:${project.id}`);
 }
 
 void main();

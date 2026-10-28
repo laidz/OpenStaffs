@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { seedOffice } from "../helpers/office.ts";
-import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom, triggerFromGroupReply } from "../../src/app/send.ts";
+import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToMeeting, triggerFromMeetingReply } from "../../src/app/send.ts";
 import type { ChatMessage, ConversationSpec, HarnessPort, InputMeta } from "../../src/harness/port.ts";
 import { openMessageStore } from "../../src/store/messages.ts";
 import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
+import { openMeetingStore, type MeetingStore, type MeetingRecord } from "../../src/store/meetings.ts";
+import { createNewMeeting, ensureMeeting } from "../../src/app/meetings.ts";
 
 /** 每个用例一个独立的自有消息库文件（与临时空间夹具同源）。 */
 const storeDirs: string[] = [];
@@ -23,28 +25,49 @@ afterEach(() => {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-send-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-/** 会话表（唯一真相）：每个用例一份；发送路径经 `resolveSession` 读写它。 */
+/** 会议表 / 会话表（同一库文件，唯一真相）：每个用例一份。 */
 let sessions: SessionStore;
+let meetings: MeetingStore;
 const sessionDirs: string[] = [];
 beforeEach(() => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "os-sessions-"));
   sessionDirs.push(dir);
+  meetings = openMeetingStore(path.join(dir, "s.db"));
   sessions = openSessionStore(path.join(dir, "s.db"));
 });
 afterEach(() => {
   sessions.close();
+  meetings.close();
   for (const dir of sessionDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** 包一层：把会话表补进每个调用点（生产代码里由装配层注入）。 */
-type SendOptions = Omit<Parameters<typeof sendToRoom>[4], "sessions">;
-type SendArgs = Parameters<typeof sendToRoom>;
-const send = (ws: SendArgs[0], harness: SendArgs[1], relation: SendArgs[2], text: SendArgs[3], options: SendOptions) =>
-  sendToRoom(ws, harness, relation, text, { sessions, ...options });
-type TriggerArgs = Parameters<typeof triggerFromGroupReply>;
-type TriggerOptions = Omit<TriggerArgs[2], "sessions">;
-const trigger = (ws: TriggerArgs[0], harness: TriggerArgs[1], options: TriggerOptions) =>
-  triggerFromGroupReply(ws, harness, { sessions, ...options });
+const NOW = new Date("2026-10-26T10:00:00.000Z");
+/** 该主题的进行中会议（没有就建一场）。 */
+const meetingOf = (ws: ReturnType<typeof createWorkspace>, relation: { kind: "dm"; employeeId: string } | { kind: "group"; project: string }) =>
+  ensureMeeting({ ws, meetings }, relation, NOW);
+/** 该主题再开一场新会议（上一场 closed）。 */
+const newMeetingOf = (ws: ReturnType<typeof createWorkspace>, relation: { kind: "dm"; employeeId: string } | { kind: "group"; project: string }) =>
+  createNewMeeting({ ws, meetings }, relation, NOW);
+
+/** 包一层：把会话表补进每个调用点（生产代码里由装配层注入），并把 relation 解析成会议。 */
+type Relation = { kind: "dm"; employeeId: string } | { kind: "group"; project: string };
+type SendOptions = Omit<Parameters<typeof sendToMeeting>[4], "sessions">;
+const send = (ws: Parameters<typeof sendToMeeting>[0], harness: Parameters<typeof sendToMeeting>[1], relation: Relation, text: string, options: SendOptions) =>
+  sendToMeeting(ws, harness, meetingOf(ws, relation), text, { sessions, ...options });
+/** 在新会议里发送（等价于「新建会议」后的第一条）。 */
+const sendNew = (ws: Parameters<typeof sendToMeeting>[0], harness: Parameters<typeof sendToMeeting>[1], relation: Relation, text: string, options: SendOptions) =>
+  sendToMeeting(ws, harness, newMeetingOf(ws, relation), text, { sessions, ...options });
+type TriggerOptions = Omit<Parameters<typeof triggerFromMeetingReply>[2], "sessions" | "meeting">;
+const trigger = (
+  ws: Parameters<typeof triggerFromMeetingReply>[0],
+  harness: Parameters<typeof triggerFromMeetingReply>[1],
+  relation: Relation,
+  options: TriggerOptions,
+) => triggerFromMeetingReply(ws, harness, { sessions, meeting: meetingOf(ws, relation), ...options });
+
+/** 该会议落库的消息行。 */
+const rowsOf = (store: ReturnType<typeof tempStore>, ws: Parameters<typeof meetingOf>[0], relation: Relation) =>
+  store.byMeeting(meetingOf(ws, relation).meetingId);
 
 /** 人 = 一份 `<id>.agent.config.json`（新形态夹具，经 seedOffice）。 */
 function seedEmployee(id: string, alias?: string) {
@@ -111,7 +134,7 @@ class FakePort implements HarnessPort {
 const defaults = { model: "faux/faux-model" };
 
 describe("发送编排", () => {
-  it("私聊直接投递（原文不剥 @），meta 带 author 与同一 roomMessageId", async () => {
+  it("私聊直接投递（原文不剥 @），meta 带 author 与同一 messageId", async () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const port = new FakePort();
@@ -125,9 +148,9 @@ describe("发送编排", () => {
     expect(port.submits[0]!.text).toBe("@老板 你好");
     expect(port.submits[0]!.meta?.kind).toBe("chat.message");
     expect(port.submits[0]!.meta?.requestId).toBe("r1");
-    const data = port.submits[0]!.meta?.data as { author?: string; roomMessageId?: string };
+    const data = port.submits[0]!.meta?.data as { author?: string; messageId?: string };
     expect(data.author).toBe("boss");
-    expect(data.roomMessageId).toBe(result.roomMessageId);
+    expect(data.messageId).toBe(result.messageId);
   });
 
   it("受理回执透出：placed 表示已进 transcript；queued 表示在 Pi 的 inbox 里排队", async () => {
@@ -143,7 +166,7 @@ describe("发送编排", () => {
     expect(queued.deliveries[0]).toMatchObject({ memberId: "alice", status: "queued" });
   });
 
-  it("newSession：对目标成员新开会话（不再 attach 旧会话），多 @ 各自开新会话", async () => {
+  it("新会议：对目标成员各开一条 conv；同一会议内后续发送复用", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
     seedGroup("yt", ["alice", "bob"]);
@@ -157,8 +180,8 @@ describe("发送编排", () => {
     expect(port.starts).toHaveLength(2);
     port.starts.length = 0;
 
-    // 再发一条：newSession → 每人各开一条新会话（而不是复用）
-    const fresh = await send(ws, port, relation, "@alice @bob 重新开始", { queue, defaults, newSession: true });
+    // 在新会议里发：每人各开一条新会话（而不是复用）
+    const fresh = await sendNew(ws, port, relation, "@alice @bob 重新开始", { queue, defaults });
     expect(port.starts).toHaveLength(2);
     expect(fresh.deliveries.map((d) => d.memberId)).toEqual(["alice", "bob"]);
     expect(new Set(fresh.deliveries.map((d) => d.convId)).size).toBe(2);
@@ -171,7 +194,7 @@ describe("发送编排", () => {
     expect(port.starts).toHaveLength(2); // 没开新会话：没有新增会话
   });
 
-  it("群聊 @alice：只投递 alice，正文保留 @；多 @：各一份同 roomMessageId", async () => {
+  it("群聊 @alice：只投递 alice，正文保留 @；多 @：各一份同 messageId", async () => {
     seedEmployee("alice");
     seedEmployee("bob");
     seedGroup("yt", ["alice", "bob"]);
@@ -186,8 +209,8 @@ describe("发送编排", () => {
     port.submits.length = 0;
     const both = await send(ws, port, { kind: "group", project: "yt" }, "@alice @bob 全体汇报", { queue, defaults });
     expect(both.deliveries.map((d) => d.memberId).sort()).toEqual(["alice", "bob"]);
-    const rids = new Set(port.submits.map((s) => (s.meta?.data as { roomMessageId?: string } | undefined)?.roomMessageId));
-    expect(rids).toEqual(new Set([both.roomMessageId]));
+    const rids = new Set(port.submits.map((s) => (s.meta?.data as { messageId?: string } | undefined)?.messageId));
+    expect(rids).toEqual(new Set([both.messageId]));
   });
 
   it("群聊一次 @ 两人：落一行、toIds 两人、text 已剥离 @", async () => {
@@ -198,7 +221,7 @@ describe("发送编排", () => {
     const store = tempStore();
     try {
       await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
-      const rows = store.listByRoom("group:seo");
+      const rows = rowsOf(store, ws, { kind: "group", project: "seo" });
       expect(rows).toHaveLength(1);
       expect(rows[0]!.fromId).toBe("__boss");
       expect(rows[0]!.toIds).toEqual(["alice", "bob"]);
@@ -214,9 +237,8 @@ describe("发送编排", () => {
     const store = tempStore();
     try {
       await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@老板 在吗", { queue: new KeyedQueue(), store });
-      const rows = store.listByRoom("dm:alice");
+      const rows = rowsOf(store, ws, { kind: "dm", employeeId: "alice" });
       expect(rows).toHaveLength(1);
-      expect(rows[0]!.projectId).toBeNull();
       expect(rows[0]!.fromId).toBe("__boss");
       expect(rows[0]!.toIds).toEqual(["alice"]);
       expect(rows[0]!.text).toBe("在吗");
@@ -233,7 +255,7 @@ describe("发送编排", () => {
     const store = tempStore();
     try {
       await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @老板 开工", { queue: new KeyedQueue(), store });
-      const rows = store.listByRoom("group:seo");
+      const rows = rowsOf(store, ws, { kind: "group", project: "seo" });
       expect(rows).toHaveLength(1);
       expect(rows[0]!.fromId).toBe("__boss");
       expect(rows[0]!.toIds).toEqual(["alice", "__boss"]);
@@ -250,7 +272,7 @@ describe("发送编排", () => {
     try {
       const result = await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
       expect(result.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
-      expect(store.listByRoom("dm:alice")).toEqual([]);
+      expect(rowsOf(store, ws, { kind: "dm", employeeId: "alice" })).toEqual([]);
     } finally {
       store.close();
     }
@@ -266,7 +288,7 @@ describe("发送编排", () => {
       const result = await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue() });
       expect(result.deliveries.map((d) => d.memberId).sort()).toEqual(["alice", "bob"]);
       expect(result.recorded).toBeUndefined();
-      expect(store.listByRoom("group:seo")).toEqual([]);
+      expect(rowsOf(store, ws, { kind: "group", project: "seo" })).toEqual([]);
     } finally {
       store.close();
     }
@@ -280,12 +302,12 @@ describe("发送编排", () => {
     const store = tempStore();
     try {
       const result = await send(ws, new FakePort(), { kind: "group", project: "seo" }, "@alice @bob 开工", { queue: new KeyedQueue(), store });
-      const rows = store.listByRoom("group:seo");
+      const rows = rowsOf(store, ws, { kind: "group", project: "seo" });
       expect(rows).toHaveLength(1);
       expect(result.recorded).toBeDefined();
       expect(result.recorded).toEqual(rows[0]);
       expect(result.recorded!.seq).toBe(rows[0]!.seq);
-      expect(result.recorded!.room).toBe("group:seo");
+      expect(result.recorded!.meetingId).toBe(meetingOf(ws, { kind: "group", project: "seo" }).meetingId);
     } finally {
       store.close();
     }
@@ -298,7 +320,7 @@ describe("发送编排", () => {
     try {
       const result = await send(ws, new FakePort(), { kind: "dm", employeeId: "alice" }, "@alice", { queue: new KeyedQueue(), store });
       expect(result.recorded).toBeUndefined();
-      expect(store.listByRoom("dm:alice")).toEqual([]);
+      expect(rowsOf(store, ws, { kind: "dm", employeeId: "alice" })).toEqual([]);
     } finally {
       store.close();
     }
@@ -374,10 +396,9 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     seedGroup("yt", ["alice", "bob"]);
     const ws = createWorkspace(root);
     const port = new FakePort();
-    const reports = await trigger(ws, port, {
+    const reports = await trigger(ws, port, { kind: "group", project: "yt" }, {
       queue: new KeyedQueue(),
       defaults,
-      project: "yt",
       senderId: "alice",
       convId: "conv-a",
       entryId: "42",
@@ -401,10 +422,9 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const port = new FakePort();
     const store = tempStore();
     try {
-      const reports = await trigger(ws, port, {
+      const reports = await trigger(ws, port, { kind: "group", project: "yt" }, {
         queue: new KeyedQueue(),
         defaults,
-        project: "yt",
         senderId: "alice",
         convId: "conv-a",
         entryId: "42",
@@ -412,7 +432,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
       });
       expect(reports.map((r) => r.memberId)).toEqual(["bob"]);
       expect(port.submits).toHaveLength(1);
-      expect(store.listByRoom("group:yt")).toEqual([]);
+      expect(store.byMeeting(meetingOf(ws, { kind: "group", project: "yt" }).meetingId)).toEqual([]);
     } finally {
       store.close();
     }
@@ -426,7 +446,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const port = new FakePort();
     const queue = new KeyedQueue();
     const run = (text: string) =>
-      trigger(ws, port, { queue, defaults, project: "yt", senderId: "alice", convId: "c", entryId: "1", text });
+      trigger(ws, port, { kind: "group", project: "yt" }, { queue, defaults, senderId: "alice", convId: "c", entryId: "1", text });
 
     const reports = await run("@bob 你好");
     expect(reports.map((r) => r.memberId)).toEqual(["bob"]);
@@ -446,7 +466,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const store = tempStore();
     const named: string[] = [];
     const titles = {
-      store: sessions,
+      store: meetings,
       notify: () => {},
       namer: async (text: string) => {
         named.push(text);
@@ -459,7 +479,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     await send(ws, port, { kind: "dm", employeeId: "alice" }, "帮我看看登录", { queue, defaults, titles });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(named).toEqual(["帮我看看登录"]);
-    expect(sessions.get("conv-1")?.title).toBe("登录排查");
+    expect(meetings.get(meetingOf(ws, { kind: "dm", employeeId: "alice" }).meetingId)?.title).toBe("登录排查");
 
     // 第二条消息复用同一会话 → 不再命名
     await send(ws, port, { kind: "dm", employeeId: "alice" }, "继续", { queue, defaults, titles });
@@ -475,7 +495,7 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
     const store = tempStore();
     const named: string[] = [];
     const titles = {
-      store: sessions,
+      store: meetings,
       notify: () => {},
       namer: async (text: string) => {
         named.push(text);
@@ -489,10 +509,9 @@ describe("群回复的 @触发（agent ↔ agent / 发给老板的口径）", ()
       titles,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(named).toHaveLength(2);
-    for (const delivery of ["conv-1", "conv-2"]) {
-      expect(sessions.get(delivery)?.title).toBe("协作安排");
-    }
+    // 一场会议一个标题：一条消息 @ 两人 → 第一次建 conv 时命名一次，同一会议的后续 delivery 不再命名
+    expect(named).toHaveLength(1);
+    expect(meetings.get(meetingOf(ws, { kind: "group", project: "yt" }).meetingId)?.title).toBe("协作安排");
   });
 
   it("没有 titles 依赖时行为不变（不落标题、不报错）", async () => {

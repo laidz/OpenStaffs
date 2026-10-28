@@ -4,7 +4,8 @@ import type { Workspace } from "../domain/paths.ts";
 import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import { openStaffsToolDefs, type ToolContext } from "./registry.ts";
-import type { RoomMessage } from "../app/rooms.ts";
+import type { MeetingMessage } from "../app/meeting-messages.ts";
+import type { MeetingStore } from "../store/meetings.ts";
 import type { SessionStore } from "../store/sessions.ts";
 
 /**
@@ -18,9 +19,11 @@ export function createOpenStaffsToolsExtension(options: {
   mcp?: McpSessionResolver;
   /** 授权请求依赖（装配层注入；缺省时 request_permission 不可用）。 */
   permissions?: { store: PermissionRequestStore; notify: (request: PermissionRequest) => void };
-  /** 房间消息广播（R-P1-12）：员工发言（send_message）落库后广播库行；缺省不广播。 */
-  broadcast?: (roomKey: string, message: RoomMessage) => void;
-  /** 会话表（唯一真相）：工具里 send_message / new_session 靠它解析会话。 */
+  /** 会议消息广播（R-P1-12）：员工发言（send_message）落库后广播库行；缺省不广播。 */
+  broadcast?: (meetingId: string, message: MeetingMessage) => void;
+  /** 会议表：工具里 send_message 靠它定位会议。 */
+  meetings: MeetingStore;
+  /** 会话表（唯一真相）：工具里 send_message / meeting_history 靠它解析会话。 */
   sessions: SessionStore;
 }): Extension {
   return defineExtension({
@@ -41,6 +44,8 @@ export function createOpenStaffsToolsExtension(options: {
             harness,
             selfId: info.selfId,
             relation: info.relation,
+            meetingId: info.meetingId,
+            meetings: options.meetings,
             sessions: options.sessions,
             ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
             ...(options.permissions === undefined ? {} : { permissions: options.permissions }),

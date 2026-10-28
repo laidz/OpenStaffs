@@ -5,6 +5,7 @@
  * 模型由空间配置 `namingModel` 指定；未指定 / 引用非法 / 模型目录查不到 = 自动命名不可用。
  * 失败一律不重试：调用方保留「时间标题」兜底。
  */
+import { randomUUID } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { SYSTEM_PROMPT_TEMPLATES } from "../capabilities/system-prompt.ts";
 import { parseModelRef } from "../domain/config.ts";
@@ -73,6 +74,9 @@ export function createNamer(options: { models: Models; namingModel?: string }): 
     );
     return undefined;
   }
+  // opencode-go 要求每个请求带 `x-opencode-session`（由 pi-ai 从 sessionId 生成）：
+  // 缺了会直接 400 MissingSessionID——命名请求不走会话，必须自己给一个稳定 id。
+  const sessionId = `openstaffs-naming-${randomUUID()}`;
   return async (firstMessage: string): Promise<string | undefined> => {
     const input = [...firstMessage].slice(0, NAMING_INPUT_MAX).join("");
     try {
@@ -81,10 +85,14 @@ export function createNamer(options: { models: Models; namingModel?: string }): 
         timer.unref?.();
       });
       const answer = await Promise.race([
-        options.models.completeSimple(model, {
-          systemPrompt: SYSTEM_PROMPT_TEMPLATES.naming,
-          messages: [{ role: "user", content: input, timestamp: Date.now() }],
-        }),
+        options.models.completeSimple(
+          model,
+          {
+            systemPrompt: SYSTEM_PROMPT_TEMPLATES.naming,
+            messages: [{ role: "user", content: input, timestamp: Date.now() }],
+          },
+          { sessionId },
+        ),
         timeout,
       ]);
       if (answer === undefined) {
@@ -92,7 +100,9 @@ export function createNamer(options: { models: Models; namingModel?: string }): 
         return undefined;
       }
       if (answer.stopReason !== "stop") {
-        console.warn(`[openstaffs] 会话命名失败：模型未正常结束（${answer.stopReason}）`);
+        // 带 errorMessage：供应商 400 / 鉴权等问题只看 stopReason=error 无法定位。
+        const detail = answer.errorMessage === undefined || answer.errorMessage === "" ? "" : `：${answer.errorMessage}`;
+        console.warn(`[openstaffs] 会话命名失败：模型未正常结束（${answer.stopReason}${detail}）`);
         return undefined;
       }
       const text = answer.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");

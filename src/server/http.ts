@@ -10,24 +10,28 @@ import type { McpSessionResolver } from "../domain/mcp.ts";
 import { findPerson, loadOrg, type OrgDepartment, type OrgTree } from "../domain/org.ts";
 import type { Workspace } from "../domain/paths.ts";
 import { agentsDir } from "../domain/paths.ts";
-import { parseRoomKey, roomMessagesOfTranscript, toRoomMessage, type RoomMessage } from "../app/rooms.ts";
-import { messageKey, pinCounts, readPins, setPin } from "../app/pins.ts";
+import { transcriptMessages, toMeetingMessage, type MeetingMessage } from "../app/meeting-messages.ts";
+import { messageKey, pinCounts, readPins, removeMeetingPins, setPin } from "../app/pins.ts";
 import { Outbox, queuedItemView } from "../app/outbox.ts";
 import {
-  employeeActiveSessions, findSessionOwner, interruptRoom, roomSessionInfo, sessionDefaults, sessionList, type Relation,
+  employeeActiveSessions, interruptMeeting, meetingParticipants, meetingSessionInfo, sessionDefaults, type Relation,
 } from "../app/conversations.ts";
-import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToRoom } from "../app/send.ts";
-import type { SessionTitleDeps } from "../app/sessions.ts";
-import { renameSession } from "../app/sessions.ts";
+import { EmptyGroupError, KeyedQueue, NoTargetsError, sendToMeeting } from "../app/send.ts";
+import type { MeetingTitleDeps } from "../app/meeting-titles.ts";
+import { renameMeeting } from "../app/meeting-titles.ts";
+import {
+  createNewMeeting, deleteMeeting, ensureMeeting, meetingView, meetingsOf, parseSubjectKey, participantIds, subjectKeyOf, subjectLabel, subjectOf,
+} from "../app/meetings.ts";
 import type { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView, resolvePermissionRequest, PermissionRequestNotFoundError } from "../app/permission-flow.ts";
+import type { MeetingKind, MeetingStore } from "../store/meetings.ts";
 import type { MessageStore } from "../store/messages.ts";
 import type { SessionStore } from "../store/sessions.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import type { SseHub } from "./sse.ts";
 
 export type PumpLike = {
-  register(convId: string, ref: { roomKey: string; memberId: string }): Promise<void>;
+  register(convId: string, ref: { meetingId: string; memberId: string }): Promise<void>;
   unregister(convId: string): Promise<void>;
   /** 会话当前是否在跑（「会话上下文」面板的运行点）；缺省视为未知 / false。 */
   isRunning?(convId: string): boolean;
@@ -40,7 +44,9 @@ export type ServerDeps = {
   queue: KeyedQueue;
   /** 自有消息库（P1）：全进程唯一实例，由 main.ts 创建并注入；老板发消息时落一行。 */
   store: MessageStore;
-  /** 会话表（唯一真相：convId ↔ 房间 ↔ 主人）：会话列表 / 信息条 / 改名 / 发送都读它。 */
+  /** 会议表（框架自持的会话身份）：subject ↔ meeting、标题、历史都读它。 */
+  meetings: MeetingStore;
+  /** 会话表（唯一真相：convId ↔ 会议 ↔ 成员）：会话列表 / 信息条 / 发送都读它。 */
   sessions: SessionStore;
   publicDir: string;
   /** 实际监听端口（启动参数 / config / 默认值解析后的结果）；status 展示用。 */
@@ -53,8 +59,8 @@ export type ServerDeps = {
   permissionRequests?: PermissionRequestStore;
   /** MCP 扩展选择（发送 / 授权结果投递时装配新会话）。 */
   mcp?: McpSessionResolver;
-  /** 会话标题依赖（发送新会话时命名 / 改名端点写入）；缺省时新会话不命名、PATCH 端点 503。 */
-  titles?: SessionTitleDeps;
+  /** 会议标题依赖（新会议命名 / 改名端点写入）；缺省时新会议不命名、PATCH 端点 503。 */
+  titles?: MeetingTitleDeps;
 };
 
 const MIME: Record<string, string> = {
@@ -159,12 +165,6 @@ function resolveStatic(publicDir: string, pathname: string): string | undefined 
   return target;
 }
 
-function roomExists(ws: Workspace, relation: Relation): boolean {
-  return relation.kind === "dm"
-    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined // dm 分支 P2 已落地，保持不动
-    : loadProjectConfig(ws, relation.project) !== undefined; // 仅群聊分支改判扁平 config
-}
-
 /** 「会话上下文」：该员工的活跃会话列表 + 单条会话的完整上下文（只读）。 */
 async function handleEmployees(
   deps: ServerDeps,
@@ -195,21 +195,19 @@ async function handleEmployees(
   }
 
   const projects = new Map(listProjects(deps.ws).map((project) => [project.id, project.alias]));
-  const relationView = (relation: Relation): { kind: "dm" | "group"; relationKey: string; projectId?: string; projectAlias?: string } => {
-    if (relation.kind === "dm") return { kind: "dm", relationKey: `dm:${relation.employeeId}` };
+  // 会话 → 会议 + 主题（面板按会议分组 / 展示标题）。
+  const meetingContext = (meetingId: string): Record<string, unknown> => {
+    const meta = deps.meetings.get(meetingId);
+    if (meta === undefined) return { meetingId };
     return {
-      kind: "group",
-      relationKey: `group:${relation.project}`,
-      projectId: relation.project,
-      projectAlias: projects.get(relation.project) ?? relation.project,
+      meetingId,
+      kind: meta.kind,
+      subjectKey: meta.kind === "dm" ? `dm:${meta.subjectId}` : `group:${meta.subjectId}`,
+      ...(meta.kind === "group" ? { projectId: meta.subjectId, projectAlias: projects.get(meta.subjectId) ?? meta.subjectId } : {}),
+      ...(meta.title === undefined ? {} : { title: meta.title }),
     };
   };
-  const sessions = employeeActiveSessions(deps.ws, deps.sessions, employeeId);
-  const titles = deps.sessions.getMany(sessions.map((session) => session.convId));
-  const titleOf = (convId: string): { title: string } | Record<string, never> => {
-    const meta = titles.get(convId);
-    return meta?.title === undefined ? {} : { title: meta.title };
-  };
+  const sessions = employeeActiveSessions(deps.ws, deps.meetings, deps.sessions, employeeId);
 
   if (segments.length === 4 && segments[3] === "sessions") {
     const out: Record<string, unknown>[] = [];
@@ -218,9 +216,7 @@ async function handleEmployees(
         const usage = await harness.sessionUsage(session.convId);
         out.push({
           convId: session.convId,
-          ...relationView(session.relation),
-          started: session.started,
-          ...titleOf(session.convId),
+          ...meetingContext(session.meetingId),
           running: deps.pump?.isRunning?.(session.convId) ?? false,
           model: formatModelRef(usage.model),
           thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
@@ -231,7 +227,7 @@ async function handleEmployees(
         // 坏会话跳过：一条会话取不到信息不该让整个面板 500。
       }
     }
-    out.sort((a, b) => Number(b["running"] === true) - Number(a["running"] === true) || String(b["started"]).localeCompare(String(a["started"])));
+    out.sort((a, b) => Number(b["running"] === true) - Number(a["running"] === true));
     json(res, 200, { employee: { id: person.id, ...(person.alias === undefined ? {} : { alias: person.alias }) }, sessions: out });
     return;
   }
@@ -252,9 +248,7 @@ async function handleEmployees(
     const [usage, context] = await Promise.all([harness.sessionUsage(convId), harness.context(convId)]);
     json(res, 200, {
       convId,
-      ...relationView(session.relation),
-      started: session.started,
-      ...titleOf(convId),
+      ...meetingContext(session.meetingId),
       running: deps.pump?.isRunning?.(convId) ?? false,
       model: formatModelRef(usage.model),
       thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
@@ -270,7 +264,41 @@ async function handleEmployees(
   json(res, 404, { error: "接口不存在" });
 }
 
-async function handleRooms(
+/** 主题（员工 / 项目）是否存在：dm 看人，group 看项目配置。 */
+function subjectExists(ws: Workspace, relation: Relation): boolean {
+  return relation.kind === "dm"
+    ? findPerson(loadOrg(ws), relation.employeeId) !== undefined
+    : loadProjectConfig(ws, relation.project) !== undefined;
+}
+
+/** 主题视图：侧栏 / 历史面板用（当前会议 + 全部会议）。 */
+function subjectView(deps: ServerDeps, relation: Relation): Record<string, unknown> {
+  const meetings = meetingsOf({ ws: deps.ws, meetings: deps.meetings }, relation);
+  const current = meetings[0]; // 最新创建的那一场 = 进入主题时的「当前会议」
+  return {
+    key: subjectKeyOf(relation),
+    kind: relation.kind,
+    subjectId: relation.kind === "dm" ? relation.employeeId : relation.project,
+    subjectLabel: subjectLabel(deps.ws, relation),
+    participants: participantIds(deps.ws, relation),
+    ...(current === undefined ? {} : { current: meetingView(deps.ws, current) }),
+    meetings: meetings.map((meeting) => meetingView(deps.ws, meeting)),
+  };
+}
+
+/** 会议消息视图（GET /<meeting>/messages 与 pin 校验共用）。 */
+function meetingMessages(deps: ServerDeps, outbox: Outbox, meeting: { meetingId: string; kind: MeetingKind }): MeetingMessage[] {
+  const bossName = readBossName(deps.ws);
+  const queuedByStoreSeq = outbox.messageIdByStoreSeq(meeting.meetingId);
+  return deps.store.byMeeting(meeting.meetingId).map((stored) => {
+    const view = toMeetingMessage(stored, meeting.kind, bossName, deps.ws);
+    const messageId = queuedByStoreSeq.get(stored.seq);
+    return messageId === undefined ? view : { ...view, messageId };
+  });
+}
+
+/** 主题维度的入口：`/api/subjects/<key>`（当前会议 + 历史）与 `/<key>/messages`（发送，可要求新会议）。 */
+async function handleSubjects(
   deps: ServerDeps,
   outbox: Outbox,
   req: http.IncomingMessage,
@@ -279,103 +307,213 @@ async function handleRooms(
   rawKey: string,
   rest: string[],
 ): Promise<void> {
-  let roomKey: string;
+  let subjectKey: string;
   try {
-    roomKey = decodeURIComponent(rawKey);
+    subjectKey = decodeURIComponent(rawKey);
   } catch {
-    json(res, 404, { error: "房间不存在" });
+    json(res, 404, { error: "会话不存在" });
     return;
   }
-  const relation = parseRoomKey(roomKey);
+  const relation = parseSubjectKey(subjectKey);
   const harness = deps.getHarness();
   const config = deps.getConfig();
-  if (relation === undefined || harness === undefined || config === undefined || !roomExists(deps.ws, relation)) {
-    json(res, 404, { error: "房间不存在" });
+  if (relation === undefined || !subjectExists(deps.ws, relation)) {
+    json(res, 404, { error: "会话不存在" });
     return;
   }
-  const defaults = sessionDefaults(config)!;
-  // 群聊归一化需要成员表（判定 @ 对象是否有效、决定“视为发给老板”的兜底）。
-  const memberIds = relation.kind === "group" ? parseMembers(deps.ws, relation.project) : [];
-  const bossNames = bossNamesFor(deps.ws);
-  const bossName = readBossName(deps.ws);
 
-  if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
-    // 房间视图改读自有消息库（P1）：一次投递 = 一行，按 seq 排序；不再合并各成员 transcript。
-    // 房间视图只看**当前一轮**（最近一次「新开会话」之后，见 store.currentWindow）：上一轮内容从聊天区收起，
-    // 仍在库里（会话详情 / 历史可回看），hidden = 被收起的条数（前端在消息区顶部给一条说明）。
-    // 仍在排队的库行回填 roomMessageId（与 SSE 广播同口径）：刷新 / 换标签页 / 首次进房时，
-    // 前端「排队中」占位据此贴到真气泡上，不出「真气泡 + 灰占位」两条；没有排队的库行不带。
-    const queuedByStoreSeq = outbox.roomMessageIdByStoreSeq(roomKey);
-    const visible = deps.store.currentWindow(roomKey);
-    const messages = visible.map((m) => {
-      const view = toRoomMessage(m, bossName, deps.ws);
-      const roomMessageId = queuedByStoreSeq.get(m.seq);
-      return roomMessageId === undefined ? view : { ...view, roomMessageId };
-    });
-    const hidden = deps.store.listByRoom(roomKey).length - visible.length;
-    // pinned 只回当前视图里可见的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
-    const pinnedKeys = new Set(readPins(deps.ws).pins[roomKey] ?? []);
-    const pinned = messages.filter((m) => pinnedKeys.has(messageKey(m))).map(messageKey);
-    // queued：还没投递给员工的老板消息（排队中）；刷新 / 重连 / 换标签页都能拿到真值。
-    json(res, 200, { roomKey, messages, hidden, pinned, queued: outbox.list(roomKey).map(queuedItemView) });
+  if (rest.length === 0 && method === "GET") {
+    json(res, 200, subjectView(deps, relation));
     return;
   }
 
   if (rest.length === 1 && rest[0] === "messages" && method === "POST") {
-    const body = (await readJsonBody(req)) as { text?: unknown; requestId?: unknown; newSession?: unknown } | undefined;
+    if (harness === undefined || config === undefined) {
+      json(res, 503, { error: "会话服务未就绪" });
+      return;
+    }
+    const body = (await readJsonBody(req)) as { text?: unknown; requestId?: unknown; newMeeting?: unknown } | undefined;
     const text = typeof body?.text === "string" ? body.text : "";
     if (text.trim() === "") {
       json(res, 400, { error: "消息不能为空" });
       return;
     }
     const requestId = typeof body?.requestId === "string" && body.requestId !== "" ? body.requestId : undefined;
-    const newSession = body?.newSession === true;
+    // 「新建会议」：第一条消息落会议时才真正新建（空点不产生会议）。
+    const meeting = body?.newMeeting === true
+      ? createNewMeeting({ ws: deps.ws, meetings: deps.meetings }, relation, new Date())
+      : ensureMeeting({ ws: deps.ws, meetings: deps.meetings }, relation, new Date());
     try {
-      const result = await sendToRoom(deps.ws, harness, relation, text, {
+      const result = await sendToMeeting(deps.ws, harness, meeting, text, {
         queue: deps.queue,
         sessions: deps.sessions,
         store: deps.store,
-        defaults,
-        newSession,
+        defaults: sessionDefaults(config)!,
         ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
         ...(deps.titles === undefined ? {} : { titles: deps.titles }),
         ...(requestId === undefined ? {} : { requestId }),
       });
-      // 老板发言的实时气泡：广播刚落的库行（键 store:<seq>，与 GET 房间视图 / pin 校验同源）。
-      // 不靠各成员会话回显（user 条目已不广播）→ 一句 N 投 = 1 条气泡，pin 也能点。
-      // 另附一个**仅 UI 用**的 roomMessageId 副本（不入库，R-P1-11）：前端「排队中」占位据此贴到这条真气泡上
-      // （web/render.ts 按 roomMessageId 匹配）。GET 返回的库行默认不带；但仍在排队的那条由 outbox 回填同一 roomMessageId
-      // （见 GET 分支），故刷新 / 换标签页也与实时广播同口径、不出重复气泡。
+      // 老板发言的实时气泡：广播刚落的库行（键 store:<seq>，与 GET 会议视图 / pin 校验同源）。
+      // 另附一个**仅 UI 用**的 messageId 副本（不入库）：前端「排队中」占位据此贴到这条真气泡上。
       if (result.recorded !== undefined) {
         deps.hub?.broadcast({
-          type: "room.message",
-          roomKey,
-          message: { ...toRoomMessage(result.recorded, bossName, deps.ws), roomMessageId: result.roomMessageId },
+          type: "meeting.message",
+          meetingId: meeting.meetingId,
+          message: { ...toMeetingMessage(result.recorded, meeting.kind, readBossName(deps.ws), deps.ws), messageId: result.messageId },
         });
       }
       for (const delivery of result.deliveries) {
         // 排队中（员工在跑）：记进待发表 + 广播，前端在消息区显示「排队中」并允许单条撤回。
-        // storeSeq 记下这次发送落的库行 seq：GET 房间时据此把排队标识贴回真气泡（无库行 = 0，永不命中）。
         if (delivery.status === "queued") {
           const item = outbox.add({
             submissionId: delivery.submissionId,
-            roomKey,
+            meetingId: meeting.meetingId,
             memberId: delivery.memberId,
-            roomMessageId: result.roomMessageId,
+            messageId: result.messageId,
             storeSeq: result.recorded?.seq ?? 0,
             text: text.trim(),
             convId: delivery.convId,
           });
-          deps.hub?.broadcast({ type: "room.queued", item: queuedItemView(item) });
+          deps.hub?.broadcast({ type: "meeting.queued", item: queuedItemView(item) });
         }
         // best-effort：消息已落盘，订阅缺失由重启扫描兜底；pump 故障不得把已 admitted 的发送变成 500。
         try {
-          await deps.pump?.register(delivery.convId, { roomKey, memberId: delivery.memberId });
+          await deps.pump?.register(delivery.convId, { meetingId: meeting.meetingId, memberId: delivery.memberId });
         } catch {
           // 忽略：见上
         }
       }
-      json(res, 202, result);
+      json(res, 202, { meetingId: meeting.meetingId, ...result, meeting: meetingView(deps.ws, meeting) });
+    } catch (error) {
+      if (error instanceof EmptyGroupError || error instanceof NoTargetsError) {
+        json(res, 400, { error: error.message });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  json(res, 404, { error: "接口不存在" });
+}
+
+/** 会议维度的端点：消息 / 排队撤回 / 中断 / pin / 会话信息 / 标题 / 会话原文。 */
+async function handleMeetings(
+  deps: ServerDeps,
+  outbox: Outbox,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  method: string,
+  rawId: string,
+  rest: string[],
+): Promise<void> {
+  let meetingId: string;
+  try {
+    meetingId = decodeURIComponent(rawId);
+  } catch {
+    json(res, 404, { error: "会议不存在" });
+    return;
+  }
+  const meeting = deps.meetings.get(meetingId);
+  const harness = deps.getHarness();
+  const config = deps.getConfig();
+  if (meeting === undefined || harness === undefined || config === undefined) {
+    json(res, 404, { error: "会议不存在" });
+    return;
+  }
+  const bossNames = bossNamesFor(deps.ws);
+  const bossName = readBossName(deps.ws);
+  const memberIds = participantIds(deps.ws, subjectOf(meeting));
+
+  if (rest.length === 0 && method === "GET") {
+    json(res, 200, meetingView(deps.ws, meeting));
+    return;
+  }
+
+  // 删除会议（仅老板在界面操作；员工没有删除工具）：会议行 + 消息 + 会话映射 + pin 一起清。
+  if (rest.length === 0 && method === "DELETE") {
+    const deleted = await deleteMeeting(
+      {
+        ws: deps.ws,
+        meetings: deps.meetings,
+        messages: deps.store,
+        sessions: deps.sessions,
+        abort: (convId) => harness.abort(convId),
+        ...(deps.pump === undefined ? {} : { unregister: (convId) => deps.pump!.unregister(convId) }),
+        removePins: (id) => removeMeetingPins(deps.ws, id),
+      },
+      meetingId,
+    );
+    if (deleted === undefined) {
+      json(res, 404, { error: "会议不存在" });
+      return;
+    }
+    deps.hub?.broadcast({ type: "meeting.deleted", ...deleted });
+    json(res, 200, { ok: true, ...deleted });
+    return;
+  }
+
+  if (rest.length === 1 && rest[0] === "messages" && method === "GET") {
+    // 会议视图 = 该会议的全部消息（会议本身即窗口：上一场会议是另一个 meetingId，进历史）。
+    const messages = meetingMessages(deps, outbox, meeting);
+    // pinned 只回本会议里真实存在的 pin（与红点口径一致）：前端据此高亮，条数即红点数。
+    const pinnedKeys = new Set(readPins(deps.ws).pins[meetingId] ?? []);
+    const pinned = messages.filter((m) => pinnedKeys.has(messageKey(m))).map(messageKey);
+    json(res, 200, {
+      meetingId,
+      meeting: meetingView(deps.ws, meeting),
+      messages,
+      pinned,
+      queued: outbox.list(meetingId).map(queuedItemView),
+    });
+    return;
+  }
+
+  if (rest.length === 1 && rest[0] === "messages" && method === "POST") {
+    const body = (await readJsonBody(req)) as { text?: unknown; requestId?: unknown } | undefined;
+    const text = typeof body?.text === "string" ? body.text : "";
+    if (text.trim() === "") {
+      json(res, 400, { error: "消息不能为空" });
+      return;
+    }
+    const requestId = typeof body?.requestId === "string" && body.requestId !== "" ? body.requestId : undefined;
+    try {
+      const result = await sendToMeeting(deps.ws, harness, meeting, text, {
+        queue: deps.queue,
+        sessions: deps.sessions,
+        store: deps.store,
+        defaults: sessionDefaults(config)!,
+        ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
+        ...(deps.titles === undefined ? {} : { titles: deps.titles }),
+        ...(requestId === undefined ? {} : { requestId }),
+      });
+      if (result.recorded !== undefined) {
+        deps.hub?.broadcast({
+          type: "meeting.message",
+          meetingId,
+          message: { ...toMeetingMessage(result.recorded, meeting.kind, bossName, deps.ws), messageId: result.messageId },
+        });
+      }
+      for (const delivery of result.deliveries) {
+        if (delivery.status === "queued") {
+          const item = outbox.add({
+            submissionId: delivery.submissionId,
+            meetingId,
+            memberId: delivery.memberId,
+            messageId: result.messageId,
+            storeSeq: result.recorded?.seq ?? 0,
+            text: text.trim(),
+            convId: delivery.convId,
+          });
+          deps.hub?.broadcast({ type: "meeting.queued", item: queuedItemView(item) });
+        }
+        try {
+          await deps.pump?.register(delivery.convId, { meetingId, memberId: delivery.memberId });
+        } catch {
+          // 忽略：见上
+        }
+      }
+      json(res, 202, { meetingId, ...result });
     } catch (error) {
       if (error instanceof EmptyGroupError || error instanceof NoTargetsError) {
         json(res, 400, { error: error.message });
@@ -387,25 +525,25 @@ async function handleRooms(
   }
 
   if (rest.length === 2 && rest[0] === "queue" && rest[1] === "cancel" && method === "POST") {
-    const body = (await readJsonBody(req)) as { roomMessageId?: unknown } | undefined;
-    const roomMessageId = typeof body?.roomMessageId === "string" ? body.roomMessageId : "";
-    if (roomMessageId === "") {
-      json(res, 400, { error: "roomMessageId 必填" });
+    const body = (await readJsonBody(req)) as { messageId?: unknown } | undefined;
+    const messageId = typeof body?.messageId === "string" ? body.messageId : "";
+    if (messageId === "") {
+      json(res, 400, { error: "messageId 必填" });
       return;
     }
     // 单条撤回 = 撤掉这条消息里所有还没开始的投递（开始投递的拦不住 —— 那是「中断」的语义）。
     const cancelled: string[] = [];
-    for (const item of outbox.byRoomMessage(roomKey, roomMessageId)) {
+    for (const item of outbox.byMeetingMessage(meetingId, messageId)) {
       let ok = false;
       try {
         ok = await harness.withdrawSubmission(item.convId, item.submissionId);
       } catch {
-        ok = false; // 坏会话（链指向不存在的 convId 等）：不连坐其它投递
+        ok = false; // 坏会话：不连坐其它投递
       }
       if (!ok) continue;
       outbox.take(item.submissionId);
       cancelled.push(item.submissionId);
-      deps.hub?.broadcast({ type: "room.dequeued", roomKey, submissionId: item.submissionId, reason: "cancelled" });
+      deps.hub?.broadcast({ type: "meeting.dequeued", meetingId, submissionId: item.submissionId, reason: "cancelled" });
     }
     if (cancelled.length === 0) {
       json(res, 409, { error: "这条消息已经开始投递，撤不回了（要停住请看「中断」）" });
@@ -416,7 +554,7 @@ async function handleRooms(
   }
 
   if (rest.length === 1 && rest[0] === "interrupt" && method === "POST") {
-    json(res, 200, await interruptRoom(deps.ws, harness, deps.sessions, relation));
+    json(res, 200, await interruptMeeting(deps.ws, harness, deps.sessions, meeting));
     return;
   }
 
@@ -428,45 +566,32 @@ async function handleRooms(
       json(res, 400, { error: "convId / entryId / pinned 必填" });
       return;
     }
-    // 只允许 pin 房间视图（当前一轮）里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
-    const messages = deps.store.currentWindow(roomKey).map((m) => toRoomMessage(m, bossName, deps.ws));
+    // 只允许 pin 会议视图里真实存在的消息：防止前端 bug 往 pin 存储里塞垃圾键。
+    const messages = meetingMessages(deps, outbox, meeting);
     if (!messages.some((m) => m.convId === convId && m.entryId === entryId)) {
       json(res, 404, { error: "消息不存在" });
       return;
     }
-    const state = setPin(deps.ws, roomKey, `${convId}:${entryId}`, body.pinned);
-    const count = pinCounts([{ key: roomKey, messages }], state).rooms[roomKey] ?? 0;
-    deps.hub?.broadcast({ type: "room.pins", roomKey, count });
+    const state = setPin(deps.ws, meetingId, `${convId}:${entryId}`, body.pinned);
+    const count = pinCounts([{ meetingId, messages }], state).meetings[meetingId] ?? 0;
+    deps.hub?.broadcast({ type: "meeting.pins", meetingId, count });
     json(res, 200, { ok: true, count });
     return;
   }
 
   if (rest.length === 2 && rest[0] === "sessions" && rest[1] === "info" && method === "GET") {
-    json(res, 200, { sessions: await roomSessionInfo(deps.ws, harness, relation, deps.sessions) });
+    json(res, 200, { sessions: await meetingSessionInfo(deps.ws, harness, deps.sessions, meeting) });
     return;
   }
 
   if (rest.length === 1 && rest[0] === "sessions" && method === "GET") {
-    // 会话表 = 唯一真相：按房间列出每个成员的会话链（成员顺序来自项目 config）。
-    const chains = sessionList(deps.ws, deps.sessions, relation);
-    json(res, 200, {
-      chains: chains.map((chain) => ({
-        ...chain,
-        rows: chain.rows.map((row) => ({
-          id: row.convId,
-          started: row.started,
-          ended: row.ended,
-          previous: row.previous,
-          ...(row.title === undefined ? {} : { title: row.title }),
-          ...(row.titleSource === undefined ? {} : { titleSource: row.titleSource }),
-        })),
-      })),
-    });
+    // 会话表 = 唯一真相：这场会议里每个参与者与其 conv（顺序来自 participants 快照）。
+    json(res, 200, { participants: meetingParticipants(deps.ws, deps.sessions, meeting) });
     return;
   }
 
-  // 手动改名：走与自动命名同一条写入通道（renameSession：写库 + 广播）。
-  if (rest.length === 3 && rest[0] === "sessions" && rest[2] === "title" && method === "PATCH") {
+  // 手动改名：走与自动命名同一条写入通道（renameMeeting：写库 + 广播）。
+  if (rest.length === 1 && rest[0] === "title" && method === "PATCH") {
     const body = (await readJsonBody(req)) as { title?: unknown } | undefined;
     const title = typeof body?.title === "string" ? body.title.trim() : "";
     if (title === "") {
@@ -477,23 +602,12 @@ async function handleRooms(
       json(res, 400, { error: "标题最多 40 个字" });
       return;
     }
-    let convId: string;
-    try {
-      convId = decodeURIComponent(rest[1]!);
-    } catch {
-      json(res, 404, { error: "会话不存在" });
-      return;
-    }
-    if (findSessionOwner(deps.sessions, relation, convId) === undefined) {
-      json(res, 404, { error: "会话不存在" });
-      return;
-    }
     if (deps.titles === undefined) {
-      json(res, 503, { error: "会话标题未启用" });
+      json(res, 503, { error: "会议标题未启用" });
       return;
     }
-    const meta = renameSession(deps.titles, roomKey, convId, title, "manual");
-    json(res, 200, { convId, title: meta.title, titleSource: meta.titleSource });
+    const meta = renameMeeting(deps.titles, meetingId, title, "manual");
+    json(res, 200, { meetingId, title: meta.title, titleSource: meta.titleSource });
     return;
   }
 
@@ -502,19 +616,22 @@ async function handleRooms(
     try {
       convId = decodeURIComponent(rest[1]!);
     } catch {
-      json(res, 404, { error: "房间不存在" });
-      return;
-    }
-    const owner = findSessionOwner(deps.sessions, relation, convId);
-    if (owner === undefined) {
       json(res, 404, { error: "会话不存在" });
       return;
     }
-    const alias = findPerson(loadOrg(deps.ws), owner)?.alias;
-    const messages = roomMessagesOfTranscript(roomKey, {
-      memberId: owner, ...(alias === undefined ? {} : { alias }), convId, messages: await harness.transcript(convId),
+    const owner = deps.sessions.owner(convId);
+    if (owner === undefined || owner.meetingId !== meetingId) {
+      json(res, 404, { error: "会话不存在" });
+      return;
+    }
+    const alias = findPerson(loadOrg(deps.ws), owner.memberId)?.alias;
+    const messages = transcriptMessages(meeting.kind, {
+      memberId: owner.memberId,
+      ...(alias === undefined ? {} : { alias }),
+      convId,
+      messages: await harness.transcript(convId),
     }, memberIds, bossNames);
-    json(res, 200, { convId, memberId: owner, messages });
+    json(res, 200, { convId, memberId: owner.memberId, messages });
     return;
   }
 
@@ -594,15 +711,19 @@ export function createHttpServer(deps: ServerDeps): http.Server {
             json(res, 200, { scope, id, file: path.relative(deps.ws.root, file), text });
             return;
           }
-          if (segments[1] === "rooms" && segments[2] !== undefined && harness !== undefined) {
-            await handleRooms(deps, outbox, req, res, method, segments[2], segments.slice(3));
+          if (segments[1] === "subjects" && segments[2] !== undefined) {
+            await handleSubjects(deps, outbox, req, res, method, segments[2], segments.slice(3));
+            return;
+          }
+          if (segments[1] === "meetings" && segments[2] !== undefined && harness !== undefined) {
+            await handleMeetings(deps, outbox, req, res, method, segments[2], segments.slice(3));
             return;
           }
           if (segments[1] === "permission-requests" && harness !== undefined) {
             const store = deps.permissionRequests;
             if (segments.length === 2 && method === "GET") {
               const requests = store?.list() ?? [];
-              json(res, 200, { requests: requests.map((request) => permissionRequestView(deps.ws, request)) });
+              json(res, 200, { requests: requests.map((request) => permissionRequestView(deps.ws, request, deps.meetings)) });
               return;
             }
             if (segments.length === 4 && segments[2] !== undefined && segments[3] === "resolve" && method === "POST") {
@@ -630,13 +751,14 @@ export function createHttpServer(deps: ServerDeps): http.Server {
                     harness,
                     store,
                     messages: deps.store,
+                    meetings: deps.meetings,
                     sessions: deps.sessions,
                     queue: deps.queue,
                     defaults: sessionDefaults(config)!,
                     ...(deps.mcp === undefined ? {} : { mcp: deps.mcp }),
                     ...(deps.pump === undefined ? {} : { register: (convId, ref) => deps.pump!.register(convId, ref) }),
                     ...(deps.hub === undefined ? {} : { broadcast: (rid) => deps.hub!.broadcast({ type: "permission.resolved", id: rid }) }),
-                    ...(deps.hub === undefined ? {} : { broadcastMessage: (roomKey, message) => deps.hub!.broadcast({ type: "room.message", roomKey, message }) }),
+                    ...(deps.hub === undefined ? {} : { broadcastMessage: (meetingId, message) => deps.hub!.broadcast({ type: "meeting.message", meetingId, message }) }),
                   },
                   id,
                   decision,
@@ -654,17 +776,24 @@ export function createHttpServer(deps: ServerDeps): http.Server {
           }
           if (segments[1] === "pins" && method === "GET" && harness !== undefined) {
             const bossName = readBossName(deps.ws);
-            const rooms: { key: string; messages: RoomMessage[] }[] = [];
-            // 红点 = 房间**当前视图**（当前一轮）里的 pin 数：与 GET /messages 口径一致，旧轮的 pin 不计入。
-            for (const person of loadOrg(deps.ws).people) {
-              const key = `dm:${person.id}`;
-              rooms.push({ key, messages: deps.store.currentWindow(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
+            // 红点 = 该主题**所有会议**里的 pin 数（会议不再有「结束」，旧会议的 pin 仍算待看）。
+            const all = deps.meetings.listAll();
+            const views = all.map((meeting) => ({
+              meetingId: meeting.meetingId,
+              messages: deps.store.byMeeting(meeting.meetingId).map((m) => toMeetingMessage(m, meeting.kind, bossName, deps.ws)),
+            }));
+            const counts = pinCounts(views, readPins(deps.ws));
+            // 侧栏按**主题**显示红点：把会议计数折叠到 dm:<员工> / group:<项目>。
+            const subjects: Record<string, number> = {};
+            let total = 0;
+            for (const meeting of all) {
+              const count = counts.meetings[meeting.meetingId] ?? 0;
+              if (count === 0) continue;
+              const key = meeting.kind === "dm" ? `dm:${meeting.subjectId}` : `group:${meeting.subjectId}`;
+              subjects[key] = (subjects[key] ?? 0) + count;
+              total += count;
             }
-            for (const project of listProjects(deps.ws)) {
-              const key = `group:${project.id}`;
-              rooms.push({ key, messages: deps.store.currentWindow(key).map((m) => toRoomMessage(m, bossName, deps.ws)) });
-            }
-            json(res, 200, pinCounts(rooms, readPins(deps.ws)));
+            json(res, 200, { total, subjects });
             return;
           }
           json(res, 404, { error: "接口不存在" });

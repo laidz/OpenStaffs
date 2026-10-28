@@ -7,11 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace, officeDbFile, stateDir } from "../../src/domain/paths.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import {
-  accessFor, activeMemberSessions, employeeActiveSessions, findSessionOwner, instructionsFor, interruptRoom,
-  relationCwd, relationKey, resolveSession, roomSessionInfo, sessionDefaults, sessionList,
+  accessFor, employeeActiveSessions, instructionsFor, interruptMeeting, meetingParticipants, queueKey,
+  relationCwd, resolveSession, meetingSessionInfo, sessionDefaults,
   type SessionDefaults,
 } from "../../src/app/conversations.ts";
-import { roomKeyOf } from "../../src/app/rooms.ts";
+import { createNewMeeting, ensureMeeting, subjectKeyOf } from "../../src/app/meetings.ts";
+import { openMeetingStore, type MeetingStore } from "../../src/store/meetings.ts";
 import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
 import type { Relation } from "../../src/domain/types.ts";
 import type { Workspace } from "../../src/domain/paths.ts";
@@ -22,8 +23,9 @@ import type { ConversationSpec, HarnessPort } from "../../src/harness/port.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-app-"));
 
-/** 会话表（唯一真相，与消息同库文件）：每个用例一套；会话里不再有「链文件」。 */
+/** 会议表 + 会话表（同一库文件）：每个用例一套。 */
 let sessionStore: SessionStore | undefined;
+let meetingStore: MeetingStore | undefined;
 function getSessions(): SessionStore {
   if (sessionStore === undefined) {
     fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
@@ -31,23 +33,45 @@ function getSessions(): SessionStore {
   }
   return sessionStore;
 }
+function getMeetings(): MeetingStore {
+  if (meetingStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    meetingStore = openMeetingStore(officeDbFile(createWorkspace(root)));
+  }
+  return meetingStore;
+}
 
 afterEach(() => {
   sessionStore?.close();
+  meetingStore?.close();
   sessionStore = undefined;
+  meetingStore = undefined;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** 三个便捷包装（旧签名保留）：内部全走唯一入口 `resolveSession`。 */
-const openDm = (
-  ws: Workspace, harness: HarnessPort, employeeId: string, defaults?: SessionDefaults, mcp?: { extensionsFor(names: readonly string[]): string[] },
-) => resolveSession({ ws, harness, sessions: getSessions(), ...(defaults === undefined ? {} : { defaults }), ...(mcp === undefined ? {} : { mcp }) }, `dm:${employeeId}`, employeeId);
-const openGroup = (
-  ws: Workspace, harness: HarnessPort, project: string, speakerId: string, defaults?: SessionDefaults, mcp?: { extensionsFor(names: readonly string[]): string[] },
-) => resolveSession({ ws, harness, sessions: getSessions(), ...(defaults === undefined ? {} : { defaults }), ...(mcp === undefined ? {} : { mcp }) }, `group:${project}`, speakerId);
-const newSession = (
-  ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string, defaults?: SessionDefaults, mcp?: { extensionsFor(names: readonly string[]): string[] },
-) => resolveSession({ ws, harness, sessions: getSessions(), ...(defaults === undefined ? {} : { defaults }), ...(mcp === undefined ? {} : { mcp }) }, roomKeyOf(relation), speakerId, { newSession: true });
+const NOW = new Date("2026-10-26T10:00:00.000Z");
+
+/** 该主题的进行中会议（没有就建一场）。 */
+const meetingOf = (ws: Workspace, relation: Relation) => ensureMeeting({ ws, meetings: getMeetings() }, relation, NOW);
+
+/** 该主题再开一场新会议（上一场 closed）。 */
+const newMeetingOf = (ws: Workspace, relation: Relation) => createNewMeeting({ ws, meetings: getMeetings() }, relation, NOW);
+
+type Mcp = { extensionsFor(names: readonly string[]): string[] };
+const deps = (ws: Workspace, harness: HarnessPort, defaults?: SessionDefaults, mcp?: Mcp) => ({
+  ws,
+  harness,
+  sessions: getSessions(),
+  ...(defaults === undefined ? {} : { defaults }),
+  ...(mcp === undefined ? {} : { mcp }),
+});
+
+const openDm = (ws: Workspace, harness: HarnessPort, employeeId: string, defaults?: SessionDefaults, mcp?: Mcp) =>
+  resolveSession(deps(ws, harness, defaults, mcp), meetingOf(ws, { kind: "dm", employeeId }), employeeId);
+const openGroup = (ws: Workspace, harness: HarnessPort, project: string, speakerId: string, defaults?: SessionDefaults, mcp?: Mcp) =>
+  resolveSession(deps(ws, harness, defaults, mcp), meetingOf(ws, { kind: "group", project }), speakerId);
+const newSession = (ws: Workspace, harness: HarnessPort, relation: Relation, speakerId: string, defaults?: SessionDefaults, mcp?: Mcp) =>
+  resolveSession(deps(ws, harness, defaults, mcp), newMeetingOf(ws, relation), speakerId);
 
 /** 夹具：一个人 = 一份 `<id>.agent.config.json`（放在 agents/ 根或部门目录）。 */
 function seedEmployee(id: string, alias?: string, department?: string): void {
@@ -71,7 +95,7 @@ describe("应用用例", () => {
     try {
       const { convId } = await openDm(ws, harness, "alice");
       expect(fs.existsSync(path.join(root, "work", "alice"))).toBe(true);
-      expect(getSessions().list("dm:alice").map((r) => r.convId)).toEqual([convId]);
+      expect(getSessions().listByMeeting(meetingOf(ws, { kind: "dm", employeeId: "alice" }).meetingId).map((r) => r.convId)).toEqual([convId]);
       // 会话不再落任何「链文件」（旧机制已退役）
       expect(fs.existsSync(path.join(root, "work", "alice", "conversation_ids.md"))).toBe(false);
       expect(fs.existsSync(path.join(root, "agents", "alice", "conversation_ids.md"))).toBe(false);
@@ -102,21 +126,24 @@ describe("应用用例", () => {
     expect([...indexes].sort((a, b) => a - b)).toEqual(indexes);
   });
 
-  it("新开会话：追加一条并结束上一条", async () => {
+  it("新建会议：换会议就换 conv；上一场不结束、随时可继续聊", async () => {
     seedEmployee("alice");
     const ws = createWorkspace(root);
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      const { convId: first } = await openDm(ws, harness, "alice");
-      const { convId: second } = await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
-      expect(second).not.toBe(first);
-      const chain = getSessions().list("dm:alice");
-      expect(chain).toHaveLength(2);
-      expect(chain[0]!.ended).not.toBeNull();
-      expect(chain[1]!.previous).toBe(first);
-      expect(relationKey({ kind: "dm", employeeId: "alice" }, "alice")).toBe("dm:alice");
-      expect(relationKey({ kind: "group", project: "yt" }, "bob")).toBe("group:yt:bob");
+      const first = await openDm(ws, harness, "alice");
+      const firstMeeting = meetingOf(ws, { kind: "dm", employeeId: "alice" });
+      const second = await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
+      const secondMeeting = meetingOf(ws, { kind: "dm", employeeId: "alice" });
+      expect(secondMeeting.meetingId).not.toBe(firstMeeting.meetingId);
+      expect(second.convId).not.toBe(first.convId);
+      // 旧会议仍在（没有「结束」），它那条 conv 也原样保留
+      expect(getMeetings().get(firstMeeting.meetingId)).toBeDefined();
+      expect(getSessions().convOf(firstMeeting.meetingId, "alice")?.convId).toBe(first.convId);
+      expect(getSessions().convOf(secondMeeting.meetingId, "alice")?.convId).toBe(second.convId);
+      // 队列键 = 会议 × 成员
+      expect(queueKey("mtg_a", "bob")).toBe("mtg_a:bob");
     } finally {
       await harness.close();
     }
@@ -135,7 +162,7 @@ describe("应用用例", () => {
     try {
       const again = await openDm(ws, reopened, "alice");
       expect(again.convId).toBe(convId);
-      expect(getSessions().list("dm:alice")).toHaveLength(1);
+      expect(getSessions().listByMeeting(meetingOf(ws, { kind: "dm", employeeId: "alice" }).meetingId)).toHaveLength(1);
     } finally {
       await reopened.close();
     }
@@ -162,14 +189,18 @@ describe("应用用例", () => {
       agents: [{ id: "alice" }, { id: "bob" }],
       projects: [{ id: "yt", members: ["alice"] }, { id: "seo", members: ["bob"] }],
     });
+    const meetings = getMeetings();
     const sessionsStore = getSessions();
-    sessionsStore.open({ convId: "conv_dm", room: "dm:alice", memberId: "alice", kind: "dm", now: "2026-10-25T10:00:00+08:00" });
-    sessionsStore.open({ convId: "conv_yt", room: "group:yt", memberId: "alice", kind: "group", now: "2026-10-25T10:01:00+08:00" });
-    sessionsStore.open({ convId: "conv_seo", room: "group:seo", memberId: "bob", kind: "group", now: "2026-10-25T10:02:00+08:00" });
+    const dmMeeting = ensureMeeting({ ws, meetings }, { kind: "dm", employeeId: "alice" }, NOW);
+    const ytMeeting = ensureMeeting({ ws, meetings }, { kind: "group", project: "yt" }, NOW);
+    const seoMeeting = ensureMeeting({ ws, meetings }, { kind: "group", project: "seo" }, NOW);
+    sessionsStore.open({ convId: "conv_dm", meetingId: dmMeeting.meetingId, memberId: "alice", started: "2026-10-25T10:00:00+08:00" });
+    sessionsStore.open({ convId: "conv_yt", meetingId: ytMeeting.meetingId, memberId: "alice", started: "2026-10-25T10:01:00+08:00" });
+    sessionsStore.open({ convId: "conv_seo", meetingId: seoMeeting.meetingId, memberId: "bob", started: "2026-10-25T10:02:00+08:00" });
 
-    const sessions = employeeActiveSessions(ws, sessionsStore, "alice");
+    const sessions = employeeActiveSessions(ws, meetings, sessionsStore, "alice");
     expect(sessions.map((session) => session.convId).sort()).toEqual(["conv_dm", "conv_yt"]);
-    expect(sessions.every((session) => session.started !== "")).toBe(true);
+    expect(sessions.every((session) => session.meetingId.startsWith("mtg_"))).toBe(true);
   });
 
   it("工作目录 = work/<id>（项目没有工作目录，D25）", () => {
@@ -244,17 +275,20 @@ describe("应用用例", () => {
     await harness.open();
     try {
       const { convId: aliceConv } = await openGroup(ws, harness, "yt", "alice");
+      const meeting = meetingOf(ws, { kind: "group", project: "yt" });
       const sessionsStore = getSessions();
-      expect(sessionsStore.list("group:yt").map((row) => row.convId)).toEqual([aliceConv]);
-      expect(sessionsStore.active("group:yt", "bob")).toBeUndefined();
+      expect(sessionsStore.listByMeeting(meeting.meetingId).map((row) => row.convId)).toEqual([aliceConv]);
+      expect(sessionsStore.convOf(meeting.meetingId, "bob")).toBeUndefined();
 
       const { convId: bobConv } = await openGroup(ws, harness, "yt", "bob");
       expect(bobConv).not.toBe(aliceConv);
       expect((await openGroup(ws, harness, "yt", "alice")).convId).toBe(aliceConv);
 
-      expect(sessionsStore.list("group:yt").map((row) => row.convId)).toEqual([aliceConv, bobConv]);
-      expect(sessionsStore.owner(aliceConv)).toEqual({ room: "group:yt", memberId: "alice" });
-      expect(sessionsStore.owner(bobConv)).toEqual({ room: "group:yt", memberId: "bob" });
+      expect(sessionsStore.listByMeeting(meeting.meetingId).map((row) => row.convId).sort()).toEqual([aliceConv, bobConv].sort());
+      expect(sessionsStore.owner(aliceConv)).toEqual({ meetingId: meeting.meetingId, memberId: "alice" });
+      expect(sessionsStore.owner(bobConv)).toEqual({ meetingId: meeting.meetingId, memberId: "bob" });
+      // 会议参与者顺序 = 项目成员顺序；两条都已建 conv
+      expect(meetingParticipants(ws, sessionsStore, meeting).map((row) => row.memberId)).toEqual(["alice", "bob"]);
     } finally {
       await harness.close();
     }
@@ -269,7 +303,7 @@ describe("应用用例", () => {
     await harness.open();
     try {
       await openGroup(ws, harness, "yt", "alice");
-      expect(getSessions().list("group:yt")).toHaveLength(1);
+      expect(getSessions().listByMeeting(meetingOf(ws, { kind: "group", project: "yt" }).meetingId)).toHaveLength(1);
       expect(fs.existsSync(path.join(root, "agents", "alice", "conversation_ids.md"))).toBe(false);
       expect(fs.existsSync(path.join(root, "work", "alice", "conversation_ids.md"))).toBe(false);
     } finally {
@@ -286,17 +320,20 @@ describe("应用用例", () => {
     await harness.open();
     try {
       const { convId: a1 } = await openGroup(ws, harness, "yt", "alice");
+      const first = meetingOf(ws, { kind: "group", project: "yt" });
       const { convId: b1 } = await openGroup(ws, harness, "yt", "bob");
+      // 新会议 = 新会议 id：alice 在新会议里换一条 conv；旧会议里的 conv 原样留在历史
       const { convId: a2 } = await newSession(ws, harness, { kind: "group", project: "yt" }, "alice");
+      const second = meetingOf(ws, { kind: "group", project: "yt" });
+      expect(second.meetingId).not.toBe(first.meetingId);
       expect(a2).not.toBe(a1);
       const sessionsStore = getSessions();
-      const aliceRows = sessionsStore.list("group:yt").filter((row) => row.memberId === "alice");
-      const bobRows = sessionsStore.list("group:yt").filter((row) => row.memberId === "bob");
-      expect(aliceRows).toHaveLength(2);
-      expect(aliceRows[0]!.ended).not.toBeNull();
-      expect(aliceRows[1]!.previous).toBe(a1);
-      expect(bobRows).toHaveLength(1);
-      expect(bobRows[0]!.convId).toBe(b1);
+      expect(getMeetings().get(first.meetingId)).toBeDefined(); // 旧会议仍在，可继续聊
+      expect(sessionsStore.convOf(first.meetingId, "alice")?.convId).toBe(a1);
+      expect(sessionsStore.convOf(first.meetingId, "bob")?.convId).toBe(b1);
+      expect(sessionsStore.convOf(second.meetingId, "alice")?.convId).toBe(a2);
+      // 新会议里 bob 还没建 conv（按需创建）
+      expect(sessionsStore.convOf(second.meetingId, "bob")).toBeUndefined();
     } finally {
       await harness.close();
     }
@@ -479,7 +516,7 @@ describe("应用用例", () => {
     }
   });
 
-  it("会话表辅助：sessionList / activeMemberSessions / findSessionOwner", async () => {
+  it("会议参与者视图：按 participants 顺序给出成员与 conv（没建 conv 的为 undefined）", async () => {
     const ws = seedOffice(root, {
       agents: [{ id: "alice" }, { id: "bob" }],
       projects: [{ id: "yt", members: ["alice", "bob"] }],
@@ -489,22 +526,17 @@ describe("应用用例", () => {
     try {
       const { convId: a1 } = await openGroup(ws, harness, "yt", "alice");
       const sessionsStore = getSessions();
-      const chains = sessionList(ws, sessionsStore, { kind: "group", project: "yt" });
-      expect(chains.map((c) => c.memberId)).toEqual(["alice", "bob"]);
-      expect(chains[0]!.rows).toHaveLength(1);
-      expect(chains[1]!.rows).toHaveLength(0);
-
-      const active = activeMemberSessions(ws, sessionsStore, { kind: "group", project: "yt" });
-      expect(active).toEqual([{ memberId: "alice", convId: a1 }]);
-      expect(findSessionOwner(sessionsStore, { kind: "group", project: "yt" }, a1)).toBe("alice");
-      expect(findSessionOwner(sessionsStore, { kind: "dm", employeeId: "alice" }, a1)).toBeUndefined();
-      expect(findSessionOwner(sessionsStore, { kind: "group", project: "yt" }, "conv:不存在")).toBeUndefined();
+      const meeting = meetingOf(ws, { kind: "group", project: "yt" });
+      expect(meetingParticipants(ws, sessionsStore, meeting)).toEqual([{ memberId: "alice", convId: a1 }, { memberId: "bob" }]);
+      // 会话表 owner = (会议, 成员)：跨会议不认
+      expect(sessionsStore.owner(a1)).toEqual({ meetingId: meeting.meetingId, memberId: "alice" });
+      expect(sessionsStore.owner("conv:不存在")).toBeUndefined();
     } finally {
       await harness.close();
     }
   });
 
-  it("interruptRoom：逐个中止各成员活跃会话；坏会话跳过不连坐", async () => {
+  it("interruptMeeting：逐个中止各成员活跃会话；坏会话跳过不连坐", async () => {
     const ws = seedOffice(root, {
       agents: [{ id: "alice" }, { id: "bob" }, { id: "carol" }],
       projects: [{ id: "yt", members: ["alice", "bob", "carol"] }],
@@ -514,10 +546,11 @@ describe("应用用例", () => {
     try {
       const { convId: a } = await openGroup(ws, harness, "yt", "alice");
       const { convId: b } = await openGroup(ws, harness, "yt", "bob");
+      const meeting = meetingOf(ws, { kind: "group", project: "yt" });
       // carol 的会话在表里指向一个 Pi 那边已经不存在的 convId（坏会话）
-      getSessions().open({ convId: "conv:不存在", room: "group:yt", memberId: "carol", kind: "group", now: "2026-10-16T00:00:00Z" });
+      getSessions().open({ convId: "conv:不存在", meetingId: meeting.meetingId, memberId: "carol", started: "2026-10-16T00:00:00Z" });
 
-      const result = await interruptRoom(ws, harness, getSessions(), { kind: "group", project: "yt" });
+      const result = await interruptMeeting(ws, harness, getSessions(), meeting);
       expect(result.aborted.sort()).toEqual([a, b].sort());
     } finally {
       await harness.close();
@@ -672,7 +705,7 @@ describe("应用用例", () => {
     expect(sessionDefaults({ ...config, thinkingLevel: "max" })).toEqual({ model: "faux/faux-model", thinkingLevel: "max" });
   });
 
-  it("roomSessionInfo：读会话实际快照（模型全值/思考强度/上下文用量与窗口）；坏会话跳过", async () => {
+  it("meetingSessionInfo：读会话实际快照（模型全值/思考强度/上下文用量与窗口）；坏会话跳过", async () => {
     const ws = seedOffice(root, {
       agents: [{ id: "alice", model: "faux/faux-model", thinkingLevel: "high" }],
       projects: [{ id: "yt", members: ["alice", "ghost"] }],
@@ -681,10 +714,11 @@ describe("应用用例", () => {
     const harness = harnessWithFaux();
     await harness.open();
     try {
-      expect(await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" }, getSessions())).toEqual([]);
+      const dmMeeting0 = meetingOf(ws, { kind: "dm", employeeId: "alice" });
+      expect(await meetingSessionInfo(ws, harness, getSessions(), dmMeeting0)).toEqual([]);
       const { convId } = await openDm(ws, harness, "alice");
       await harness.send(convId, "你好");
-      const [info] = await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" }, getSessions());
+      const [info] = await meetingSessionInfo(ws, harness, getSessions(), dmMeeting0);
       expect(info).toMatchObject({
         memberId: "alice",
         convId,
@@ -696,8 +730,9 @@ describe("应用用例", () => {
 
       // 链指向不存在的会话：只跳过该成员，好会话照常返回
       const { convId: aliceGroupConv } = await openGroup(ws, harness, "yt", "alice");
-      getSessions().open({ convId: "conv:不存在", room: "group:yt", memberId: "ghost", kind: "group", now: "2026-10-16T00:00:00Z" });
-      const groupInfo = await roomSessionInfo(ws, harness, { kind: "group", project: "yt" }, getSessions());
+      const groupMeeting = meetingOf(ws, { kind: "group", project: "yt" });
+      getSessions().open({ convId: "conv:不存在", meetingId: groupMeeting.meetingId, memberId: "ghost", started: "2026-10-16T00:00:00Z" });
+      const groupInfo = await meetingSessionInfo(ws, harness, getSessions(), groupMeeting);
       expect(groupInfo.map((s) => s.memberId)).toEqual(["alice"]);
       expect(groupInfo[0]!.convId).toBe(aliceGroupConv);
 
@@ -707,7 +742,7 @@ describe("应用用例", () => {
         JSON.stringify({ model: "faux/faux-model", thinkingLevel: "max" }),
       );
       await newSession(ws, harness, { kind: "dm", employeeId: "alice" }, "alice");
-      const [unsupported] = await roomSessionInfo(ws, harness, { kind: "dm", employeeId: "alice" }, getSessions());
+      const [unsupported] = await meetingSessionInfo(ws, harness, getSessions(), meetingOf(ws, { kind: "dm", employeeId: "alice" }));
       expect(unsupported!.thinkingLevel).toBeNull();
     } finally {
       await harness.close();

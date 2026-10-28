@@ -1,7 +1,8 @@
-import type { RoomMessage } from "../src/app/rooms.ts";
+import type { MeetingMessage } from "../src/app/meeting-messages.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
+import type { MeetingView } from "../src/app/meetings.ts";
 import type { ServerEvent } from "../src/server/sse.ts";
-import type { EmployeeSession, EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, RoomSessionInfo } from "./api.ts";
+import type { EmployeeSession, EmployeeSummary, OrgDept, PermissionRequestView, ProjectSummary, MeetingSessionInfo } from "./api.ts";
 
 /** 正在跑的工具（栈：支持并行调用）：`hint` 是参数里的人话提示（命令 / 路径…），有就上状态行。 */
 export type ToolActivity = { name: string; hint?: string };
@@ -12,8 +13,7 @@ export type Live = {
   text: string;
   thinking: string;
   tools: ToolActivity[];
-  /** 状态行文案（「正在思考…」/「正在准备调用 bash…」/「正在执行 bash：ls」）：run 期间**恒非空**，
-   *  否则状态行随事件消失 → 气泡高度塌陷 → 消息列表跳动。 */
+  /** 状态行文案（「正在思考…」/「正在准备调用 bash…」/「正在执行 bash：ls」）：run 期间**恒非空**。 */
   activity: string;
   error?: string;
 };
@@ -42,21 +42,26 @@ export type State = {
   employees: EmployeeSummary[];
   projects: ProjectSummary[];
   permissionRequests: PermissionRequestItem[];
-  roomKey?: string;
-  messages: RoomMessage[];
-  /** 当前房间被收起（不显示）的上一轮条数：> 0 时消息区顶部给一条说明（新开会话后旧内容不再显示）。 */
-  hiddenMessages: number;
-  /** 排队中的老板消息（当前房间）：还没投递给员工，按投递顺序。 */
+  /** 当前看的是哪个主题（`dm:<员工>` / `group:<项目>`）：侧栏高亮与「新建会议」的锚。 */
+  subjectKey?: string;
+  /** 当前会议 id（undefined = 该主题还没有会议 / 刚点「新建会议」，等第一条消息）。 */
+  meetingId?: string;
+  /** 当前会议元信息（标题、实时成员）。 */
+  meeting?: MeetingView;
+  /** 该主题的全部会议（含当前，倒序）：「历史」列表。 */
+  meetings: MeetingView[];
+  /** 「新建会议」已点、尚未发第一条：聊天区清空、等发送才真正建会议。 */
+  freshMeeting: boolean;
+  messages: MeetingMessage[];
+  /** 排队中的老板消息（当前会议）：还没投递给员工，按投递顺序。 */
   queued: QueuedItemView[];
-  /** 当前房间各成员活跃会话信息（模型 / 思考强度 / 上下文用量）；私聊最多一条。 */
-  sessions: RoomSessionInfo[];
+  /** 当前会议各成员活跃会话信息（模型 / 思考强度 / 上下文用量）。 */
+  sessions: MeetingSessionInfo[];
   live: Record<string, Live>;
-  /** 侧栏红点：每房间被 pin 的消息数（房间当前视图口径）。 */
+  /** 侧栏红点：该主题所有会议里被 pin 的消息数（会议没有「结束」）。 */
   pins: Record<string, number>;
-  /** 当前房间被 pin 的消息键（convId:entryId），用于气泡高亮。 */
+  /** 当前会议被 pin 的消息键（convId:entryId），用于气泡高亮。 */
   pinned: string[];
-  /** 「新开会话」已就绪：下一条消息投递时对目标成员真正新开会话（一次一条，发完清零）。 */
-  freshSession: boolean;
   busy: Record<string, boolean>;
   /** 组织树（部门嵌套）；未拿到时为 undefined（侧栏回落平铺）。 */
   org?: OrgDept;
@@ -70,14 +75,14 @@ export const initialState: State = {
   employees: [],
   projects: [],
   permissionRequests: [],
+  meetings: [],
+  freshMeeting: false,
   messages: [],
-  hiddenMessages: 0,
   sessions: [],
   queued: [],
   live: {},
   pins: {},
   pinned: [],
-  freshSession: false,
   busy: {},
   org: undefined,
   collapsedDepts: [],
@@ -87,14 +92,17 @@ export type UiEvent =
   | { type: "status"; configured: boolean; bossName: string }
   | { type: "org"; root: OrgDept }
   | { type: "projects"; list: ProjectSummary[] }
-  | { type: "room"; roomKey: string; messages: RoomMessage[]; hidden?: number; pinned: string[]; queued?: QueuedItemView[] }
-  | { type: "sessions"; roomKey: string; sessions: RoomSessionInfo[] }
-  /** 会话标题变了（自动命名 / 时间缺省 / 手动改名）：只改对得上的那一条。 */
-  | { type: "title"; roomKey: string; convId: string; title: string }
-  | { type: "close-room" }
-  | { type: "pins"; pins: { total: number; rooms: Record<string, number> } }
-  | { type: "pin"; roomKey: string; key: string; pinned: boolean }
-  | { type: "fresh-session"; on: boolean }
+  /** 主题视图（当前会议 + 历史会议）：切侧栏 / 首次进入。 */
+  | { type: "subject"; subjectKey: string; current?: MeetingView; meetings: MeetingView[] }
+  /** 会议视图：正在看某场会议（messages = 该会议全部消息）。 */
+  | { type: "meeting"; meetingId: string; meeting: MeetingView; messages: MeetingMessage[]; pinned: string[]; queued?: QueuedItemView[] }
+  | { type: "sessions"; meetingId: string; sessions: MeetingSessionInfo[] }
+  /** 会议标题变了（自动命名 / 时间缺省 / 手动改名）：只改对得上的那一条。 */
+  | { type: "title"; meetingId: string; title: string }
+  | { type: "close-meeting" }
+  | { type: "pins"; pins: { total: number; subjects: Record<string, number> } }
+  | { type: "pin"; meetingId: string; key: string; pinned: boolean }
+  | { type: "new-meeting"; on: boolean }
   | { type: "permissions"; list: PermissionRequestView[] }
   | { type: "permission-busy"; id: string; busy: boolean }
   | { type: "permission-error"; id: string; error: string }
@@ -106,7 +114,7 @@ export function selectView(state: State): "setup" | "main" {
   return state.configured ? "main" : "setup";
 }
 
-function messageKey(message: RoomMessage): string {
+function messageKey(message: MeetingMessage): string {
   return `${message.convId}:${message.entryId}`;
 }
 
@@ -121,10 +129,8 @@ export function flattenOrg(root: OrgDept): EmployeeSummary[] {
   return out;
 }
 
-/** 增量合并：按消息键（convId:entryId，房间视图里即 `store:<seq>`）去重，保持排序。
- *  消息真相已归自有库（一次投递 = 一行 = 唯一键），不再按 roomMessageId 去重——
- *  那只是「排队中」占位的匹配键（见 web/render.ts），不是读侧去重依据。 */
-function appendMessage(messages: RoomMessage[], incoming: RoomMessage): RoomMessage[] {
+/** 增量合并：按消息键（convId:entryId，会议视图里即 `store:<seq>`）去重，保持排序。 */
+function appendMessage(messages: MeetingMessage[], incoming: MeetingMessage): MeetingMessage[] {
   if (messages.some((m) => messageKey(m) === messageKey(incoming))) return messages;
   return [...messages, incoming].sort((a, b) => Number(a.entryId) - Number(b.entryId));
 }
@@ -138,6 +144,11 @@ function dropTool(tools: ToolActivity[], name: string | undefined): ToolActivity
   const index = name === undefined ? tools.length - 1 : tools.map((tool) => tool.name).lastIndexOf(name);
   if (index < 0) return tools;
   return [...tools.slice(0, index), ...tools.slice(index + 1)];
+}
+
+/** 换会议 / 换主题时的公共清理：消息区与运行态一起清（不能把上一场的流式气泡带过去）。 */
+function cleared(state: State): State {
+  return { ...state, messages: [], pinned: [], queued: [], sessions: [], live: {} };
 }
 
 export function reduce(state: State, event: UiEvent): State {
@@ -154,48 +165,53 @@ export function reduce(state: State, event: UiEvent): State {
     }
     case "projects":
       return { ...state, projects: event.list };
-    case "room":
+    case "subject": {
+      const next = cleared({ ...state, subjectKey: event.subjectKey, meetings: event.meetings, freshMeeting: false });
+      return { ...next, meetingId: event.current?.meetingId, meeting: event.current };
+    }
+    case "meeting":
       return {
-        ...state,
-        roomKey: event.roomKey,
+        ...cleared(state),
+        meetingId: event.meetingId,
+        meeting: event.meeting,
         messages: event.messages,
-        hiddenMessages: event.hidden ?? 0,
         pinned: event.pinned,
         queued: event.queued ?? [],
-        sessions: [],
-        freshSession: false,
-        live: {},
+        freshMeeting: false,
       };
     case "sessions":
-      // 迟到的结果不串台：只接受当前房间。
-      return state.roomKey === event.roomKey ? { ...state, sessions: event.sessions } : state;
+      // 迟到的结果不串台：只接受当前会议。
+      return state.meetingId === event.meetingId ? { ...state, sessions: event.sessions } : state;
     case "title": {
-      if (state.roomKey !== event.roomKey) return state;
-      const hit = state.sessions.some((session) => session.convId === event.convId && session.title !== event.title);
-      // 未命中（不属当前房间可见会话）→ 返回同一引用，上层短路。
-      if (!hit) return state;
+      if (state.meetingId !== event.meetingId) return state;
+      const next = state.meeting === undefined ? state : { ...state, meeting: { ...state.meeting, title: event.title } };
       return {
-        ...state,
-        sessions: state.sessions.map((session) =>
-          session.convId === event.convId ? { ...session, title: event.title } : session,
-        ),
+        ...next,
+        meetings: state.meetings.map((meeting) => (meeting.meetingId === event.meetingId ? { ...meeting, title: event.title } : meeting)),
       };
     }
-    case "close-room":
-      return { ...state, roomKey: undefined, messages: [], hiddenMessages: 0, pinned: [], queued: [], sessions: [], freshSession: false, live: {} };
-    case "fresh-session":
-      return state.freshSession === event.on ? state : { ...state, freshSession: event.on };
+    case "close-meeting":
+      return { ...cleared(state), subjectKey: undefined, meetingId: undefined, meeting: undefined, meetings: [], freshMeeting: false };
+    case "new-meeting": {
+      if (state.freshMeeting === event.on) return state;
+      // 点「新建会议」= 聊天区立刻清空（会议还没落，等第一条消息）；取消由上层重拉当前会议恢复。
+      return event.on ? { ...cleared(state), freshMeeting: true } : { ...state, freshMeeting: false };
+    }
     case "pins":
-      return { ...state, pins: event.pins.rooms };
+      // 服务端按**主题**（`dm:<员工>` / `group:<项目>`）折叠，与侧栏行的键一致。
+      return { ...state, pins: event.pins.subjects };
     case "pin": {
-      if (state.roomKey !== event.roomKey) return state; // 非当前房间的本地 pin 事件不生效
+      if (state.meetingId !== event.meetingId) return state; // 非当前会议的本地 pin 事件不生效
       const next = event.pinned
         ? state.pinned.includes(event.key)
           ? state.pinned
           : [...state.pinned, event.key]
         : state.pinned.filter((key) => key !== event.key);
       if (next === state.pinned) return state;
-      return { ...state, pinned: next, pins: { ...state.pins, [event.roomKey]: next.length } };
+      // 侧栏红点按主题算（该主题所有会议的 pin 一起计）。
+      return state.subjectKey === undefined
+        ? { ...state, pinned: next }
+        : { ...state, pinned: next, pins: { ...state.pins, [state.subjectKey]: next.length } };
     }
     case "permissions":
       return { ...state, permissionRequests: event.list };
@@ -211,57 +227,74 @@ export function reduce(state: State, event: UiEvent): State {
 }
 
 function reduceSse(state: State, event: ServerEvent): State {
-  if (event.type === "session.title") {
-    return reduce(state, { type: "title", roomKey: event.roomKey, convId: event.convId, title: event.title });
+  if (event.type === "meeting.title") {
+    return reduce(state, { type: "title", meetingId: event.meetingId, title: event.title });
   }
-  if (event.type === "room.pins") {
-    return { ...state, pins: { ...state.pins, [event.roomKey]: event.count } };
+  if (event.type === "meeting.deleted") {
+    const meetings = state.meetings.filter((meeting) => meeting.meetingId !== event.meetingId);
+    if (state.meetingId !== event.meetingId) {
+      return meetings.length === state.meetings.length ? state : { ...state, meetings };
+    }
+    // 当前会议被删（别处标签页 / 本人操作）：清掉消息区，停在「暂无记录」；侧栏仍在该主题。
+    return { ...cleared(state), meetingId: undefined, meeting: undefined, meetings };
   }
-  // 待发队列（入队 / 出队）：只影响当前房间的消息区展示。
-  if (event.type === "room.queued") {
-    if (state.roomKey !== event.item.roomKey) return state;
+  if (event.type === "meeting.pins") {
+    // 只更新当前会议所属主题：别的会议（别处标签页）不该改本页侧栏红点。
+    if (state.meetingId !== event.meetingId || state.subjectKey === undefined) return state;
+    return { ...state, pins: { ...state.pins, [state.subjectKey]: event.count } };
+  }
+  // 待发队列（入队 / 出队）：只影响当前会议的消息区展示。
+  if (event.type === "meeting.queued") {
+    if (state.meetingId !== event.item.meetingId) return state;
     if (state.queued.some((item) => item.submissionId === event.item.submissionId)) return state; // 重连重拉去重
     return { ...state, queued: [...state.queued, event.item] }; // 追加即投递顺序（服务端按入队序发）
   }
-  if (event.type === "room.dequeued") {
-    if (state.roomKey !== event.roomKey) return state;
+  if (event.type === "meeting.dequeued") {
+    if (state.meetingId !== event.meetingId) return state;
     const next = state.queued.filter((item) => item.submissionId !== event.submissionId);
     return next.length === state.queued.length ? state : { ...state, queued: next };
   }
-  // 授权事件是全局的（不属于任何房间视图，也不受当前房间过滤）：先于 roomKey 过滤处理。
+  // 授权事件是全局的（不属于任何会议视图）：先于 meetingId 过滤处理。
   if (event.type === "permission.request") {
-    if (state.permissionRequests.some((r) => r.id === event.request.id)) return state; // 重连重拉去重
+    // 同 id = 服务端把新权限并进了已有请求（或重连重拉）：原地更新那一张卡，
+    // 不能像以前那样直接忽略（否则合并后的权限在弹框上永远不出现）。本地处理态保留。
+    const existing = state.permissionRequests.find((r) => r.id === event.request.id);
+    if (existing !== undefined) {
+      const next = {
+        ...event.request,
+        ...(existing.busy === undefined ? {} : { busy: existing.busy }),
+        ...(existing.error === undefined ? {} : { error: existing.error }),
+      };
+      return { ...state, permissionRequests: state.permissionRequests.map((r) => (r.id === event.request.id ? next : r)) };
+    }
     return { ...state, permissionRequests: [event.request, ...state.permissionRequests] }; // 新请求在前
   }
   if (event.type === "permission.resolved") {
     const next = state.permissionRequests.filter((r) => r.id !== event.id);
-    // 未命中（本地已移除）返回同一引用 → 上层短路，避免无谓重建。
     return next.length === state.permissionRequests.length ? state : { ...state, permissionRequests: next };
   }
-  if (state.roomKey !== event.roomKey) {
-    if (event.type === "room.activity" && event.kind === "run") {
+  if (state.meetingId !== event.meetingId) {
+    if (event.type === "meeting.activity" && event.kind === "run") {
       return { ...state, busy: { ...state.busy, [event.memberId]: event.phase === "start" } };
     }
     return state;
   }
   switch (event.type) {
-    case "room.message": {
+    case "meeting.message": {
       const messages = appendMessage(state.messages, event.message);
-      // 去重命中（如 R9 重拉重喂）：返回同一引用 → 上层 dispatch 短路，不触发任何重建。
+      // 去重命中（如重拉重喂）：返回同一引用 → 上层 dispatch 短路，不触发任何重建。
       if (messages === state.messages) return state;
       // 仅当真正追加时才清 live：去重命中不得误删进行中的流式气泡
       if (event.message.speaker.kind !== "employee") {
         return { ...state, messages };
       }
-      // 按**成员**清（不能按 convId）：正式消息来自库行视图，convId 恒为 "store"，
-      // 而流式气泡的键是 Pi 的 convId —— 按 convId 清会永远删不掉，气泡残影留在消息末尾。
-      // 群聊可多人并行流式：只清这一位成员的气泡。
+      // 按**成员**清（不能按 convId）：正式消息来自库行视图，convId 恒为 "store"。
       const speakerId = event.message.speaker.id;
       const keeping = Object.entries(state.live).filter(([, entry]) => entry.memberId !== speakerId);
       if (keeping.length === Object.keys(state.live).length) return { ...state, messages };
       return { ...state, messages, live: Object.fromEntries(keeping) };
     }
-    case "room.delta": {
+    case "meeting.delta": {
       const existing = liveOf(state, event.convId, event.memberId);
       const updated =
         event.channel === "text"
@@ -271,23 +304,22 @@ function reduceSse(state: State, event: ServerEvent): State {
       delete updated.error;
       return { ...state, live: { ...state.live, [event.convId]: updated } };
     }
-    case "room.activity": {
+    case "meeting.activity": {
       if (event.kind === "run") {
         const busy = { ...state.busy, [event.memberId]: event.phase === "start" };
         const existing = state.live[event.convId];
         if (event.phase === "start") {
-          // run 开始就出「进行中」气泡（转圈 + 状态行）：不必等第一段增量，用户立刻看到「在干活」。
+          // run 开始就出「进行中」气泡（转圈 + 状态行）：不必等第一段增量。
           if (existing === undefined) {
             const fresh: Live = { convId: event.convId, memberId: event.memberId, text: "", thinking: "", tools: [], activity: "正在思考…" };
             return { ...state, busy, live: { ...state.live, [event.convId]: fresh } };
           }
-          // 新一轮 run 开始：清掉上一轮 failed 的错误提示。
           if (existing.error === undefined) return { ...state, busy };
-          const cleared = { ...existing };
-          delete cleared.error;
-          return { ...state, busy, live: { ...state.live, [event.convId]: cleared } };
+          const clearedLive = { ...existing };
+          delete clearedLive.error;
+          return { ...state, busy, live: { ...state.live, [event.convId]: clearedLive } };
         }
-        // run 结束仍留有 live：多为被中断（正常结束会先落 assistant message 并清掉）。清掉残影，避免幽灵气泡。
+        // run 结束仍留有 live：多为被中断（正常结束会先落 assistant message 并清掉）。清掉残影。
         if (existing !== undefined && existing.error === undefined) {
           const live = { ...state.live };
           delete live[event.convId];
@@ -295,7 +327,7 @@ function reduceSse(state: State, event: ServerEvent): State {
         }
         return { ...state, busy };
       }
-      // 工具起止 / 调用参数开流：只改**工具栈**与状态行文案——状态行不会因为工具结束而消失（它退化成「正在思考…」）。
+      // 工具起止 / 调用参数开流：只改**工具栈**与状态行文案。
       if (event.kind === "toolCall") {
         const composing = liveOf(state, event.convId, event.memberId);
         if (runningText(composing.tools) !== undefined) return state; // 已有工具真在跑：以执行真相为准
@@ -309,15 +341,13 @@ function reduceSse(state: State, event: ServerEvent): State {
         event.phase === "start"
           ? [...existing.tools, { name: event.name ?? "", ...(event.hint === undefined ? {} : { hint: event.hint }) }]
           : dropTool(existing.tools, event.name);
-      // 结束时不立即改回「正在思考」：先诚实地把「刚跑完什么」摆一会（毫秒级工具一闪就过），
-      // 下一段思考增量到达自然会盖成「正在思考…」。
       const activity =
         event.phase === "start"
           ? activityText(tools, "thinking")
           : (runningText(tools) ?? (event.name === undefined || event.name === "" ? "正在思考…" : `已完成 ${event.name}`));
       return { ...state, live: { ...state.live, [event.convId]: { ...existing, tools, activity } } };
     }
-    case "room.failed": {
+    case "meeting.failed": {
       const existing = liveOf(state, event.convId, event.memberId);
       return { ...state, live: { ...state.live, [event.convId]: { ...existing, error: event.message } } };
     }

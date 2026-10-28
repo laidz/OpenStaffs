@@ -60,6 +60,7 @@ describe("MCP 端到端", () => {
       fs.mkdirSync(cwd, { recursive: true });
       const convId = await harness.startSession({
         cwd,
+        meetingId: "mtg_test",
         relation: { kind: "dm", employeeId: "alice" },
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },

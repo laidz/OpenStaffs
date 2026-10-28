@@ -1,6 +1,6 @@
-import type { RoomMessage } from "../src/app/rooms.ts";
+import type { MeetingMessage } from "../src/app/meeting-messages.ts";
 import type { QueuedItemView } from "../src/app/outbox.ts";
-import type { RoomSessionInfo } from "../src/app/conversations.ts";
+import type { MeetingSessionInfo } from "../src/app/conversations.ts";
 import { markdownHtml } from "./markdown.ts";
 import type { ConfigView, ContextItemView, EmployeeSession, EmployeeSummary, OrgDept, SessionContextView } from "./api.ts";
 import type { State } from "./state.ts";
@@ -38,12 +38,12 @@ export function sidebarHtml(state: State): string {
         ].join("");
   const projectItems = state.projects
     .map((project) => {
-      const roomKey = `group:${project.id}`;
-      const pins = state.pins[roomKey] ?? 0;
+      const subjectKey = `group:${project.id}`;
+      const pins = state.pins[subjectKey] ?? 0;
       const busy = project.members.some((m) => state.busy[m.id] === true) ? '<span class="dot"></span>' : "";
-      const active = state.roomKey === roomKey ? " active" : "";
+      const active = state.subjectKey === subjectKey ? " active" : "";
       return `<div class="item-row">
-        <button class="item item-main${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
+        <button class="item item-main${active}" data-subject="${escapeHtml(subjectKey)}"><span>${escapeHtml(project.alias)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
         ${configButtonHtml("project", project.id, `查看 ${project.id}.project.config.json`)}
       </div>`;
     })
@@ -61,12 +61,12 @@ function configButtonHtml(scope: "agent" | "department" | "project", id: string,
 
 /** 侧栏里的一员：名字按钮进私聊（红点 = pin 计数，忙碌点 = 正在跑）；右侧 {} 看定义文件。 */
 function personItemHtml(state: State, person: EmployeeSummary): string {
-  const roomKey = `dm:${person.id}`;
-  const pins = state.pins[roomKey] ?? 0;
+  const subjectKey = `dm:${person.id}`;
+  const pins = state.pins[subjectKey] ?? 0;
   const busy = state.busy[person.id] === true ? '<span class="dot"></span>' : "";
-  const active = state.roomKey === roomKey ? " active" : "";
+  const active = state.subjectKey === subjectKey ? " active" : "";
   return `<div class="item-row">
-    <button class="item item-main${active}" data-room="${escapeHtml(roomKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
+    <button class="item item-main${active}" data-subject="${escapeHtml(subjectKey)}"><span>${escapeHtml(person.alias ?? person.id)}${busy}</span>${pins > 0 ? `<span class="badge">${pins}</span>` : ""}</button>
     ${configButtonHtml("agent", person.id, `查看 ${person.id}.agent.config.json`)}
   </div>`;
 }
@@ -85,11 +85,11 @@ function deptHtml(state: State, dept: OrgDept): string {
 }
 
 /** 排队标识（挂在真气泡上，或独立占位气泡里）：等待的成员 + 撤回入口（撤回 = 撤掉这条消息所有没开始的投递）。 */
-function queuedBarHtml(roomMessageId: string, memberIds: string[]): string {
-  return `<div class="msg-queue">排队中：${escapeHtml(memberIds.join("、"))}<button type="button" class="msg-unqueue" data-action="unqueue" data-room-message="${escapeHtml(roomMessageId)}" title="撤回这条还没投递的消息">撤回</button></div>`;
+function queuedBarHtml(messageId: string, memberIds: string[]): string {
+  return `<div class="msg-queue">排队中：${escapeHtml(memberIds.join("、"))}<button type="button" class="msg-unqueue" data-action="unqueue" data-room-message="${escapeHtml(messageId)}" title="撤回这条还没投递的消息">撤回</button></div>`;
 }
 
-export function messageHtml(message: RoomMessage, bossName = "老板", pinned = false, pending: string[] = []): string {
+export function messageHtml(message: MeetingMessage, bossName = "老板", pinned = false, pending: string[] = []): string {
   const speaker = message.speaker;
   const boss = speaker.kind === "boss";
   const name = speaker.kind === "boss" ? bossName : (speaker.alias ?? speaker.id);
@@ -100,18 +100,18 @@ export function messageHtml(message: RoomMessage, bossName = "老板", pinned = 
   const tools = `<div class="msg-tools"><button type="button" class="msg-tool" data-action="copy" title="复制 Markdown 原文">复制</button><button type="button" class="msg-tool" data-action="pin" title="加图钉（给自己留提醒）">📌</button></div>`;
   const pinnedClass = pinned ? " pinned" : "";
   // 这条消息还有投递在排队（如群里只 @ 到了忙的成员）：贴在气泡上提示，不再另出占位气泡。
-  const queue = message.roomMessageId === undefined || pending.length === 0 ? "" : queuedBarHtml(message.roomMessageId, pending);
+  const queue = message.messageId === undefined || pending.length === 0 ? "" : queuedBarHtml(message.messageId, pending);
   return `<div class="msg ${boss ? "boss" : "employee"}${pinnedClass}${queue === "" ? "" : " has-queue"}" data-conv-id="${escapeHtml(message.convId)}" data-entry-id="${escapeHtml(message.entryId)}"><div class="msg-name">${escapeHtml(name)}</div><div class="${bodyClass}">${body}</div>${tools}${queue}</div>`;
 }
 
 /**
  * 消息区：已落盘消息（含 markdown/pin/工具栏）+ 排队中的老板消息。
- * 排队条目按「消息」粒度合并（同一次发送的 N 份投递共享 roomMessageId）：
+ * 排队条目按「消息」粒度合并（同一次发送的 N 份投递共享 messageId）：
  * - 该消息还没进 transcript → 出独立占位气泡（灰底 + 排队标识 + 撤回）；
  * - 已有真气泡（如群里只有忙的那位还在排）→ 把排队标识贴在真气泡上，避免同一句话两个气泡。
  */
 export function messagesHtml(
-  messages: RoomMessage[],
+  messages: MeetingMessage[],
   bossName = "老板",
   pinned: Iterable<string> = [],
   queued: QueuedItemView[] = [],
@@ -120,44 +120,30 @@ export function messagesHtml(
   const pinnedSet = new Set(pinned);
   const byMessage = new Map<string, QueuedItemView[]>();
   for (const item of queued) {
-    const list = byMessage.get(item.roomMessageId);
-    if (list === undefined) byMessage.set(item.roomMessageId, [item]);
+    const list = byMessage.get(item.messageId);
+    if (list === undefined) byMessage.set(item.messageId, [item]);
     else list.push(item);
   }
   const bubbles = messages.map((message) => {
-    const roomMessageId = message.roomMessageId;
-    const pending = roomMessageId === undefined ? undefined : byMessage.get(roomMessageId);
-    if (roomMessageId !== undefined) byMessage.delete(roomMessageId); // 真气泡已出：排队标识贴上去，不出占位
+    const messageId = message.messageId;
+    const pending = messageId === undefined ? undefined : byMessage.get(messageId);
+    if (messageId !== undefined) byMessage.delete(messageId); // 真气泡已出：排队标识贴上去，不出占位
     return messageHtml(message, bossName, pinnedSet.has(`${message.convId}:${message.entryId}`), pending?.map((item) => item.memberId) ?? []);
   });
   // 残留的 byMessage = 完全还没落盘的消息 → 占位气泡（Map 保留首次出现顺序 = 投递顺序）
-  for (const [roomMessageId, items] of byMessage) {
-    bubbles.push(`<div class="msg boss queued" data-room-message="${escapeHtml(roomMessageId)}"><div class="msg-name">${escapeHtml(bossName)}</div><div class="msg-text">${escapeHtml(items[0]!.text)}</div>${queuedBarHtml(roomMessageId, items.map((item) => item.memberId))}</div>`);
+  for (const [messageId, items] of byMessage) {
+    bubbles.push(`<div class="msg boss queued" data-room-message="${escapeHtml(messageId)}"><div class="msg-name">${escapeHtml(bossName)}</div><div class="msg-text">${escapeHtml(items[0]!.text)}</div>${queuedBarHtml(messageId, items.map((item) => item.memberId))}</div>`);
   }
   if (bubbles.length === 0) return `<div class="empty">还没有消息，发一条试试。</div>`;
   return bubbles.join("");
 }
 
-/**
- * 消息区顶部说明：新开会话后上一轮内容不再显示（隐藏条数来自服务端，0 = 没收起过）。
- * 目的：让人一眼看出「是被收起了」而不是「记录丢了」；旧内容在「历史」里仍可回看。
- */
-export function hiddenMessagesHtml(hidden: number): string {
-  if (hidden <= 0) return "";
-  return `<div class="log-divider" id="log-divider">上一轮会话内容已收起（${hidden} 条），点「历史」可回看</div>`;
-}
-
-/** 消息区整体：说明条 + 气泡 + 排队中。
- *  「新开会话」已就绪（未发送）= **聊天区立刻清空**（上一轮记录不再显示）；
- *  再点一下取消 → `state.messages` 原封不动，直接重画就回来了。
- *  发送第一条后才真正建会话，服务端也只返回新一轮（见 store.currentWindow）。 */
+/** 消息区整体：气泡 + 排队中。
+ *  「新建会议」已点（尚未发第一条）= **聊天区立刻清空**（只留「暂无记录」）；取消 = 回到当前会议。
+ *  会议没有「结束」：任何一场都能继续聊（删除由老板在头部 / 历史列表操作）。 */
 export function messageListHtml(state: State): string {
-  if (state.freshSession) {
-    return `<div class="log-divider" id="log-divider">新一轮会话：发送第一条消息后开始（再点「新开会话」可取消，恢复上一轮记录）</div>`;
-  }
-  const body = messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
-  const divider = hiddenMessagesHtml(state.hiddenMessages);
-  return divider === "" ? body : divider + body;
+  if (state.freshMeeting) return `<div class="empty">暂无记录</div>`;
+  return messagesHtml(state.messages, state.bossName, state.pinned, state.queued);
 }
 
 /**
@@ -179,18 +165,6 @@ export function liveHtml(state: State): string {
     .join("");
 }
 
-/**
- * 「新开会话」已就绪时的提示文案（空串 = 未就绪）。
- * 语义：点击 → **聊天区立刻清空上一轮记录**（纯 UI 状态，可取消）；下一条消息**投递时**才真正建会话
- * （空点不建、撤回/中断也不建）；建会话那一刻服务端也只返回新一轮（见 store.currentWindow）。
- */
-export function freshSessionHint(state: State): string {
-  if (!state.freshSession || state.roomKey === undefined) return "";
-  return state.roomKey.startsWith("group:")
-    ? "发送第一条消息即开启新会话（@ 到的成员各开一条）；旧记录可在「历史」回看，再点「新开会话」可取消"
-    : "发送第一条消息即开启新会话（当前会话将结束）；旧记录可在「历史」回看，再点「新开会话」可取消";
-}
-
 /** 上下文 token 数的紧凑展示：999 / 12.8K / 1.2M。 */
 export function formatTokenCount(tokens: number): string {
   const trim = (value: number): string => value.toFixed(1).replace(/\.0$/u, "");
@@ -207,18 +181,22 @@ function titleHtml(convId: string, title: string | undefined, className: string)
   return `<button type="button" class="session-title ${className}" data-rename-conv="${escapeHtml(convId)}" title="点击改名">${escapeHtml(title ?? "未命名")}</button>`;
 }
 
+/** 会议标题（点击即原地改名）：一场会议一个标题。 */
+function meetingTitleHtml(meetingId: string, title: string | undefined, className: string): string {
+  return `<button type="button" class="session-title ${className}" data-rename-meeting="${escapeHtml(meetingId)}" title="点击改名">${escapeHtml(title ?? "未命名")}</button>`;
+}
+
 /**
  * 会话信息条：显示每条活跃会话**实际在用**的模型全值、思考强度、已用上下文 / 模型窗口。
  * 群聊逐成员展示（私聊不重复成员名）；思考强度 null = 未显式设定 → 展示 `default`（模型默认档）。
  */
 export function sessionInfoHtml(state: State): string {
-  const isGroup = state.roomKey?.startsWith("group:") === true;
+  const isGroup = state.subjectKey?.startsWith("group:") === true;
   const metas = state.sessions
-    .map((info: RoomSessionInfo) => {
+    .map((info: MeetingSessionInfo) => {
       const employee = state.employees.find((e) => e.id === info.memberId);
       const name = employee?.alias ?? info.memberId;
       const parts: string[] = [];
-      parts.push(titleHtml(info.convId, info.title, "info-title"));
       if (isGroup) parts.push(`<span class="session-member">${escapeHtml(name)}</span>`);
       parts.push(`<span class="session-model">${escapeHtml(info.model)}</span>`);
       parts.push(`<span class="session-thinking">思考 ${escapeHtml(info.thinkingLevel ?? "default")}</span>`);
@@ -236,31 +214,38 @@ export function sessionInfoHtml(state: State): string {
 }
 
 export function chatHtml(state: State): string {
-  if (state.roomKey === undefined) {
+  if (state.subjectKey === undefined) {
     return `<section class="chat"><div class="empty">从左侧选择一个员工或项目开始对话。</div></section>`;
   }
-  const isGroup = state.roomKey.startsWith("group:");
-  const project = isGroup ? state.projects.find((p) => `group:${p.id}` === state.roomKey) : undefined;
-  const employee = !isGroup ? state.employees.find((e) => `dm:${e.id}` === state.roomKey) : undefined;
-  const title = isGroup ? (project?.alias ?? state.roomKey) : (employee?.alias ?? employee?.id ?? state.roomKey);
-  // 私聊：房间名后跟上「当前会话标题」（可点击改）；群聊没有唯一当前会话 → 标题在信息条里逐条展示。
-  const currentSession = isGroup ? undefined : state.sessions[0];
-  const sessionTitleChip = currentSession === undefined ? "" : titleHtml(currentSession.convId, currentSession.title, "chat-title");
-  // 群聊：输入框上方罗列成员复选框，勾选 = 往正文写 @（唯一真相源）；无勾选则发送禁用。
-  const targetsRow = isGroup ? composerTargetsHtml(project?.members ?? []) : "";
+  const isGroup = state.subjectKey.startsWith("group:");
+  const project = isGroup ? state.projects.find((p) => `group:${p.id}` === state.subjectKey) : undefined;
+  const employee = !isGroup ? state.employees.find((e) => `dm:${e.id}` === state.subjectKey) : undefined;
+  const subjectLabel = state.meeting?.subjectLabel
+    ?? (isGroup ? project?.alias : (employee?.alias ?? employee?.id))
+    ?? state.subjectKey;
+  // 会议标题：一场会议一个（可点击改名）；还没有会议（刚点「新建会议」）就不显示。
+  const meetingTitleChip = state.meeting === undefined || state.freshMeeting
+    ? ""
+    : meetingTitleHtml(state.meeting.meetingId, state.meeting.title, "chat-title");
+  // 群聊成员：有会议按会议快照，没有会议按项目当前成员。
+  const members = isGroup
+    ? (state.meeting?.participants ?? project?.members.map((member) => member.id) ?? []).map((id) => ({
+        id,
+        alias: project?.members.find((member) => member.id === id)?.alias ?? state.employees.find((person) => person.id === id)?.alias,
+      }))
+    : [];
+  const targetsRow = isGroup ? composerTargetsHtml(members) : "";
   const placeholder = isGroup
     ? "输入消息，Enter 发送（发送对象 = 上方勾选的成员）"
     : "输入消息，Enter 发送";
   const sendDisabled = isGroup ? " disabled" : "";
-  // 「新开会话」只置标志：下一条消息投递时才真正建会话（空点不产生空会话，撤回也不建）。
-  const armed = state.freshSession ? " armed" : "";
-  const hint = freshSessionHint(state);
+  const armed = state.freshMeeting ? " armed" : "";
   return `<section class="chat">
     <header class="chat-head">
-      <span class="title">${escapeHtml(title)}</span>${sessionTitleChip}
-      <button id="btn-new-session" class="btn-new-session${armed}" title="清空聊天区并开启新会话（发送第一条后生效）">新开会话</button>
+      <span class="title">${escapeHtml(subjectLabel)}</span>${meetingTitleChip}
+      <button id="btn-new-meeting" class="btn-new-session${armed}" title="开一场新会议（点下即清空聊天区，发送第一条才真正开会）">新建会议</button>
       <button id="btn-history">历史</button>
-      <button id="btn-interrupt" title="中止当前房间里所有在跑的成员">中断</button>
+      <button id="btn-interrupt" title="中止这场会议里所有在跑的成员">中断</button>
     </header>
     ${sessionInfoHtml(state)}
     <div class="msg-list" id="msg-list">
@@ -269,7 +254,6 @@ export function chatHtml(state: State): string {
     </div>
     <div class="composer">
       ${targetsRow}
-      ${hint === "" ? "" : `<div class="fresh-hint" id="fresh-hint">${escapeHtml(hint)}</div>`}
       <div class="composer-row">
         <textarea id="composer-input" placeholder="${placeholder}"></textarea>
         <button id="composer-send"${sendDisabled}>发送</button>
@@ -294,11 +278,9 @@ function composerTargetsHtml(members: { id: string; alias?: string }[]): string 
   return `<div class="composer-targets" id="composer-targets"><span class="targets-label">发送给：</span>${items}</div>`;
 }
 
-/** 授权卡片来源标签：群聊取项目别名，其余（dm:）为私聊。 */
-function roomLabel(state: State, roomKey: string): string {
-  if (!roomKey.startsWith("group:")) return "私聊";
-  const project = state.projects.find((p) => `group:${p.id}` === roomKey);
-  return project === undefined ? roomKey : `群聊「${project.alias}」`;
+/** 授权卡片来源标签：服务端已按会议解析成「私聊 · 某人 / 群聊 · 某项目」。 */
+function requestLabel(request: { where?: string }): string {
+  return request.where ?? "会议";
 }
 
 /** 右下角授权卡片堆叠（新请求在前；空列表为空容器）。 */
@@ -308,9 +290,12 @@ export function permissionCardsHtml(state: State): string {
       const flavour = request.busy === true ? " disabled" : "";
       const error = request.error === undefined ? "" : `<div class="perm-error">${escapeHtml(request.error)}</div>`;
       const paths = request.paths.map((p) => `<li><code>${escapeHtml(p)}</code></li>`).join("");
+      // 权限类型按发起者原样展示（write / read / bash…），不翻译、不合并成一句话：老板要一眼看清批的是什么。
+      const tools = request.tools.map((tool) => escapeHtml(tool)).join("+");
       return `<div class="perm-card">
         <div class="perm-title">授权请求</div>
-        <div class="perm-meta">发起人：${escapeHtml(request.agentName)}（${escapeHtml(request.agentId)}） · 来自：${escapeHtml(roomLabel(state, request.roomKey))}</div>
+        <div class="perm-meta">发起人：${escapeHtml(request.agentName)}（${escapeHtml(request.agentId)}） · 来自：${escapeHtml(requestLabel(request))}</div>
+        <div class="perm-perms">权限：<span class="perm-tools">[${tools}]</span></div>
         <div class="perm-reason">理由：${escapeHtml(request.reason)}</div>
         <ul class="perm-paths">${paths}</ul>
         <div class="perm-actions">
@@ -325,7 +310,7 @@ export function permissionCardsHtml(state: State): string {
 }
 
 function relationLabel(session: EmployeeSession): string {
-  return session.kind === "dm" ? "私聊" : `群 · ${session.projectAlias ?? session.projectId ?? ""}`;
+  return session.kind === "dm" ? "私聊会议" : `群 · ${session.projectAlias ?? session.projectId ?? ""}`;
 }
 
 /** 本地时间 `YYYY-MM-DD HH:mm`（浏览器本地时区）；解析不了则退回原串截断，绝不显半截 ISO。 */
@@ -454,7 +439,7 @@ function contextBodyHtml(context: SessionContextView): string {
     ? '<p class="hint">（没有系统提示词）</p>'
     : `<details class="ctx-system"><summary>系统提示词（${[...context.instructions].length} 字）</summary><div class="ctx-system-body"><pre class="ctx-text">${escapeHtml(context.instructions)}</pre></div></details>`;
   return `<div class="ctx-header">
-      <div>${titleHtml(context.convId, context.title, "detail-title")}<strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)} · ${escapeHtml(localDateTime(context.started))}</span></div>
+      <div>${context.title === undefined ? "" : meetingTitleHtml(context.meetingId, context.title, "detail-title")}<strong>${escapeHtml(relationLabel(context))}</strong> <span class="ctx-meta">${escapeHtml(context.convId)}</span></div>
       <div class="ctx-meta" id="ctx-meta-line">${contextMetaHtml(context)}</div>
       ${context.cwd === undefined ? "" : `<div class="ctx-meta">cwd：${escapeHtml(context.cwd)}</div>`}
       ${system}
@@ -494,6 +479,31 @@ export function configPanelHtml(state: State, view: ConfigView, label: string): 
     </header>
     <div class="agent-context">${body}</div>
   </section></div>${permissionCardsHtml(state)}`;
+}
+
+/**
+ * 历史会议页（独立视图，`?view=history&subject=…`）：该主题全部会议（最新在前）。
+ * 每行可查看 / 改名 / 删除；点「返回聊天」回到该主题最新一场（没有就等第一条消息）。
+ */
+export function historyHtml(state: State): string {
+  const memberName = (id: string): string => state.employees.find((person) => person.id === id)?.alias ?? id;
+  const subjectLabel = (state.subjectKey?.startsWith("group:")
+    ? state.projects.find((project) => `group:${project.id}` === state.subjectKey)?.alias
+    : state.employees.find((person) => `dm:${person.id}` === state.subjectKey)?.alias)
+    ?? state.meetings[0]?.subjectLabel
+    ?? state.subjectKey
+    ?? "";
+  const rows = state.meetings
+    .map((meeting) => {
+      const names = meeting.participants.map(memberName).join("、");
+      return `<div class="session"><span><button type="button" class="session-title history-title" data-rename-meeting="${escapeHtml(meeting.meetingId)}" title="点击改名">${escapeHtml(meeting.title ?? "未命名")}</button> · ${escapeHtml(localDateTime(meeting.createdAt))} · ${meeting.participants.length} 人<span class="ctx-meta">${escapeHtml(names)}</span></span><button data-meeting="${escapeHtml(meeting.meetingId)}">查看</button><button data-delete-meeting="${escapeHtml(meeting.meetingId)}" class="danger">删除</button></div>`;
+    })
+    .join("");
+  return `<div class="layout">${sidebarHtml(state)}<div class="panel">
+    <h3>历史会议${subjectLabel === "" ? "" : ` · ${escapeHtml(subjectLabel)}`}（点开即可继续聊）</h3>
+    ${rows || `<p class="hint">还没有会议。</p>`}
+    <p><button id="btn-history-back">返回聊天</button></p>
+  </div></div>${permissionCardsHtml(state)}`;
 }
 
 export function layoutHtml(state: State): string {

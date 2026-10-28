@@ -7,9 +7,9 @@ import { stateDir, type Workspace } from "./paths.ts";
 export type PermissionRequest = {
   id: string;         // "pr_" + uuid
   agentId: string;    // 发起者（= 授权受益者）
-  roomKey: string;    // 来源房间：dm:<员工id> | group:<项目id>
-  /** 权限工具名（缺省 "write"；D9 按工具：write / read / bash 各一张路径表）。 */
-  tool?: string;
+  meetingId: string;  // 来源会议（框架自持的会话身份）
+  /** 要申请的工具权限（**至少一个**，必须由发起者明确指定：write / read / bash …）。 */
+  tools: string[];
   paths: string[];    // 绝对路径（≥1 条）
   reason: string;     // 简短理由（非空）
   createdAt: string;  // ISO
@@ -19,22 +19,57 @@ export function requestsFile(ws: Workspace): string {
   return path.join(stateDir(ws), "permission-requests.json");
 }
 
-function isValidRequest(value: unknown): value is PermissionRequest {
-  if (typeof value !== "object" || value === null) return false;
-  const entry = value as Record<string, unknown>;
-  return (
-    typeof entry.id === "string" && entry.id !== "" &&
-    typeof entry.agentId === "string" && entry.agentId !== "" &&
-    typeof entry.roomKey === "string" && entry.roomKey !== "" &&
-    (entry.tool === undefined || typeof entry.tool === "string") &&
-    Array.isArray(entry.paths) && entry.paths.length > 0 && entry.paths.every((p) => typeof p === "string" && p !== "") &&
-    typeof entry.reason === "string" &&
-    typeof entry.createdAt === "string"
-  );
+/** 工具名归一：去空白、去重、丢掉非字符串与空串。 */
+export function normalizeTools(input: unknown): string[] {
+  const list = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  const out = list
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+  return [...new Set(out)];
 }
 
-/** 读请求列表：缺失/坏 JSON → []；坏条目跳过（不崩溃、不阻主流程）。 */
-export function readPermissionRequests(ws: Workspace): PermissionRequest[] {
+/** 路径集合键（顺序无关）。 */
+function pathsKey(paths: string[]): string {
+  return [...paths].sort().join("\u0000");
+}
+
+/**
+ * 一条落盘记录 → 请求对象；坏条目返回 undefined。
+ * 旧档兼容：只有 `tool`（单值）或无 `tool`（历史上等价 write）时归一成 `tools`，
+ * 避免升级后老板还没处理的旧请求丢失；**新请求必须显式给 tools**（工具层校验）。
+ */
+function parseRequest(value: unknown): PermissionRequest | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const entry = value as Record<string, unknown>;
+  const rawTools = entry.tools ?? entry.tool;
+  const tools = normalizeTools(rawTools);
+  // 旧档没有 tools 时：historically 等价 write（含 tool 写成空串的坏档）——只在读盘兼容时兜底。
+  const legacyTools = tools.length === 0 && entry.tools === undefined ? ["write"] : tools;
+  if (
+    typeof entry.id !== "string" || entry.id === "" ||
+    typeof entry.agentId !== "string" || entry.agentId === "" ||
+    typeof entry.meetingId !== "string" || entry.meetingId === "" ||
+    legacyTools.length === 0 ||
+    !Array.isArray(entry.paths) || entry.paths.length === 0 || !entry.paths.every((p) => typeof p === "string" && p !== "") ||
+    typeof entry.reason !== "string" ||
+    typeof entry.createdAt !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    id: entry.id,
+    agentId: entry.agentId,
+    meetingId: entry.meetingId,
+    tools: legacyTools,
+    paths: [...(entry.paths as string[])],
+    reason: entry.reason,
+    createdAt: entry.createdAt,
+  };
+}
+
+/** 读全部请求（已归一；坏条目跳过）。不做合并——合并由 store 在加载时做一次并落盘。 */
+function readRaw(ws: Workspace): PermissionRequest[] {
   let raw = "";
   try {
     raw = fs.readFileSync(requestsFile(ws), "utf8");
@@ -44,35 +79,49 @@ export function readPermissionRequests(ws: Workspace): PermissionRequest[] {
   try {
     const parsed = JSON.parse(raw) as { requests?: unknown };
     if (!Array.isArray(parsed.requests)) return [];
-    return parsed.requests.filter(isValidRequest);
+    return parsed.requests.map(parseRequest).filter((request): request is PermissionRequest => request !== undefined);
   } catch {
     return [];
   }
 }
 
-/** 路径集合键（顺序无关）。 */
-function pathsKey(paths: string[]): string {
-  return [...paths].sort().join("\u0000");
+/**
+ * 同一「人 × 会议 × 目录组」的请求合并成一条（工具取并集，理由/创建时间保留最早出现的那条）。
+ * 合并键只认**完全相同的路径集合**（顺序无关）；目录不同就是不同申请。
+ */
+function coalesce(requests: PermissionRequest[]): PermissionRequest[] {
+  const out: PermissionRequest[] = [];
+  const byKey = new Map<string, PermissionRequest>();
+  for (const request of requests) {
+    const key = `${request.agentId}\u0000${request.meetingId}\u0000${pathsKey(request.paths)}`;
+    const existing = byKey.get(key);
+    if (existing === undefined) {
+      byKey.set(key, request);
+      out.push(request);
+      continue;
+    }
+    const known = new Set(existing.tools);
+    const added = request.tools.filter((tool) => !known.has(tool));
+    if (added.length > 0) existing.tools = [...existing.tools, ...added];
+  }
+  return out;
 }
 
-/** 权限工具名归一：缺省 / 空串（或纯空白）→ `"write"`（D9 按工具；旧档无 `tool` 字段等价于 write）。 */
-export function normalizeTool(tool: string | undefined): string {
-  const key = tool?.trim();
-  return key === undefined || key === "" ? "write" : key;
+/** 读请求列表：缺失/坏 JSON → []；旧档 `tool` 归一成 `tools`；同人同会议的重复请求已合并。 */
+export function readPermissionRequests(ws: Workspace): PermissionRequest[] {
+  return coalesce(readRaw(ws));
 }
 
-/** 同一 agent + 同一工具 + 同一路径集合的已有请求（重复申请判定；工具不同 = 不同申请）。 */
-export function findDuplicate(
+/** 同一 agent + 同一会议 + 同一路径集合的待处理请求（合并目标）。 */
+export function findMergeTarget(
   requests: PermissionRequest[],
   agentId: string,
+  meetingId: string,
   paths: string[],
-  tool?: string,
 ): PermissionRequest | undefined {
   const key = pathsKey(paths);
-  const wanted = normalizeTool(tool);
   return requests.find(
-    (request) =>
-      request.agentId === agentId && normalizeTool(request.tool) === wanted && pathsKey(request.paths) === key,
+    (request) => request.agentId === agentId && request.meetingId === meetingId && pathsKey(request.paths) === key,
   );
 }
 
@@ -84,6 +133,14 @@ function writePermissionRequests(ws: Workspace, requests: PermissionRequest[]): 
   fs.renameSync(tmp, file);
 }
 
+export type AddPermissionRequestResult = {
+  request: PermissionRequest;
+  /** 命中了同目录的待处理请求（没有新建卡片）。 */
+  merged: boolean;
+  /** 这次真正并进去的新工具（`merged` 且为空 = 完全重复的申请）。 */
+  addedTools: string[];
+};
+
 /** 内存单例：启动时 load 一次；add/remove 同步改内存并落盘（fs 同步调用，进程内无交错）。 */
 export class PermissionRequestStore {
   readonly #ws: Workspace;
@@ -91,7 +148,10 @@ export class PermissionRequestStore {
 
   constructor(ws: Workspace) {
     this.#ws = ws;
-    this.#requests = readPermissionRequests(ws);
+    const raw = readRaw(ws);
+    this.#requests = coalesce(raw);
+    // 升级前留下的重复请求（同人同会议同目录）在启动时合并掉，别让老板一次点好几张卡。
+    if (this.#requests.length !== raw.length) this.#persist();
   }
 
   list(): PermissionRequest[] {
@@ -102,24 +162,39 @@ export class PermissionRequestStore {
     return this.#requests.find((request) => request.id === id);
   }
 
-  findDuplicate(agentId: string, paths: string[], tool?: string): PermissionRequest | undefined {
-    return findDuplicate(this.#requests, agentId, paths, tool);
+  findMergeTarget(agentId: string, meetingId: string, paths: string[]): PermissionRequest | undefined {
+    return findMergeTarget(this.#requests, agentId, meetingId, paths);
   }
 
-  /** `tool` 缺省 write（旧档无此字段，向后兼容）。 */
-  add(input: { agentId: string; roomKey: string; tool?: string; paths: string[]; reason: string }): PermissionRequest {
+  /**
+   * 发起申请。`tools` **必填**（至少一个）；同人 + 同会议 + 同目录组的已有请求会被合并
+   * （工具取并集、仍是一张卡），完全相同的重复申请不产生任何变化。
+   */
+  add(input: { agentId: string; meetingId: string; tools: string[]; paths: string[]; reason: string }): AddPermissionRequestResult {
+    const tools = normalizeTools(input.tools);
+    if (tools.length === 0) throw new Error("tools 不能为空：必须明确要哪种权限（write / read / bash）");
+    const target = this.findMergeTarget(input.agentId, input.meetingId, input.paths);
+    if (target !== undefined) {
+      const known = new Set(target.tools);
+      const addedTools = tools.filter((tool) => !known.has(tool));
+      if (addedTools.length > 0) {
+        target.tools = [...target.tools, ...addedTools];
+        this.#persist();
+      }
+      return { request: target, merged: true, addedTools };
+    }
     const request: PermissionRequest = {
       id: `pr_${randomUUID()}`,
       agentId: input.agentId,
-      roomKey: input.roomKey,
-      ...(input.tool === undefined ? {} : { tool: input.tool }),
+      meetingId: input.meetingId,
+      tools,
       paths: [...input.paths],
       reason: input.reason,
       createdAt: new Date().toISOString(),
     };
     this.#requests = [request, ...this.#requests];
     this.#persist();
-    return request;
+    return { request, merged: false, addedTools: tools };
   }
 
   remove(id: string): boolean {

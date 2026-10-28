@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { parseMembers } from "../domain/access-control.ts";
 import { bossNamesFor } from "../domain/config.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
 import { personDisplayName } from "../domain/org.ts";
 import type { Workspace } from "../domain/paths.ts";
 import type { HarnessPort, InputMeta, SubmissionStatus } from "../harness/port.ts";
+import type { MeetingRecord } from "../store/meetings.ts";
 import type { MessageStore } from "../store/messages.ts";
 import { BOSS_PARTICIPANT, type StoredMessage } from "../store/row.ts";
 import type { SessionStore } from "../store/sessions.ts";
-import { relationKey, resolveSession, type Relation, type SessionDefaults } from "./conversations.ts";
+import { queueKey, resolveSession, type SessionDefaults } from "./conversations.ts";
+import { participantIds, subjectOf } from "./meetings.ts";
+import { nameNewMeeting, type MeetingTitleDeps } from "./meeting-titles.ts";
 import { parseAgentReply, stripLeadingMentions } from "./message-row.ts";
-import { nameNewSession, type SessionTitleDeps } from "./sessions.ts";
 import { hasBodyAfterPrefix, planRouting } from "./routing.ts";
-import { roomKeyOf } from "./rooms.ts";
 
 /** per-key 串行队列：同 key 串行（FIFO）、异 key 并行；前序失败不连坐后续。 */
 export class KeyedQueue {
@@ -41,109 +41,109 @@ export class NoTargetsError extends Error {}
 export type DeliveryReport = { memberId: string; convId: string; submissionId: string; status: SubmissionStatus };
 
 /**
- * 发送编排：私聊直投原文；群聊按正文 @ 定向（不 @ 到任何成员即拒绝，不再广播）。
+ * 会议内投递：私聊直投原文；群聊按正文 @ 定向（不 @ 到任何成员即拒绝，不再广播）。
  * 只等全部 admission 落盘（模型回答并行在途，经 watch 推流）。
  *
- * options.newSession = true 时，投递这一刻对每个目标成员**真正新开会话**（结束旧链、开新条）：
- * 于是「点了新开会话却什么都没发」不产生空会话；排队中被撤回 / 中断也不产生会话。
+ * **目标只决定投给谁的 conv，不决定消息归属**：一次投递落一行，`meetingId` 永远是本会议。
  */
-export async function sendToRoom(
+export async function sendToMeeting(
   ws: Workspace,
   harness: HarnessPort,
-  relation: Relation,
+  meeting: MeetingRecord,
   text: string,
   options: {
     queue: KeyedQueue;
-    /** 会话表（唯一真相）：发送路径靠它把 (房间, 成员) 解析成 convId。 */
+    /** 会话表（唯一真相）：靠它把 (会议, 成员) 解析成 convId。 */
     sessions: SessionStore;
     defaults?: SessionDefaults;
     requestId?: string;
-    newSession?: boolean;
     mcp?: McpSessionResolver;
     store?: MessageStore;
-    /** 会话标题依赖（写库 + 广播 + 命名器）；缺省 = 不命名（不改行为）。 */
-    titles?: SessionTitleDeps;
+    /** 会议标题依赖（写库 + 广播 + 命名器）；缺省 = 不命名（不改行为）。 */
+    titles?: MeetingTitleDeps;
   },
-): Promise<{ roomMessageId: string; deliveries: DeliveryReport[]; recorded?: StoredMessage }> {
+): Promise<{ messageId: string; deliveries: DeliveryReport[]; recorded?: StoredMessage }> {
   const body = text.trim();
   if (body === "") throw new Error("消息不能为空");
 
+  // 成员始终按**当前**主题成员算（群加人立刻可投递；退群的人不再投递）。
+  const memberIds = participantIds(ws, subjectOf(meeting));
   const targets: { memberId: string; body: string }[] = [];
-  if (relation.kind === "dm") {
-    targets.push({ memberId: relation.employeeId, body });
+  if (meeting.kind === "dm") {
+    targets.push({ memberId: meeting.subjectId, body });
   } else {
-    const memberIds = parseMembers(ws, relation.project);
     if (memberIds.length === 0) throw new EmptyGroupError("群还没有成员");
     const deliveries = planRouting(body, memberIds);
     if (deliveries.length === 0) throw new NoTargetsError("消息需要 @ 至少一位群成员");
-    for (const delivery of deliveries) {
-      targets.push({ memberId: delivery.to, body: delivery.body });
-    }
+    for (const delivery of deliveries) targets.push({ memberId: delivery.to, body: delivery.body });
   }
 
-  // 落库：一次投递 = 一行（正文已剥离头部 @；toIds 是本条消息头部 @ 块点到的参与者，含 '__boss'，可据此重建头部 @）。
-  // newSession=true → 这一行打上**本轮起点**标：房间视图 / room_history 只看起点之后的行（见 store.currentWindow）。
-  // 返回值带回刚落的行（recorded）：调用方（http / permission-flow）据此广播库行（R-P1-12「谁写谁广播」；
-  // 广播不放这里——sendToRoom 没有 hub）。
+  // 落库：一次投递 = 一行（正文已剥离头部 @；toIds 是本条消息头部 @ 块点到的参与者，含 '__boss'，
+  // 可据此重建头部 @）。返回值带回刚落的行，调用方据此广播库行（「谁写谁广播」）。
   let recorded: StoredMessage | undefined;
   if (options.store !== undefined) {
     const { toIds, text: stripped } =
-      relation.kind === "dm"
-        ? { toIds: [relation.employeeId], text: stripLeadingMentions(body) }
-        : parseAgentReply(body, parseMembers(ws, relation.project), bossNamesFor(ws));
+      meeting.kind === "dm"
+        ? { toIds: [meeting.subjectId], text: stripLeadingMentions(body) }
+        : parseAgentReply(body, memberIds, bossNamesFor(ws));
     if (stripped !== "") {
       recorded = options.store.append({
         sendTime: new Date().toISOString(),
-        projectId: relation.kind === "group" ? relation.project : null,
+        meetingId: meeting.meetingId,
         fromId: BOSS_PARTICIPANT,
         toIds,
         text: stripped,
-        ...(options.newSession === true ? { sessionStart: true } : {}),
       });
     }
   }
 
-  const roomMessageId = `rm_${randomUUID()}`;
+  const messageId = `msg_${randomUUID()}`;
   const deliveries = await Promise.all(
     targets.map((target) =>
-      options.queue.run(relationKey(relation, target.memberId), async (): Promise<DeliveryReport> => {
+      options.queue.run(queueKey(meeting.meetingId, target.memberId), async (): Promise<DeliveryReport> => {
         const opened = await resolveSession(
-          { ws, harness, sessions: options.sessions, ...(options.defaults === undefined ? {} : { defaults: options.defaults }), ...(options.mcp === undefined ? {} : { mcp: options.mcp }) },
-          roomKeyOf(relation),
+          {
+            ws,
+            harness,
+            sessions: options.sessions,
+            ...(options.defaults === undefined ? {} : { defaults: options.defaults }),
+            ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
+          },
+          meeting,
           target.memberId,
-          options.newSession === true ? { newSession: true } : {},
         );
-        const convId = opened.convId;
         const meta: InputMeta = {
           kind: "chat.message",
-          data: { author: "boss", roomMessageId },
+          data: { author: "boss", messageId },
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
         };
-        const receipt = await harness.submit(convId, target.body, meta);
-        // 新会话：立刻落时间标题（兜底）+ 后台命名（不阻塞投递）；复用旧会话不动标题。
-        if (opened.created && options.titles !== undefined) {
-          nameNewSession(options.titles, roomKeyOf(relation), convId, target.body);
+        const receipt = await harness.submit(opened.convId, target.body, meta);
+        // 会议还没有标题（= 这场会议的第一条消息）：落时间标题（兜底）+ 后台命名（不阻塞投递）。
+        // 一场会议一个标题：群里一条消息 @ 多人会建多条 conv，不能各命名一次。
+        if (opened.created && options.titles !== undefined && options.titles.store.get(meeting.meetingId)?.title === undefined) {
+          nameNewMeeting(options.titles, meeting.meetingId, target.body);
         }
-        return { memberId: target.memberId, convId, submissionId: receipt.id, status: receipt.status };
+        return { memberId: target.memberId, convId: opened.convId, submissionId: receipt.id, status: receipt.status };
       }),
     ),
   );
-  return { roomMessageId, deliveries, ...(recorded === undefined ? {} : { recorded }) };
+  return { messageId, deliveries, ...(recorded === undefined ? {} : { recorded }) };
 }
 
 /** 发送者标注：`爱丽丝（alice）`；无 alias 或与 id 相同 → 直接用 id。 */
-function senderLabel(ws: Workspace, senderId: string): string {
+export function senderLabel(ws: Workspace, senderId: string): string {
   const alias = personDisplayName(ws, senderId);
   return alias === senderId ? senderId : `${alias}（${senderId}）`;
 }
 
 /**
- * 群成员回复里的 @前缀触发：把回复投递给被 @ 到的成员（排除发送者自己与老板——老板待办走 bossDirected 口径）。
- * 副本以 chat.mention 投递（不参与房间/历史显示，防重复气泡），正文带发送者标注，让被触发者知道是谁在找他。
+ * 群成员回复里的 @前缀触发：把回复投递给**本会议内**被 @ 到的成员（排除发送者自己与老板——
+ * 老板待办走 bossDirected 口径）。
+ * 副本以 chat.mention 投递（不参与会议/历史显示，防重复气泡），正文带发送者标注，让被触发者知道是谁在找他。
  * 不落库：同一句话由 pump 的 message 分支落一行（一次投递 = 一条记录），此处只发投递副本。
  * 不 @ 到任何成员时返回空（非错误）：没写 @ 开头的回复由显示层补 @老板、视为发给老板。
  */
-export async function triggerFromGroupReply(
+export async function triggerFromMeetingReply(
   ws: Workspace,
   harness: HarnessPort,
   options: {
@@ -151,14 +151,15 @@ export async function triggerFromGroupReply(
     sessions: SessionStore;
     defaults?: SessionDefaults;
     mcp?: McpSessionResolver;
-    project: string;
+    meeting: MeetingRecord;
     senderId: string;
     convId: string;
     entryId: string;
     text: string;
   },
 ): Promise<DeliveryReport[]> {
-  const memberIds = parseMembers(ws, options.project);
+  if (options.meeting.kind !== "group") return [];
+  const memberIds = participantIds(ws, subjectOf(options.meeting));
   if (memberIds.length === 0) return [];
   // 与老板侧同标准：只有 @ 前缀、没有正文的回复不触发任何人（避免空消息把成员叫起来）。
   if (!hasBodyAfterPrefix(options.text)) return [];
@@ -173,10 +174,16 @@ export async function triggerFromGroupReply(
   };
   return await Promise.all(
     deliveries.map((delivery) =>
-      options.queue.run(relationKey({ kind: "group", project: options.project }, delivery.to), async (): Promise<DeliveryReport> => {
+      options.queue.run(queueKey(options.meeting.meetingId, delivery.to), async (): Promise<DeliveryReport> => {
         const { convId } = await resolveSession(
-          { ws, harness, sessions: options.sessions, ...(options.defaults === undefined ? {} : { defaults: options.defaults }), ...(options.mcp === undefined ? {} : { mcp: options.mcp }) },
-          `group:${options.project}`,
+          {
+            ws,
+            harness,
+            sessions: options.sessions,
+            ...(options.defaults === undefined ? {} : { defaults: options.defaults }),
+            ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
+          },
+          options.meeting,
           delivery.to,
         );
         const receipt = await harness.submit(convId, `${label}：${delivery.body}`, meta);

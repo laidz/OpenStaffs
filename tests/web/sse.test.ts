@@ -38,40 +38,53 @@ afterEach(() => {
 });
 
 describe("SSE 订阅", () => {
-  it("订阅名单含授权与排队事件：permission / room.queued / room.dequeued 能送达 onEvent", () => {
+  it("订阅名单 = 服务端广播的全部事件名（meeting.* / permission.*），不含已退役的 room.*", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     const events: unknown[] = [];
     const close = connectEvents({ onEvent: (event) => events.push(event), onReconnect: () => {} });
 
     const source = FakeEventSource.instances[0]!;
     expect(source.url).toBe("/api/events");
+    // 回归：曾经订阅的还是 room.* / session.title → 服务端发 meeting.* 全部落空，
+    // 员工回复、流式增量、排队态、标题更新都进不了聊天框（只有手动发消息触发重拉才看得到历史）。
     expect([...source.listeners.keys()]).toEqual([
-      "room.message",
-      "room.delta",
-      "room.activity",
-      "room.failed",
-      "room.pins",
-      "room.queued",
-      "room.dequeued",
+      "meeting.message",
+      "meeting.delta",
+      "meeting.activity",
+      "meeting.failed",
+      "meeting.pins",
+      "meeting.queued",
+      "meeting.dequeued",
       "permission.request",
       "permission.resolved",
-      "session.title",
+      "meeting.title",
+      "meeting.deleted",
       "open",
     ]);
+    expect([...source.listeners.keys()].some((type) => type.startsWith("room."))).toBe(false);
 
-    const request = { id: "pr_1", agentId: "alice", agentName: "爱丽丝", roomKey: "dm:alice", paths: ["/x"], reason: "r", createdAt: "t" };
+    const request = { id: "pr_1", agentId: "alice", meetingId: "m1", paths: ["/x"], reason: "r", createdAt: "t", agentName: "爱丽丝", where: "私聊 · 爱丽丝" };
     source.emit("permission.request", { type: "permission.request", request });
     source.emit("permission.resolved", { type: "permission.resolved", id: "pr_1" });
-    const item = { submissionId: "11", roomKey: "dm:alice", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
-    source.emit("room.queued", { type: "room.queued", item });
-    source.emit("room.dequeued", { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" });
-    source.emit("session.title", { type: "session.title", roomKey: "dm:alice", convId: "c1", title: "登录排查" });
-    expect(events).toEqual([
-      { type: "permission.request", request },
-      { type: "permission.resolved", id: "pr_1" },
-      { type: "room.queued", item },
-      { type: "room.dequeued", roomKey: "dm:alice", submissionId: "11", reason: "delivered" },
-      { type: "session.title", roomKey: "dm:alice", convId: "c1", title: "登录排查" },
+    const item = { submissionId: "11", meetingId: "m1", memberId: "alice", messageId: "rm_1", text: "在吗" };
+    source.emit("meeting.queued", { type: "meeting.queued", item });
+    source.emit("meeting.dequeued", { type: "meeting.dequeued", meetingId: "m1", submissionId: "11", reason: "delivered" });
+    source.emit("meeting.message", {
+      type: "meeting.message",
+      meetingId: "m1",
+      message: { convId: "store", entryId: "1", speaker: { kind: "employee", id: "alice" }, text: "在", bossDirected: true },
+    });
+    source.emit("meeting.title", { type: "meeting.title", meetingId: "m1", title: "登录排查" });
+    source.emit("meeting.deleted", { type: "meeting.deleted", meetingId: "m1", subjectKey: "dm:alice" });
+    expect(events).toHaveLength(7);
+    expect(events.map((event) => (event as { type: string }).type)).toEqual([
+      "permission.request",
+      "permission.resolved",
+      "meeting.queued",
+      "meeting.dequeued",
+      "meeting.message",
+      "meeting.title",
+      "meeting.deleted",
     ]);
     close();
   });
@@ -83,7 +96,7 @@ describe("SSE 订阅", () => {
     const close = connectEvents({ onEvent, onReconnect });
     const source = FakeEventSource.instances[0]!;
 
-    source.emitRaw("room.delta", "{ 坏帧");
+    source.emitRaw("meeting.delta", "{ 坏帧");
     expect(onEvent).not.toHaveBeenCalled();
 
     source.emitRaw("open", "");

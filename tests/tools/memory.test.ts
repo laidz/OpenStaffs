@@ -8,6 +8,7 @@ import { seedOffice } from "../helpers/office.ts";
 import { touch } from "../../src/domain/memory/store.ts";
 import type { Relation } from "../../src/domain/types.ts";
 import { openSessionStore } from "../../src/store/sessions.ts";
+import { openMeetingStore } from "../../src/store/meetings.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-memtools-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -22,7 +23,7 @@ function ctx(employee = "alice"): ToolContext {
   const ws = createWorkspace(root);
   const relation: Relation = { kind: "dm", employeeId: employee };
   fs.mkdirSync(stateDir(ws), { recursive: true });
-  return { ws, selfId: employee, relation, harness: {} as never, sessions: openSessionStore(officeDbFile(ws)) };
+  return { ws, selfId: employee, relation, meetingId: "mtg_test", harness: {} as never, meetings: openMeetingStore(officeDbFile(ws)), sessions: openSessionStore(officeDbFile(ws)) };
 }
 
 function tool(name: string) {

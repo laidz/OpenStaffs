@@ -1,13 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { chatHtml, configPanelHtml, freshSessionHint, hiddenMessagesHtml, liveHtml, messageHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "../../web/render.ts";
-import { initialState } from "../../web/state.ts";
+import { chatHtml, configPanelHtml, historyHtml, liveHtml, messageHtml, messageListHtml, messagesHtml, permissionCardsHtml, sessionInfoHtml, sessionPanelHtml, setupPage, sidebarHtml } from "../../web/render.ts";
+import { initialState, type State } from "../../web/state.ts";
 import type { EmployeeSession, SessionContextView } from "../../web/api.ts";
-import type { RoomMessage } from "../../src/app/rooms.ts";
+import type { MeetingView } from "../../src/app/meetings.ts";
+import type { MeetingMessage } from "../../src/app/meeting-messages.ts";
+import type { QueuedItemView } from "../../src/app/outbox.ts";
+
+const meeting: MeetingView = {
+  meetingId: "mtg_1",
+  kind: "dm",
+  subjectId: "alice",
+  subjectLabel: "爱丽丝",
+  participants: ["alice"],
+  title: "登录排查",
+  createdAt: "2026-10-26T10:00:00.000Z",
+};
+
+function inMeeting(overrides: Partial<State> = {}): State {
+  return {
+    ...initialState,
+    configured: true,
+    subjectKey: "dm:alice",
+    meetingId: "mtg_1",
+    meeting,
+    meetings: [meeting],
+    ...overrides,
+  };
+}
+
+function employeeMessage(entryId: string, text: string, speaker: { id: string; alias?: string } = { id: "alice", alias: "爱丽丝" }): MeetingMessage {
+  return { convId: "store", entryId, speaker: { kind: "employee", ...speaker }, text, bossDirected: true };
+}
+
+function bossMessage(entryId: string, text: string, messageId?: string): MeetingMessage {
+  return { convId: "store", entryId, speaker: { kind: "boss" }, text, bossDirected: false, ...(messageId === undefined ? {} : { messageId }) };
+}
 
 describe("渲染", () => {
   it("HTML 转义与 boss/员工布局类名", () => {
-    const boss: RoomMessage = { convId: "c1", entryId: "1", roomKey: "dm:a", speaker: { kind: "boss" }, text: "<script>alert(1)</script>", bossDirected: false };
-    const html = messageHtml(boss);
+    const html = messageHtml(bossMessage("1", "<script>alert(1)</script>"));
     expect(html).toContain('class="msg boss"');
     expect(html).toContain("老板");
     expect(html).not.toContain("<script>");
@@ -15,17 +46,16 @@ describe("渲染", () => {
   });
 
   it("员工消息显示 alias；空列表提示", () => {
-    const employee: RoomMessage = { convId: "c1", entryId: "2", roomKey: "dm:a", speaker: { kind: "employee", id: "alice", alias: "爱丽丝" }, text: "好", bossDirected: true };
+    const employee = employeeMessage("2", "好");
     expect(messageHtml(employee)).toContain('class="msg employee"');
     expect(messageHtml(employee)).toContain("爱丽丝");
     expect(messagesHtml([])).toContain("还没有消息");
   });
 
   it("老板消息发言人名消费 bossName（默认「老板」）", () => {
-    const boss: RoomMessage = { convId: "c1", entryId: "1", roomKey: "dm:a", speaker: { kind: "boss" }, text: "你好", bossDirected: false };
-    expect(messageHtml(boss, "掌柜")).toContain("掌柜");
-    expect(messageHtml(boss, "掌柜")).not.toContain(">老板<");
-    expect(messageHtml(boss)).toContain("老板");
+    expect(messageHtml(bossMessage("1", "你好"), "掌柜")).toContain("掌柜");
+    expect(messageHtml(bossMessage("1", "你好"), "掌柜")).not.toContain(">老板<");
+    expect(messageHtml(bossMessage("1", "你好"))).toContain("老板");
   });
 
   it("引导页示例为多供应商新格式", () => {
@@ -49,13 +79,9 @@ describe("渲染", () => {
 
 describe("会话信息条", () => {
   it("模型全值、思考强度（含 null）、上下文用量/窗口与占比", () => {
-    const state = {
-      ...initialState,
-      roomKey: "dm:alice",
-      sessions: [
-        { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: null, contextUsed: 12800, contextWindow: 128000 },
-      ],
-    };
+    const state = inMeeting({
+      sessions: [{ memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: null, contextUsed: 12800, contextWindow: 128000 }],
+    });
     const html = sessionInfoHtml(state);
     expect(html).toContain("faux/faux-model");
     expect(html).toContain("思考 default");
@@ -65,88 +91,75 @@ describe("会话信息条", () => {
   });
 
   it("群聊按成员展示；窗口未知只给已用量；无会话渲染空容器", () => {
-    const group = {
-      ...initialState,
-      roomKey: "group:yt",
+    const group = inMeeting({
+      subjectKey: "group:yt",
+      projects: [{ id: "yt", alias: "油管", members: [] }],
       employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
       sessions: [
-        { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: "high", contextUsed: 999, contextWindow: undefined },
+        { memberId: "alice", convId: "c1", model: "faux/faux-model", thinkingLevel: "high", contextUsed: 999 },
         { memberId: "bob", convId: "c2", model: "other/m2", thinkingLevel: "off", contextUsed: 2000 },
       ],
-    };
+    });
     const html = sessionInfoHtml(group);
     expect(html).toContain("爱丽丝");
     expect(html).toContain("bob");
     expect(html).toContain("999");
     expect(html).toContain("2K");
     expect(html).not.toContain("999 /");
-    expect(sessionInfoHtml({ ...initialState, roomKey: "dm:alice" })).toBe(`<div class="session-info" id="session-info"></div>`);
+    expect(sessionInfoHtml({ ...initialState, configured: true, subjectKey: "dm:alice" })).toBe(`<div class="session-info" id="session-info"></div>`);
   });
 
-  it("标题：每条活跃会话前置标题并可点击改名；缺标题显示「未命名」（不出现 undefined）", () => {
-    const withTitle = {
-      ...initialState,
-      roomKey: "group:yt",
-      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
-      sessions: [
-        { memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 },
-        { memberId: "bob", convId: "c2", model: "other/m2", thinkingLevel: "off", contextUsed: 0 },
-      ],
-    };
-    const html = sessionInfoHtml(withTitle);
-    expect(html).toContain("登录排查");
-    expect(html).toContain('data-rename-conv="c1"');
-    expect(html).toContain('data-rename-conv="c2"');
-    expect(html).toContain("未命名");
-    expect(html).not.toContain("undefined");
+  it("每条会话带「详情」入口（参数是 convId + 成员 id）", () => {
+    const state = inMeeting({ sessions: [{ memberId: "alice", convId: "conv_dm", model: "faux/x", thinkingLevel: "off", contextUsed: 0 }] });
+    const html = sessionInfoHtml(state);
+    expect(html).toContain('data-session-detail="conv_dm"');
+    expect(html).toContain('data-member="alice"');
   });
 });
 
-describe("会话标题在聊天顶部 / 会话详情", () => {
-  it("私聊：聊天顶部显示当前会话标题并可点击改名；群聊不塞（无唯一当前会话）", () => {
-    const dm = {
-      ...initialState,
-      roomKey: "dm:alice",
-      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
-      sessions: [{ memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 }],
-    };
-    const html = chatHtml(dm);
+describe("聊天头部与会议标题", () => {
+  it("私聊：头部显示主题名 + 当前会议标题（点击改名），不再有单条会话标题", () => {
+    const html = chatHtml(inMeeting({ employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }], sessions: [{ memberId: "alice", convId: "c1", model: "faux/x", thinkingLevel: "off", contextUsed: 0 }] }));
+    expect(html).toContain("爱丽丝");
     expect(html).toContain("登录排查");
-    expect(html).toContain('data-rename-conv="c1"');
-
-    const group = {
-      ...initialState,
-      roomKey: "group:yt",
-      projects: [{ id: "yt", alias: "油管项目", members: [{ id: "alice", alias: "爱丽丝" }] }],
-      sessions: [{ memberId: "alice", convId: "c1", title: "登录排查", model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0 }],
-    };
-    const header = chatHtml(group).split('class="session-info"')[0]!;
-    expect(header).not.toContain("登录排查");
+    expect(html).toContain('data-rename-meeting="mtg_1"');
+    expect(html).not.toContain("data-rename-conv");
   });
 
-  it("会话详情：头部带标题与改名入口", () => {
-    const context: SessionContextView = {
-      convId: "c1", kind: "dm", relationKey: "dm:alice", started: "2026-10-26T10:00:00+08:00", running: false,
-      model: "faux/faux-model", thinkingLevel: "off", contextUsed: 0, title: "登录排查", instructions: "你是 alice。", items: [],
-    };
-    const html = sessionPanelHtml({ ...initialState, roomKey: "dm:alice" }, context);
-    expect(html).toContain("登录排查");
-    expect(html).toContain('data-rename-conv="c1"');
+  it("群聊：会议标题同样在头部（一场会议一个标题）", () => {
+    const state = inMeeting({
+      subjectKey: "group:yt",
+      meeting: { ...meeting, kind: "group", subjectId: "yt", subjectLabel: "油管项目", participants: ["alice"] },
+      projects: [{ id: "yt", alias: "油管项目", members: [{ id: "alice", alias: "爱丽丝" }] }],
+      sessions: [{ memberId: "alice", convId: "c1", model: "faux/x", thinkingLevel: "off", contextUsed: 0 }],
+    });
+    const header = chatHtml(state).split('class="session-info"')[0]!;
+    expect(header).toContain('data-rename-meeting="mtg_1"');
+    expect(header).toContain("登录排查");
+  });
+
+  it("还没有会议（刚点「新建会议」）：不显示标题，聊天区「暂无记录」", () => {
+    const html = chatHtml(inMeeting({ meeting: undefined, meetingId: undefined, freshMeeting: true }));
+    expect(html).not.toContain("data-rename-meeting");
+    expect(html).toContain("暂无记录");
+    expect(html).toContain("btn-new-session armed");
+  });
+
+  it("没有选中主题：提示从左侧进入", () => {
+    expect(chatHtml({ ...initialState, configured: true })).toContain("从左侧选择一个员工或项目");
   });
 });
 
 describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {
   it("员工消息按 Markdown 渲染，容器带 md 类", () => {
-    const employee: RoomMessage = { convId: "c1", entryId: "3", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "**加粗**\n\n- 项", bossDirected: true };
-    const html = messageHtml(employee);
+    const html = messageHtml(employeeMessage("3", "**加粗**\n\n- 项"));
     expect(html).toContain('class="msg-text md"');
     expect(html).toContain("<strong>加粗</strong>");
     expect(html).toContain("<li>项</li>");
   });
 
   it("老板消息原样：Markdown 语法字面展示、HTML 转义、不带 md 类", () => {
-    const boss: RoomMessage = { convId: "c1", entryId: "4", roomKey: "dm:a", speaker: { kind: "boss" }, text: "**不是加粗** <b>标签</b>", bossDirected: false };
-    const html = messageHtml(boss);
+    const html = messageHtml(bossMessage("4", "**不是加粗** <b>标签</b>"));
     expect(html).not.toContain("<strong>");
     expect(html).toContain("**不是加粗**");
     expect(html).not.toContain("<b>");
@@ -155,17 +168,15 @@ describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {
   });
 
   it("进行中气泡：昵称取 alias、状态行常驻（转圈 + 当前在做的事）、失败气泡保持原样转义", () => {
-    const state = {
-      ...initialState,
+    const state = inMeeting({
       employees: [{ id: "alice", alias: "爱丽丝", model: "faux/faux-model" }],
       live: { "dm:a": { convId: "dm:a", memberId: "alice", text: "**粗**", thinking: "", tools: [], activity: "正在执行 shell…" } },
-    };
+    });
     const html = liveHtml(state);
     expect(html).toContain('class="msg-text md"');
     expect(html).toContain("<strong>粗</strong>");
     expect(html).toContain('class="live-spinner"');
     expect(html).toContain("正在执行 shell…");
-    // 昵称而不是 agent_id
     expect(html).toContain('class="msg-name">爱丽丝</div>');
     expect(html).not.toContain('class="msg-name">alice</div>');
 
@@ -173,29 +184,25 @@ describe("员工 Markdown 渲染 / 老板原样（UI 层）", () => {
     const html2 = liveHtml(failed);
     expect(html2).toContain("⚠️ &lt;崩&gt;");
     expect(html2).not.toContain("msg-text md");
-    expect(html2).not.toContain("live-spinner"); // 失败态不再转圈
+    expect(html2).not.toContain("live-spinner");
   });
 
   it("进行中气泡：没有正文时也占着「…」+ 状态行，org 里查不到该人时回落 id", () => {
-    const state = {
-      ...initialState,
-      live: { "dm:a": { convId: "dm:a", memberId: "ghost", text: "", thinking: "", tools: [], activity: "" } },
-    };
+    const state = inMeeting({ live: { "dm:a": { convId: "dm:a", memberId: "ghost", text: "", thinking: "", tools: [], activity: "" } } });
     const html = liveHtml(state);
     expect(html).toContain("…");
     expect(html).toContain('class="msg-name">ghost</div>');
-    expect(html).toContain("正在思考…"); // activity 空串时的兜底文案（状态行不空）
+    expect(html).toContain("正在思考…");
   });
 });
 
 describe("群聊定向（输入框上方复选框）", () => {
   it("群聊：罗列成员复选框（展示名转义 + id），发送按钮初始禁用", () => {
-    const state = {
-      ...initialState,
-      configured: true,
+    const state = inMeeting({
+      subjectKey: "group:yt",
+      meeting: { ...meeting, kind: "group", subjectId: "yt", subjectLabel: "油管", participants: ["alice", "bob"] },
       projects: [{ id: "yt", alias: "油管", members: [{ id: "alice", alias: "爱丽丝<b>" }, { id: "bob" }] }],
-      roomKey: "group:yt",
-    };
+    });
     const html = chatHtml(state);
     expect(html).toContain('id="composer-targets"');
     expect(html).toContain('data-target="alice"');
@@ -205,35 +212,41 @@ describe("群聊定向（输入框上方复选框）", () => {
   });
 
   it("私聊：不出现成员复选框，发送按钮不初始禁用", () => {
-    const state = {
-      ...initialState,
-      configured: true,
-      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
-      roomKey: "dm:alice",
-    };
-    const html = chatHtml(state);
+    const html = chatHtml(inMeeting({ employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }] }));
     expect(html).not.toContain("composer-targets");
     expect(html).not.toMatch(/<button id="composer-send" disabled>/u);
   });
 
   it("空成员群：给出占位提示", () => {
-    const state = { ...initialState, configured: true, projects: [{ id: "yt", alias: "油管", members: [] }], roomKey: "group:yt" };
+    const state = inMeeting({
+      subjectKey: "group:yt",
+      meeting: { ...meeting, kind: "group", subjectId: "yt", subjectLabel: "空群", participants: [] },
+      projects: [{ id: "yt", alias: "空群", members: [] }],
+    });
     expect(chatHtml(state)).toContain("还没有成员");
   });
 });
 
 describe("授权卡片", () => {
   const request = {
-    id: "pr_1", agentId: "alice", agentName: "爱丽丝<b>", roomKey: "group:yt",
-    paths: ["/x/<script>"], reason: "整理素材", createdAt: "t",
+    id: "pr_1",
+    agentId: "alice",
+    meetingId: "mtg_1",
+    tools: ["read", "write"],
+    paths: ["/x/<script>"],
+    reason: "整理素材",
+    createdAt: "t",
+    agentName: "爱丽丝<b>",
+    where: "群聊「演示」",
   };
 
   it("卡片：发起人/来源/理由/路径转义、接受与拒绝按钮", () => {
-    const state = { ...initialState, configured: true, projects: [{ id: "yt", alias: "演示", members: [] }], permissionRequests: [request] };
+    const state = inMeeting({ permissionRequests: [request] });
     const html = permissionCardsHtml(state);
     expect(html).toContain("授权请求");
     expect(html).toContain("爱丽丝&lt;b&gt;");
     expect(html).toContain("群聊「演示」");
+    expect(html).toContain('<span class="perm-tools">[read+write]</span>'); // 原样展示，不翻译成「读 / 写」
     expect(html).toContain("理由：整理素材");
     expect(html).toContain("/x/&lt;script&gt;");
     expect(html).toContain('data-perm-accept="pr_1"');
@@ -242,11 +255,7 @@ describe("授权卡片", () => {
   });
 
   it("处理中禁用按钮、错误行显示；私聊来源标签", () => {
-    const state = {
-      ...initialState,
-      configured: true,
-      permissionRequests: [{ ...request, roomKey: "dm:alice", busy: true, error: "写盘失败" }],
-    };
+    const state = inMeeting({ permissionRequests: [{ ...request, where: "私聊 · 爱丽丝", busy: true, error: "写盘失败" }] });
     const html = permissionCardsHtml(state);
     expect(html).toMatch(/data-perm-accept="pr_1" disabled/u);
     expect(html).toContain("写盘失败");
@@ -258,9 +267,8 @@ describe("授权卡片", () => {
   });
 });
 
-describe("排队中的消息（待发队列）与「新开会话」提示", () => {
-  const queued = { submissionId: "11", roomKey: "dm:a", memberId: "alice", roomMessageId: "rm_1", text: "在吗" };
-  const real: RoomMessage = { convId: "c1", entryId: "5", roomKey: "dm:a", speaker: { kind: "boss" }, text: "在吗", bossDirected: false, roomMessageId: "rm_1" };
+describe("排队中的消息（待发队列）与「新建会议」", () => {
+  const queued: QueuedItemView = { submissionId: "11", meetingId: "mtg_1", memberId: "alice", messageId: "rm_1", text: "在吗" };
 
   it("还没落盘的排队消息：独立占位气泡（灰底 + 排队标识 + 撤回），不进 toolbar", () => {
     const html = messagesHtml([], "老板", [], [queued]);
@@ -269,79 +277,108 @@ describe("排队中的消息（待发队列）与「新开会话」提示", () =
     expect(html).toContain("排队中：alice");
     expect(html).toContain('data-action="unqueue"');
     expect(html).toContain("在吗");
-    expect(html).not.toContain('data-action="pin"'); // 还没落盘：没有气泡工具栏
+    expect(html).not.toContain('data-action="pin"');
   });
 
   it("已有真气泡（群里只有忙的那位还在排）：排队标识贴上去，不出两个气泡", () => {
-    const html = messagesHtml([real], "老板", [], [{ ...queued, memberId: "bob" }]);
-    expect(html.match(/class="msg boss/g)).toHaveLength(1); // 只有一个气泡
+    const html = messagesHtml([bossMessage("5", "在吗", "rm_1")], "老板", [], [{ ...queued, memberId: "bob" }]);
+    expect(html.match(/class="msg boss/g)).toHaveLength(1);
     expect(html).toContain("排队中：bob");
-    expect(html).toContain('data-action="unqueue"');
-    expect(html).toContain('data-action="pin"'); // 真气泡照常有工具栏
+    expect(html).toContain('data-action="pin"');
   });
 
   it("同一次多投递：一条占位气泡、列出全部等待成员；不同消息按投递顺序排列", () => {
-    const html = messagesHtml([], "老板", [], [queued, { ...queued, submissionId: "12", memberId: "bob" }, { ...queued, submissionId: "13", roomMessageId: "rm_2", text: "第二句" }]);
+    const html = messagesHtml([], "老板", [], [queued, { ...queued, submissionId: "12", memberId: "bob" }, { ...queued, submissionId: "13", messageId: "rm_2", text: "第二句" }]);
     expect(html.match(/class="msg boss queued/g)).toHaveLength(2);
     expect(html).toContain("排队中：alice、bob");
     expect(html.indexOf("在吗")).toBeLessThan(html.indexOf("第二句"));
   });
 
-  it("chatHtml：透传排队态与「新开会话」就绪态（提示 + 按钮高亮）；成员下拉框已移除", () => {
-    const base = { ...initialState, configured: true, projects: [{ id: "yt", alias: "油管", members: [{ id: "alice" }] }], roomKey: "group:yt" };
-    const idle = chatHtml(base);
-    expect(idle).toContain("还没有消息");
-    expect(idle).not.toContain("fresh-hint");
-    expect(idle).not.toContain("member-select");
-
-    const armed = chatHtml({ ...base, freshSession: true, queued: [queued] });
-    expect(armed).toContain('class="btn-new-session armed"');
-    expect(armed).toContain("发送第一条消息即开启新会话");
-    expect(armed).not.toContain("排队中：alice"); // 已点「新开会话」→ 聊天区清空（旧记录与排队占位都不再显示）
-  });
-
-  it("freshSessionHint：私聊 / 群聊文案区分；未就绪返回空串", () => {
-    const dm = { ...initialState, roomKey: "dm:alice" };
-    expect(freshSessionHint(dm)).toBe("");
-    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("当前会话将结束");
-    expect(freshSessionHint({ ...dm, freshSession: true })).toContain("旧记录可在「历史」回看");
-    expect(freshSessionHint({ ...initialState, roomKey: "group:yt", freshSession: true })).toContain("@ 到的成员各开一条");
-  });
-
-  it("点了「新开会话」就清空聊天区（旧记录立刻不显示）；取消后恢复；发送后服务端也只回新一轮", () => {
-    const old: RoomMessage = { convId: "store", entryId: "1", roomKey: "dm:alice", speaker: { kind: "boss" }, text: "上一轮的话", bossDirected: false };
-    const base = { ...initialState, configured: true, roomKey: "dm:alice", messages: [old] };
+  it("点了「新建会议」就清空聊天区（旧记录立刻不显示）；取消后恢复", () => {
+    const base = inMeeting({ messages: [bossMessage("1", "上一轮的话")] });
     expect(messageListHtml(base)).toContain("上一轮的话");
-
-    // 已就绪 = 聊天区只剩一行说明（上一轮记录不再显示）
-    const armed = messageListHtml({ ...base, freshSession: true });
+    const armed = messageListHtml({ ...base, freshMeeting: true });
     expect(armed).not.toContain("上一轮的话");
-    expect(armed).toContain("新一轮会话：发送第一条消息后开始");
-
-    // 点第二次取消：state.messages 从未被动过 → 记录原样回来
-    expect(messageListHtml({ ...base, freshSession: false })).toContain("上一轮的话");
+    expect(armed).toContain("暂无记录");
+    expect(armed).not.toContain("log-divider");
+    expect(messageListHtml({ ...base, freshMeeting: false })).toContain("上一轮的话");
   });
 
-  it("消息区顶部说明条：新开会话后旧内容被收起时提示条数；0 条不渲染", () => {
-    expect(hiddenMessagesHtml(0)).toBe("");
-    expect(hiddenMessagesHtml(3)).toContain("上一轮会话内容已收起（3 条）");
+  it("会议没有「结束」：旧会议照样可编辑、可发送（不再有只读提示条 / 禁用输入框）", () => {
+    const old = inMeeting({ messages: [bossMessage("1", "旧话")] });
+    expect(messageListHtml(old)).not.toContain("这场会议已结束");
+    const html = chatHtml(old);
+    expect(html).not.toContain("只读回看");
+    expect(html).not.toMatch(/<textarea id="composer-input" placeholder="[^"]*" disabled>/u);
+    // 删除入口只在「历史」页面出现，聊天头部不放
+    expect(html).not.toContain('id="btn-delete-meeting"');
+  });
+});
 
-    const message: RoomMessage = { convId: "store", entryId: "9", roomKey: "dm:alice", speaker: { kind: "boss" }, text: "新一轮", bossDirected: false };
-    const base = { ...initialState, configured: true, roomKey: "dm:alice", messages: [message] };
-    const withoutHidden = messageListHtml(base);
-    expect(withoutHidden).not.toContain("log-divider");
-    const withHidden = messageListHtml({ ...base, hiddenMessages: 4 });
-    expect(withHidden.indexOf("log-divider")).toBeLessThan(withHidden.indexOf("新一轮")); // 说明条在气泡上方
+describe("历史会议页", () => {
+  const old: MeetingView = { ...meeting, meetingId: "mtg_old", kind: "group", subjectId: "yt", subjectLabel: "油管", participants: ["alice", "bob"] };
+  const latest: MeetingView = { ...meeting, meetingId: "mtg_new", kind: "group", subjectId: "yt", subjectLabel: "油管", participants: ["alice"] };
+  const state = inMeeting({
+    subjectKey: "group:yt",
+    meetingId: latest.meetingId,
+    meeting: latest,
+    meetings: [latest, old],
+    projects: [{ id: "yt", alias: "油管", members: [{ id: "alice" }, { id: "bob" }] }],
+    employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }, { id: "bob", model: "faux/y" }],
+  });
+
+  it("列出该主题全部会议：可查看 / 改名 / 删除，不在聊天页里", () => {
+    const html = historyHtml(state);
+    expect(html).toContain("历史会议 · 油管");
+    expect(html).toContain('data-meeting="mtg_new"');
+    expect(html).toContain('data-meeting="mtg_old"');
+    expect(html).toContain('data-delete-meeting="mtg_old"');
+    expect(html).toContain('data-rename-meeting="mtg_old"');
+    expect(html).toContain("爱丽丝");
+    expect(html).toContain("bob");
+    expect(html).toContain('id="btn-history-back"');
+    expect(html).not.toContain('id="composer-input"');
+    expect(html).not.toContain("data-target=");
+  });
+
+  it("没有会议：显示空态，仍能返回聊天", () => {
+    const html = historyHtml({ ...state, meetings: [] });
+    expect(html).toContain("还没有会议");
+    expect(html).toContain('id="btn-history-back"');
+  });
+});
+
+describe("会议列表与删除", () => {
+  const older: MeetingView = { ...meeting, meetingId: "mtg_old", kind: "group", subjectId: "yt", subjectLabel: "油管", participants: ["alice", "bob"] };
+  const state = inMeeting({
+    subjectKey: "group:yt",
+    meetingId: older.meetingId,
+    meeting: older,
+    meetings: [older],
+    projects: [{ id: "yt", alias: "油管", members: [{ id: "alice" }, { id: "bob" }] }],
+  });
+
+  it("旧会议（非最新）也能继续聊：显示当前成员勾选与输入框，不再有「回到最新会议」", () => {
+    const html = chatHtml(state);
+    expect(html).toContain('id="composer-targets"');
+    expect(html).toContain('data-target="alice"');
+    expect(html).toContain('data-target="bob"');
+    expect(html).not.toContain('id="btn-current-meeting"');
+  });
+
+  it("删除入口不在聊天头部（只在「历史」页面出现）", () => {
+    expect(chatHtml(state)).not.toContain('id="btn-delete-meeting"');
+    expect(chatHtml(state)).not.toContain(">删除<");
   });
 });
 
 describe("气泡工具栏与 pin 高亮", () => {
-  const employee: RoomMessage = { convId: "c1", entryId: "2", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "好", bossDirected: true };
-  const other: RoomMessage = { convId: "c1", entryId: "3", roomKey: "dm:a", speaker: { kind: "employee", id: "alice" }, text: "再", bossDirected: true };
+  const employee = employeeMessage("2", "好");
+  const other = employeeMessage("3", "再");
 
   it("每条消息带消息键与工具栏（复制 / pin），默认未 pin", () => {
     const html = messageHtml(employee);
-    expect(html).toContain('data-conv-id="c1"');
+    expect(html).toContain('data-conv-id="store"');
     expect(html).toContain('data-entry-id="2"');
     expect(html).toContain('data-action="copy"');
     expect(html).toContain('data-action="pin"');
@@ -353,23 +390,16 @@ describe("气泡工具栏与 pin 高亮", () => {
   });
 
   it("messagesHtml 按 pinned 集合标记对应气泡", () => {
-    expect(messagesHtml([employee, other], "老板", ["c1:3"])).toContain('<div class="msg employee pinned" data-conv-id="c1" data-entry-id="3">');
+    expect(messagesHtml([employee, other], "老板", ["store:3"])).toContain('<div class="msg employee pinned" data-conv-id="store" data-entry-id="3">');
     expect(messagesHtml([employee, other], "老板", [])).not.toContain("pinned");
   });
 
-  it("chatHtml 把当前房间 pinned 集合透传给气泡", () => {
-    const state = {
-      ...initialState,
-      configured: true,
-      employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }],
-      roomKey: "dm:alice",
-      messages: [{ convId: "c1", entryId: "5", roomKey: "dm:alice", speaker: { kind: "employee" as const, id: "alice" }, text: "x", bossDirected: true }],
-      pinned: ["c1:5"],
-    };
+  it("chatHtml 把当前会议 pinned 集合透传给气泡", () => {
+    const state = inMeeting({ messages: [employeeMessage("5", "x")], pinned: ["store:5"] });
     expect(chatHtml(state)).toContain('class="msg employee pinned"');
   });
 
-  it("sidebarHtml：红点 = 该房间 pin 计数", () => {
+  it("sidebarHtml：红点 = 该主题 pin 计数", () => {
     const state = {
       ...initialState,
       configured: true,
@@ -403,16 +433,16 @@ describe("侧栏部门树", () => {
     const html = sidebarHtml(state);
     expect(html).toContain('data-toggle-dept="eng"');
     expect(html).toContain('data-toggle-dept="eng/platform"');
-    expect(html).toContain('data-room="dm:alice"');
-    expect(html).toContain('data-room="dm:bob"');
+    expect(html).toContain('data-subject="dm:alice"');
+    expect(html).toContain('data-subject="dm:bob"');
     expect(html).toContain('<span class="badge">1</span>');
     expect(html).toContain("爱丽丝");
     expect(html).toContain('aria-expanded="true"');
 
     const collapsed = sidebarHtml({ ...state, collapsedDepts: ["eng"] });
     expect(collapsed).toContain('data-toggle-dept="eng"');
-    expect(collapsed).not.toContain('data-room="dm:alice"'); // 折叠后正文不渲染
-    expect(collapsed).not.toContain('data-room="dm:bob"');
+    expect(collapsed).not.toContain('data-subject="dm:alice"');
+    expect(collapsed).not.toContain('data-subject="dm:bob"');
     expect(collapsed).toContain('aria-expanded="false"');
 
     const empty = sidebarHtml({
@@ -426,25 +456,29 @@ describe("侧栏部门树", () => {
 
   it("sidebarHtml：无 org 数据时回落平铺（首帧不白屏）；都没有才出提示", () => {
     const flat = sidebarHtml({ ...initialState, configured: true, employees: [{ id: "alice", alias: "爱丽丝", model: "faux/x" }] });
-    expect(flat).toContain('data-room="dm:alice"');
+    expect(flat).toContain('data-subject="dm:alice"');
     expect(flat).toContain('data-config-scope="agent"');
     expect(flat).toContain('data-config-id="alice"');
     const empty = sidebarHtml({ ...initialState, configured: true });
-    // 侧栏空态只说「暂无」，不再塞教学文案（上手引导在 README 与首次配置页）
     expect(empty).toContain("<p class=\"hint\">暂无员工</p>");
     expect(empty).toContain("<p class=\"hint\">暂无项目</p>");
     expect(empty).not.toContain("agent.config.json（见 README.md）");
+  });
+
+  it("高亮按 subjectKey：同一员工换会议仍高亮", () => {
+    const state = { ...initialState, configured: true, subjectKey: "group:yt", projects: [{ id: "yt", alias: "油管", members: [] }] };
+    expect(sidebarHtml(state)).toContain('class="item item-main active" data-subject="group:yt"');
   });
 });
 
 describe("会话详情 / 定义文件面板", () => {
   // 用本地时间造 ISO：断言才不受跑测机器的时区影响
-  const startedAt = new Date(2026, 9, 25, 10, 0, 0);
-  const dm: EmployeeSession = {
+  const session: EmployeeSession = {
     convId: "conv_dm",
+    meetingId: "mtg_1",
     kind: "dm",
-    relationKey: "dm:alice",
-    started: startedAt.toISOString(),
+    subjectKey: "dm:alice",
+    title: "登录排查",
     running: true,
     model: "faux/faux-model",
     thinkingLevel: "high",
@@ -452,7 +486,7 @@ describe("会话详情 / 定义文件面板", () => {
     contextWindow: 1_000_000,
   };
   const context: SessionContextView = {
-    ...dm,
+    ...session,
     instructions: "你是 alice。<系统>",
     cwd: "/office/work/alice",
     items: [
@@ -462,16 +496,15 @@ describe("会话详情 / 定义文件面板", () => {
       { role: "assistant", text: "完成", at: new Date(2026, 9, 25, 10, 0, 20).toISOString() },
     ],
   };
+
   it("时间按本地时区、上下文用量与聊天信息条同口径、每步带本地时间", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
-    // 会话开始时间：本地 `YYYY-MM-DD HH:mm`（不是截断的 ISO）
-    expect(html).toContain("2026-10-25 10:00");
+    expect(html).toContain('title="2026-10-25 10:00"');
+    expect(html).toContain(">10:00:05<");
     const head = html.slice(html.indexOf('<div class="ctx-header">'), html.indexOf('id="ctx-items"'));
-    expect(head).not.toContain("T02:00:00"); // 卡片里不是 ISO 半截（UTC）
-    // 上下文：带单位、带百分比（与聊天顶部信息条一致）
+    expect(head).not.toContain("T02:00:00");
     expect(html).toContain("上下文 166K / 1M，17%");
     expect(html).not.toContain("166000 / 1000000 tokens");
-    // 每步时间（本地 HH:mm:ss）在行首：与左侧内容并排，不在行尾
     expect(html).toContain("10:00:05");
     expect(html).toContain("10:00:09");
     expect(html).toContain("10:00:20");
@@ -479,46 +512,45 @@ describe("会话详情 / 定义文件面板", () => {
     expect(html.indexOf('class="ctx-time"')).toBeLessThan(html.indexOf("<strong>用户</strong>"));
     expect(html).not.toContain("margin-left: auto");
 
-    // 没时间戳的条目：不显时间（不硬造）
     const notime = sessionPanelHtml({ ...initialState, configured: true }, { ...context, items: [{ role: "user", text: "没有时间戳" }] });
     expect(notime).not.toContain('class="ctx-time"');
   });
 
-  it("会话详情：只有当前这一条会话（无 Tab），系统提示词 / 工具调用全转义", () => {
+  it("会话详情：只有当前这一条会话（无 Tab），来源按会议、标题可改名", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
     expect(html).toContain("会话详情（只读）");
-    // 没有「刷新 / 有新内容」按钮：新内容自动 prepend 进列表
+    expect(html).toContain("私聊会议");
+    expect(html).toContain('data-rename-meeting="mtg_1"');
     expect(html).not.toContain('id="session-panel-refresh"');
-    expect(html).not.toContain('id="session-panel-reload"');
     expect(html).not.toContain("有新内容");
     expect(html).toContain('id="session-panel-back"');
-    expect(html).not.toContain("data-agent-conv"); // Tab 切会话已移除
+    expect(html).not.toContain("data-agent-conv");
     expect(html).toContain("系统提示词");
     expect(html).toContain("你是 alice。&lt;系统&gt;");
     expect(html).toContain("工具调用：write");
     expect(html).toContain("&lt;x&gt;");
     expect(html).toContain("完成");
     expect(html).not.toContain("<系统>");
-    // 顶部信息条的入口不在这里：详情就有「详情」按钮，不再需要面板内的会话列表
-    expect(sessionInfoHtml({ ...initialState, configured: true, roomKey: "dm:alice", sessions: [{ memberId: "alice", ...dm }] })).toContain('data-session-detail="conv_dm"');
   });
 
-  it("工具调用与结果合成一条（不默认展开）；配不上的结果仍单独成条；结果默认收起", () => {
+  it("群聊来源标签带项目名", () => {
+    const html = sessionPanelHtml({ ...initialState, configured: true }, { ...context, kind: "group", projectId: "yt", projectAlias: "油管项目" });
+    expect(html).toContain("群 · 油管项目");
+  });
+
+  it("工具调用与结果合成一条（不默认展开）；配不上的结果仍单独成条", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
-    // 配上的结果不再单独出一个「工具结果」条目：只在调用块里出现一次
-    expect(html).not.toContain('<strong>工具结果</strong>');
+    expect(html).not.toContain("<strong>工具结果</strong>");
     expect(html.split("工具调用：write").length - 1).toBe(1);
-    expect(html).toContain("已完成"); // 状态徽标
-    // 默认收起：折叠块不带 open
+    expect(html).toContain("已完成");
     expect(html).toContain('<details class="ctx-block ctx-call" data-key=');
     expect(html).not.toContain(" open");
 
-    // 配不上的结果（调用不在视图里）：独立成条且同样默认收起
     const orphan = sessionPanelHtml({ ...initialState, configured: true }, {
       ...context,
       items: [{ role: "tool", text: "孤立结果", toolCallId: "call_x", toolName: "bash" }],
     });
-    expect(orphan).toContain('<strong>工具结果</strong>');
+    expect(orphan).toContain("<strong>工具结果</strong>");
     expect(orphan).toContain("工具结果：bash");
     expect(orphan).toContain("孤立结果");
     expect(orphan).not.toContain(" open");
@@ -526,12 +558,11 @@ describe("会话详情 / 定义文件面板", () => {
 
   it("条目区新的在最上面（逆序）；配对不受顺序影响", () => {
     const html = sessionPanelHtml({ ...initialState, configured: true }, context);
-    const first = html.indexOf("完成"); // 最后一条 assistant
-    const last = html.indexOf("写个文件"); // 第一条 user
+    const first = html.indexOf("完成");
+    const last = html.indexOf("写个文件");
     expect(first).toBeGreaterThan(-1);
     expect(last).toBeGreaterThan(-1);
-    expect(first).toBeLessThan(last); // 最新在上
-    // 逆序后调用与结果仍然合成一条
+    expect(first).toBeLessThan(last);
     expect(html).not.toContain("<strong>工具结果</strong>");
     expect(html.split("工具调用：write").length - 1).toBe(1);
   });
@@ -542,8 +573,8 @@ describe("会话详情 / 定义文件面板", () => {
     const system = html.indexOf('<details class="ctx-system">');
     const items = html.indexOf('id="ctx-items"');
     expect(header).toBeGreaterThan(-1);
-    expect(system).toBeGreaterThan(header); // 在基础信息卡片内
-    expect(system).toBeLessThan(items); // 在条目区之前
+    expect(system).toBeGreaterThan(header);
+    expect(system).toBeLessThan(items);
     expect(html).toContain('<div class="ctx-system-body">');
     expect(html).toContain('class="ctx-text"');
   });

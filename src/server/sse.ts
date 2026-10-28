@@ -1,22 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { RoomMessage } from "../app/rooms.ts";
+import type { MeetingMessage } from "../app/meeting-messages.ts";
 import type { QueuedItemView } from "../app/outbox.ts";
 import type { PermissionRequestView } from "../app/permission-flow.ts";
 
 export type ServerEvent =
-  | { type: "room.message"; roomKey: string; message: RoomMessage }
-  | { type: "room.delta"; roomKey: string; convId: string; memberId: string; channel: "text" | "thinking"; delta: string }
-  | { type: "room.activity"; roomKey: string; convId: string; memberId: string; kind: "run" | "tool" | "toolCall"; phase: "start" | "end"; name?: string; hint?: string }
-  | { type: "room.failed"; roomKey: string; convId: string; memberId: string; message: string; kind?: string }
-  | { type: "room.pins"; roomKey: string; count: number }
+  | { type: "meeting.message"; meetingId: string; message: MeetingMessage }
+  | { type: "meeting.delta"; meetingId: string; convId: string; memberId: string; channel: "text" | "thinking"; delta: string }
+  | { type: "meeting.activity"; meetingId: string; convId: string; memberId: string; kind: "run" | "tool" | "toolCall"; phase: "start" | "end"; name?: string; hint?: string }
+  | { type: "meeting.failed"; meetingId: string; convId: string; memberId: string; message: string; kind?: string }
+  | { type: "meeting.pins"; meetingId: string; count: number }
   /** 老板的消息进了待发队列（员工在跑）：前端显示「排队中」。 */
-  | { type: "room.queued"; item: QueuedItemView }
+  | { type: "meeting.queued"; item: QueuedItemView }
   /** 出队：投递开始（delivered）/ 被撤回（cancelled）/ 随中断撤下（aborted）。 */
-  | { type: "room.dequeued"; roomKey: string; submissionId: string; reason: "delivered" | "cancelled" | "aborted" }
+  | { type: "meeting.dequeued"; meetingId: string; submissionId: string; reason: "delivered" | "cancelled" | "aborted" }
   | { type: "permission.request"; request: PermissionRequestView }
   | { type: "permission.resolved"; id: string }
-  /** 会话标题变了（fallback / 自动命名 / 手动改名同一条写入通道）：前端的标题原地刷新。 */
-  | { type: "session.title"; roomKey: string; convId: string; title: string };
+  /** 会议标题变了（fallback / 自动命名 / 手动改名同一条写入通道）：前端的标题原地刷新。 */
+  | { type: "meeting.title"; meetingId: string; title: string }
+  /** 会议被老板删除（消息 / 会话 / pin 已一并清理）：前端从列表移除，必要时回退到最新会议。 */
+  | { type: "meeting.deleted"; meetingId: string; subjectKey: string };
 
 export interface SseClientHandle {
   readonly pending: number;
@@ -57,8 +59,8 @@ export class SseHub {
   broadcast(event: ServerEvent): void {
     for (const [res, client] of this.#clients) {
       if (client.queue.length >= MAX_PENDING) {
-        if (event.type === "room.delta" || event.type === "room.activity") continue;
-        client.queue = client.queue.filter((e) => e.type !== "room.delta" && e.type !== "room.activity");
+        if (event.type === "meeting.delta" || event.type === "meeting.activity") continue;
+        client.queue = client.queue.filter((e) => e.type !== "meeting.delta" && e.type !== "meeting.activity");
         if (client.queue.length >= MAX_PENDING) client.queue.shift();
       }
       client.queue.push(event);

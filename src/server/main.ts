@@ -10,12 +10,12 @@ import { PermissionRequestStore } from "../domain/permission-requests.ts";
 import { permissionRequestView } from "../app/permission-flow.ts";
 import { sessionDefaults } from "../app/conversations.ts";
 import { createNamer } from "../app/naming.ts";
-import type { SessionTitleDeps } from "../app/sessions.ts";
+import type { MeetingTitleDeps } from "../app/meeting-titles.ts";
 import { KeyedQueue } from "../app/send.ts";
 import { Outbox } from "../app/outbox.ts";
 import { openMessageStore, type MessageStore } from "../store/messages.ts";
 import { openSessionStore, type SessionStore } from "../store/sessions.ts";
-import { importLegacyChains } from "../store/chain-import.ts";
+import { openMeetingStore, type MeetingStore } from "../store/meetings.ts";
 import { createPiHarness } from "../harness/pi-durable.ts";
 import { McpManager } from "../harness/mcp-manager.ts";
 import { createOpenStaffsToolsExtension } from "../tools/extension.ts";
@@ -61,13 +61,12 @@ async function main(): Promise<void> {
   fs.mkdirSync(stateDir(ws), { recursive: true });
   let store: MessageStore;
   let sessionStore: SessionStore;
+  let meetingStore: MeetingStore;
   try {
     store = openMessageStore(officeDbFile(ws));
-    // 会话表 = 会话的唯一真相（convId 就是 Pi 的 conversation id）；与消息同一库文件。
+    // 会议 / 会话表 = 会话的唯一真相（convId 就是 Pi 的 conversation id）；三者同一库文件。
+    meetingStore = openMeetingStore(officeDbFile(ws));
     sessionStore = openSessionStore(officeDbFile(ws));
-    // 一次性迁移：老的会话链 markdown（`work/<人>/conversation_ids.md`、`.data/chains/group-*/<人>.md`）导入会话表后退役。
-    const imported = importLegacyChains(ws, sessionStore);
-    if (imported.imported > 0) console.log(`[openstaffs] 会话链已迁移入库：${imported.imported} 条（旧文件已备份到 .data/legacy-chains）`);
   } catch (error) {
     console.error(`[openstaffs] 启动失败：${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -75,7 +74,7 @@ async function main(): Promise<void> {
   let pump: Pump | undefined;
   let mcp: McpManager | undefined;
   // 会话标题依赖：new 会话命名 / 改名端点写入，全进程一份（与 HTTP 注入同一个）。
-  let titles: SessionTitleDeps = { store: sessionStore };
+  let titles: MeetingTitleDeps = { store: meetingStore };
 
   let harness: ReturnType<typeof createPiHarness> | undefined;
   if (config !== undefined) {
@@ -85,8 +84,8 @@ async function main(): Promise<void> {
       const namingModel = loadSpaceConfig(ws)?.fields.namingModel;
       const namer = createNamer({ models, ...(namingModel === undefined ? {} : { namingModel }) });
       titles = {
-        store: sessionStore,
-        notify: (event) => hub.broadcast({ type: "session.title", ...event }),
+        store: meetingStore,
+        notify: (event) => hub.broadcast({ type: "meeting.title", ...event }),
         ...(namer === undefined ? {} : { namer }),
       };
       mcp = new McpManager({ ws });
@@ -98,13 +97,14 @@ async function main(): Promise<void> {
         ws,
         getHarness: () => harness!,
         mcp,
+        meetings: meetingStore,
         sessions: sessionStore,
         permissions: {
           store: permissionRequests,
-          notify: (request) => hub.broadcast({ type: "permission.request", request: permissionRequestView(ws, request) }),
+          notify: (request) => hub.broadcast({ type: "permission.request", request: permissionRequestView(ws, request, meetingStore) }),
         },
         // 员工发言（send_message）落库后广播库行（R-P1-12「谁写谁广播」）。
-        broadcast: (roomKey, message) => hub.broadcast({ type: "room.message", roomKey, message }),
+        broadcast: (meetingId, message) => hub.broadcast({ type: "meeting.message", meetingId, message }),
       });
       harness = createPiHarness({
         root,
@@ -122,6 +122,7 @@ async function main(): Promise<void> {
         queue,
         outbox,
         store,
+        meetings: meetingStore,
         sessions: sessionStore,
         mcp,
         getDefaults: () => sessionDefaults(getConfig()),
@@ -139,6 +140,7 @@ async function main(): Promise<void> {
   const server = createHttpServer({
     ws,
     store,
+    meetings: meetingStore,
     sessions: sessionStore,
     getConfig,
     getHarness: () => harness,

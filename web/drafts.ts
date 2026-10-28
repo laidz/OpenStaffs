@@ -1,5 +1,5 @@
 /**
- * 输入框草稿的本地缓存（按房间键：`dm:<员工id>` / `group:<项目id>`）。
+ * 输入框草稿的本地缓存（按主题键：`dm:<员工id>` / `group:<项目id>`）。
  *
  * 纯 UI 缓存——不进 `State`、不上服务端：切会话 / 进会话详情 / 全量重画后靠它把没发出去的字填回来。
  * 只依赖 `getItem` / `setItem` / `removeItem` 三个方法（便于测试注入假 storage）。
@@ -15,10 +15,10 @@ export type DraftStorage = {
 const STORAGE_KEY = "openstaffs.drafts.v1";
 
 export type DraftStore = {
-  /** 读某房间的草稿；没有 / 读坏了都是空串。 */
-  load(roomKey: string): string;
-  /** 保存某房间的草稿；`text.trim() === ""` = 删除该条（别把空串存成一条）。 */
-  save(roomKey: string, text: string): void;
+  /** 读某主题的草稿；没有 / 读坏了都是空串。 */
+  load(subjectKey: string): string;
+  /** 保存某主题的草稿；`text.trim() === ""` = 删除该条（别把空串存成一条）。 */
+  save(subjectKey: string, text: string): void;
 };
 
 /** 读全部草稿：JSON 坏 / 形状不对一律当空——本地缓存不值得报错，更不该拖垮聊天。 */
@@ -42,19 +42,19 @@ function readAll(storage: DraftStorage | undefined): Record<string, string> {
 
 export function createDraftStore(storage: DraftStorage | undefined): DraftStore {
   return {
-    load(roomKey) {
-      return readAll(storage)[roomKey] ?? "";
+    load(subjectKey) {
+      return readAll(storage)[subjectKey] ?? "";
     },
-    save(roomKey, text) {
+    save(subjectKey, text) {
       if (storage === undefined) return;
       const drafts = readAll(storage);
-      const had = drafts[roomKey] !== undefined;
+      const had = drafts[subjectKey] !== undefined;
       if (text.trim() === "") {
         if (!had) return; // 本来就没有：不必写一次
-        delete drafts[roomKey];
+        delete drafts[subjectKey];
       } else {
-        if (drafts[roomKey] === text) return; // 内容没变：不写
-        drafts[roomKey] = text;
+        if (drafts[subjectKey] === text) return; // 内容没变：不写
+        drafts[subjectKey] = text;
       }
       try {
         if (Object.keys(drafts).length === 0) storage.removeItem(STORAGE_KEY);

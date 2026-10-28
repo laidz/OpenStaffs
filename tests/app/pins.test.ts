@@ -4,13 +4,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkspace } from "../../src/domain/paths.ts";
 import { messageKey, pinCounts, pinsFile, readPins, setPin } from "../../src/app/pins.ts";
-import type { RoomMessage } from "../../src/app/rooms.ts";
+import type { MeetingMessage } from "../../src/app/meeting-messages.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openstaffs-pins-"));
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-function msg(entryId: string, convId: string, roomKey = "dm:alice"): RoomMessage {
-  return { convId, entryId, roomKey, speaker: { kind: "employee", id: "alice" }, text: "t", bossDirected: true };
+function msg(entryId: string, convId: string): MeetingMessage {
+  return { convId, entryId, speaker: { kind: "employee", id: "alice" }, text: "t", bossDirected: true };
 }
 
 describe("pin 标记", () => {
@@ -38,19 +38,19 @@ describe("pin 标记", () => {
     expect(messageKey(msg("42", "c1"))).toBe("c1:42");
   });
 
-  it("pinCounts：只数房间当前视图里被 pin 的消息；pin 了但已不在视图的不计", () => {
+  it("pinCounts：只数该会议里被 pin 的消息；pin 了但已不在会议里的不计", () => {
     const ws = createWorkspace(root);
-    setPin(ws, "dm:alice", "c1:10", true);
-    setPin(ws, "dm:alice", "c1:99", true); // 已不在视图（旧会话）
-    setPin(ws, "group:demo", "c2:20", true);
+    setPin(ws, "mtg_a", "c1:10", true);
+    setPin(ws, "mtg_a", "c1:99", true); // 已不在视图（旧会话）
+    setPin(ws, "mtg_g", "c2:20", true);
     const counts = pinCounts(
       [
-        { key: "dm:alice", messages: [msg("9", "c1"), msg("10", "c1"), msg("11", "c1")] },
-        { key: "group:demo", messages: [msg("20", "c2", "group:demo"), msg("21", "c2", "group:demo")] },
+        { meetingId: "mtg_a", messages: [msg("9", "c1"), msg("10", "c1"), msg("11", "c1")] },
+        { meetingId: "mtg_g", messages: [msg("20", "c2"), msg("21", "c2")] },
       ],
       readPins(ws),
     );
-    expect(counts.rooms).toEqual({ "dm:alice": 1, "group:demo": 1 });
+    expect(counts.meetings).toEqual({ mtg_a: 1, mtg_g: 1 });
     expect(counts.total).toBe(2);
   });
 });

@@ -15,10 +15,12 @@ import { createHttpServer, type ServerDeps } from "../../src/server/http.ts";
 import { createPiHarness } from "../../src/harness/pi-durable.ts";
 import { KeyedQueue } from "../../src/app/send.ts";
 import { Outbox } from "../../src/app/outbox.ts";
+import { ensureMeeting } from "../../src/app/meetings.ts";
 import { openMessageStore, type MessageStore } from "../../src/store/messages.ts";
 import { openSessionStore, type SessionStore } from "../../src/store/sessions.ts";
+import { openMeetingStore, type MeetingStore } from "../../src/store/meetings.ts";
 import type { QueuedItemView } from "../../src/app/outbox.ts";
-import type { RoomMessage } from "../../src/app/rooms.ts";
+import type { MeetingMessage } from "../../src/app/meeting-messages.ts";
 import { messagesHtml } from "../../web/render.ts";
 import { SseHub, type ServerEvent } from "../../src/server/sse.ts";
 import { Pump } from "../../src/server/pump.ts";
@@ -31,7 +33,7 @@ fs.mkdirSync(publicDir, { recursive: true });
 fs.writeFileSync(path.join(publicDir, "index.html"), "<html>Office</html>");
 fs.writeFileSync(path.join(root, "secret.txt"), "top-secret");
 
-// 接线前提（对齐 main.ts）：stateDir 先建，库实例注入 HTTP；每个用例一套，afterEach 关闭并清目录。
+// 接线前提（对齐 main.ts）：stateDir 先建，三个库实例注入 HTTP；每个用例一套，afterEach 关闭并清目录。
 let messageStore: MessageStore | undefined;
 function getStore(): MessageStore {
   if (messageStore === undefined) {
@@ -41,7 +43,6 @@ function getStore(): MessageStore {
   return messageStore;
 }
 
-// 会话表（唯一真相）：与消息同库文件；每个用例一套。
 let sessionStore: SessionStore | undefined;
 function getSessions(): SessionStore {
   if (sessionStore === undefined) {
@@ -51,19 +52,30 @@ function getSessions(): SessionStore {
   return sessionStore;
 }
 
+let meetingStore: MeetingStore | undefined;
+function getMeetings(): MeetingStore {
+  if (meetingStore === undefined) {
+    fs.mkdirSync(stateDir(createWorkspace(root)), { recursive: true });
+    meetingStore = openMeetingStore(officeDbFile(createWorkspace(root)));
+  }
+  return meetingStore;
+}
+
 afterEach(() => {
   messageStore?.close();
   messageStore = undefined;
   sessionStore?.close();
   sessionStore = undefined;
+  meetingStore?.close();
+  meetingStore = undefined;
   fs.rmSync(path.join(root, "agents"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "work"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(root, "openstaffs/.data"), { recursive: true, force: true });
 });
 
-function start(deps: Omit<ServerDeps, "store" | "sessions">): Promise<{ base: string; close: () => Promise<void> }> {
-  const server = createHttpServer({ ...deps, store: getStore(), sessions: getSessions() });
+function start(deps: Omit<ServerDeps, "store" | "sessions" | "meetings">): Promise<{ base: string; close: () => Promise<void> }> {
+  const server = createHttpServer({ ...deps, store: getStore(), sessions: getSessions(), meetings: getMeetings() });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -190,7 +202,6 @@ describe("HTTP 骨架", () => {
     const ws = createWorkspace(root);
     const { base, close } = await start({ ws, getConfig: () => configured, getHarness: () => undefined, queue: new KeyedQueue(), publicDir, port: 4319 });
     try {
-      // 原始 http 请求：fetch/URL 会拒绝非法百分号编码
       const { status, body } = await new Promise<{ status: number; body: string }>((resolve) => {
         const req = http.request({ host: "127.0.0.1", port: new URL(base).port, path: "/%ZZ" }, (res) => {
           let raw = "";
@@ -239,19 +250,19 @@ async function startWithFaux(
   await harness.open();
   const ws = createWorkspace(root);
   const store = new PermissionRequestStore(ws);
-  // 房间视图改读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
-  // hub 收事件（断言「谁写谁广播」的广播条数与库行键）。
+  // 会议视图读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
   const events: ServerEvent[] = [];
   const hub = {
     broadcast: (event: ServerEvent) => events.push(event),
     add: () => ({ pending: 0, close: () => {} }),
     size: 0,
   } as unknown as SseHub;
-  const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
+  const pump = new Pump({ ws, harness, hub, store: getStore(), meetings: getMeetings(), sessions: getSessions() });
   const server = createHttpServer({
-    ws, store: getStore(), sessions: getSessions(), getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319,
+    ws, store: getStore(), meetings: getMeetings(), sessions: getSessions(),
+    getConfig: () => config, getHarness: () => harness, queue: new KeyedQueue(), publicDir, port: 4319,
     permissionRequests: store, pump, hub,
-    titles: { store: getSessions(), notify: (event) => hub.broadcast({ type: "session.title", ...event }) },
+    titles: { store: getMeetings(), notify: (event) => hub.broadcast({ type: "meeting.title", ...event }) },
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -276,26 +287,51 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 8000): P
   }
 }
 
-describe("房间 API", () => {
-  it("私聊：发消息 202 → 合并视图出现 boss 与员工回复（含 speaker 形状）", async () => {
+function postMessage(base: string, subjectKey: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(`${base}/api/subjects/${encodeURIComponent(subjectKey)}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+type MeetingViewBody = {
+  meetingId: string;
+  messages: MeetingMessage[];
+  pinned: string[];
+  queued: QueuedItemView[];
+  meeting: { title?: string };
+};
+
+async function meetingView(base: string, meetingId: string): Promise<MeetingViewBody> {
+  return (await (await fetch(`${base}/api/meetings/${encodeURIComponent(meetingId)}/messages`)).json()) as MeetingViewBody;
+}
+
+describe("会议 API", () => {
+  it("私聊：发消息 202 → 会议视图出现 boss 与员工回复（含 speaker 形状）；subject 视图给当前会议", async () => {
     const { base, close } = await startWithFaux(["alice"], []);
     try {
-      const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "你好", requestId: "t-1" }),
-      });
+      const post = await postMessage(base, "dm:alice", { text: "你好", requestId: "t-1" });
       expect(post.status).toBe(202);
-      const accepted = (await post.json()) as { roomMessageId: string; deliveries: { memberId: string; convId: string }[] };
+      const accepted = (await post.json()) as { meetingId: string; messageId: string; deliveries: { memberId: string; convId: string }[] };
+      expect(accepted.meetingId).toMatch(/^mtg_/);
       expect(accepted.deliveries[0]!.memberId).toBe("alice");
 
       const merged = await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/dm:alice/messages`);
-        const body = (await res.json()) as { messages: { speaker: unknown; text: string; roomMessageId?: string }[] };
-        return body.messages.some((m) => (m.speaker as { kind?: string }).kind === "employee") ? body : undefined;
+        const body = await meetingView(base, accepted.meetingId);
+        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
       });
       expect(merged.messages[0]).toMatchObject({ speaker: { kind: "boss" }, text: "你好" });
       expect(merged.messages[1]).toMatchObject({ speaker: { kind: "employee", id: "alice", alias: "爱丽丝" }, text: "收到0" });
+
+      const subject = (await (await fetch(`${base}/api/subjects/dm%3Aalice`)).json()) as {
+        key: string;
+        current?: { meetingId: string };
+        meetings: { meetingId: string }[];
+      };
+      expect(subject.key).toBe("dm:alice");
+      expect(subject.current?.meetingId).toBe(accepted.meetingId);
+      expect(subject.meetings.map((meeting) => meeting.meetingId)).toEqual([accepted.meetingId]);
     } finally {
       await close();
     }
@@ -304,69 +340,43 @@ describe("房间 API", () => {
   it("群聊：@alice 定向（正文保留 @）、不 @ / 只 @老板 400、空成员群 400", async () => {
     const { base, close } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
     try {
-      const mentioned = await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "@alice 做视频" }),
-      });
+      const mentioned = await postMessage(base, "group:yt", { text: "@alice 做视频" });
       expect(mentioned.status).toBe(202);
-      const accepted = (await mentioned.json()) as { deliveries: { memberId: string }[] };
+      const accepted = (await mentioned.json()) as { meetingId: string; deliveries: { memberId: string }[] };
       expect(accepted.deliveries.map((d) => d.memberId)).toEqual(["alice"]);
 
-      // 合并视图里老板消息保留 @（成员读历史时能辨认消息原本发给谁）
       const merged = await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/group:yt/messages`);
-        const body = (await res.json()) as { messages: { speaker: unknown; text: string }[] };
-        return body.messages.some((m) => (m.speaker as { kind?: string }).kind === "employee") ? body : undefined;
+        const body = await meetingView(base, accepted.meetingId);
+        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
       });
       expect(merged.messages[0]).toMatchObject({ speaker: { kind: "boss" }, text: "@alice 做视频" });
 
-      const noTargets = await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "全体汇报" }),
-      });
-      expect(noTargets.status).toBe(400);
-      expect(((await noTargets.json()) as { error: string }).error).toBe("消息需要 @ 至少一位群成员");
+      expect((await postMessage(base, "group:yt", { text: "全体汇报" })).status).toBe(400);
+      expect(((await (await postMessage(base, "group:yt", { text: "@老板 收到" })).json()) as { error: string }).error).toBe("消息需要 @ 至少一位群成员");
 
-      const bossOnly = await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "@老板 收到" }),
-      });
-      expect(bossOnly.status).toBe(400);
-
-      // 群成员清空（重写 config 的 members）：仍是合法群 → 400「群还没有成员」
-      writeJsonFile(projectConfigFile(createWorkspace(root), "yt"), { members: [] });
-      const empty = await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "在吗" }),
-      });
+      // 空成员群（项目 config 的 members 为空）：合法群但没人可投 → 400「群还没有成员」
+      writeJsonFile(projectConfigFile(createWorkspace(root), "empty"), { members: [] });
+      const empty = await postMessage(base, "group:empty", { text: "在吗" });
       expect(empty.status).toBe(400);
+      expect(((await empty.json()) as { error: string }).error).toBe("群还没有成员");
     } finally {
       await close();
     }
   });
 
-  it("群聊 @alice @bob：写路径恰广播 1 条库行（store:<seq>），不再按成员会话 N 份回显", async () => {
+  it("群聊 @alice @bob：写路径恰广播 1 条库行（store:<seq>），不按成员会话 N 份回显", async () => {
     const { base, close, events } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
     try {
-      const post = await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "@alice @bob 全体汇报" }),
-      });
+      const post = await postMessage(base, "group:yt", { text: "@alice @bob 全体汇报" });
       expect(post.status).toBe(202);
+      const accepted = (await post.json()) as { meetingId: string };
 
-      await waitFor(async () => (events.some((e) => e.type === "room.message" && e.message.speaker.kind === "boss") ? true : undefined));
-      // 「谁写谁广播」：老板一句 @ 多人 = 1 行 = 1 条广播（旧行为是每个成员会话各回显一条 room.message）。
-      const bossEvents = events.filter((e) => e.type === "room.message" && e.message.speaker.kind === "boss");
+      const broadcast = await waitFor(async () => events.find((e) => e.type === "meeting.message" && e.message.speaker.kind === "boss"));
+      if (broadcast.type !== "meeting.message") throw new Error("缺少老板广播");
+      const bossEvents = events.filter((e) => e.type === "meeting.message" && e.message.speaker.kind === "boss");
       expect(bossEvents).toHaveLength(1);
-      const seq = getStore().listByRoom("group:yt")[0]!.seq;
-      const broadcast = bossEvents[0];
-      if (broadcast?.type !== "room.message") throw new Error("缺少老板广播");
-      // 键与 GET 房间视图 / pin 校验同源（store:<seq>），不是 conv:entry（否则 pin 404）。
+      const seq = getStore().byMeeting(accepted.meetingId)[0]!.seq;
+      expect(broadcast.meetingId).toBe(accepted.meetingId);
       expect(broadcast.message.convId).toBe("store");
       expect(broadcast.message.entryId).toBe(String(seq));
       expect(broadcast.message.text).toBe("@alice @bob 全体汇报");
@@ -375,161 +385,111 @@ describe("房间 API", () => {
     }
   }, 30_000);
 
-  it("老板库行广播附 UI 用 roomMessageId（排队占位据此贴真气泡）；GET 房间视图不带", async () => {
+  it("老板库行广播附 UI 用 messageId（排队占位据此贴真气泡）；GET 会议视图不带", async () => {
     const { base, close, events } = await startWithFaux(["alice"], []);
     try {
-      const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "第一句" }),
-      });
+      const post = await postMessage(base, "dm:alice", { text: "第一句" });
       expect(post.status).toBe(202);
-      const accepted = (await post.json()) as { roomMessageId: string };
+      const accepted = (await post.json()) as { meetingId: string; messageId: string };
 
-      // 广播先于响应：此刻已有老板库行广播。
-      const broadcast = events.find((event) => event.type === "room.message" && event.message.speaker.kind === "boss");
-      if (broadcast?.type !== "room.message") throw new Error("缺少老板广播");
-      // R-P1-11：roomMessageId 不入库；广播时附一个仅 UI 用的副本，
-      // 让 web 的「排队中」占位（web/render.ts 按 roomMessageId 匹配）能贴到这条真气泡上。
-      expect(broadcast.message.roomMessageId).toBe(accepted.roomMessageId);
+      const broadcast = events.find((event) => event.type === "meeting.message" && event.message.speaker.kind === "boss");
+      if (broadcast?.type !== "meeting.message") throw new Error("缺少老板广播");
+      expect(broadcast.message.messageId).toBe(accepted.messageId);
       expect(broadcast.message.entryId).toBe("1");
 
-      // GET 返回的是库行：刷新后排队条已消失，无需匹配 → 不带 roomMessageId。
-      const view = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string; roomMessageId?: string }[] };
+      const view = await meetingView(base, accepted.meetingId);
       expect(view.messages[0]).toMatchObject({ text: "第一句" });
-      expect(view.messages[0]!.roomMessageId).toBeUndefined();
+      expect(view.messages[0]!.messageId).toBeUndefined();
     } finally {
       await close();
     }
   }, 30_000);
 
-  it("新开会话（发送时 newSession）：投递那一刻才建会话、聊天区只剩当前一轮；sessions / 历史 / pins 形状", async () => {
-    const { base, close } = await startWithFaux(["alice"], ["alice"]);
-    try {
-      // 先发一条消息建立链
-      await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "第一轮" }),
-      });
-      await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/dm:alice/messages`);
-        const body = (await res.json()) as { messages: unknown[] };
-        return body.messages.length >= 2 ? body : undefined;
-      });
-
-      const chains = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { memberId: string; rows: { id: string }[] }[] };
-      expect(chains.chains[0]!.memberId).toBe("alice");
-      const firstConv = chains.chains[0]!.rows[0]!.id;
-
-      // 普通发送：复用同一条会话（链不增长）
-      await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "同一条会话里再说一句" }),
-      });
-      const same = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
-      expect(same.chains[0]!.rows).toHaveLength(1);
-
-      // newSession=true：这条消息投递给 alice 时新开会话（旧会话结束、视线清空）
-      const fresh = await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "重新开始", newSession: true }),
-      });
-      expect(fresh.status).toBe(202);
-
-      // 房间视图 = 聊天窗口：新开会话后**上一轮内容从聊天区收起**（库里仍在，历史 / 会话详情可回看）。
-      const roomView = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[]; hidden: number };
-      expect(roomView.messages.map((m) => m.text)).not.toContain("第一轮"); // 上一轮不再显示
-      expect(roomView.messages[0]).toMatchObject({ text: "重新开始" }); // 新一轮从这条开始（后续回复也在窗口里）
-      expect(roomView.hidden).toBeGreaterThanOrEqual(2); // 收起条数（上一轮：提问 + 回复）
-
-      // 刷新 / 重进房间同口径（起点在库里，不是前端临时隐藏）
-      const again = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { text: string }[] };
-      expect(again.messages.map((m) => m.text)).not.toContain("第一轮");
-      expect(again.messages[0]).toMatchObject({ text: "重新开始" });
-
-      // 会话视线：链增长到 2 条，新会话里没有旧内容、只有新一轮
-      const chainsAfter = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
-      const rows = chainsAfter.chains[0]!.rows;
-      expect(rows).toHaveLength(2);
-      const freshConv = rows.at(-1)!.id;
-      expect(freshConv).not.toBe(firstConv);
-      const freshView = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${freshConv}/messages`)).json()) as { messages: { text: string }[] };
-      expect(freshView.messages.map((m) => m.text)).toContain("重新开始");
-      expect(freshView.messages.some((m) => m.text === "第一轮")).toBe(false); // 新会话视线里没有旧内容
-
-      const history = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${firstConv}/messages`)).json()) as { memberId: string; messages: unknown[] };
-      expect(history.memberId).toBe("alice");
-      expect(history.messages.length).toBeGreaterThanOrEqual(2); // 旧会话仍可回看
-
-      // pins：新会话为空 → 红点为 0；此处只验证 /api/pins 接口形状
-      const pins = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(typeof pins.total).toBe("number");
-    } finally {
-      await close();
-    }
-  });
-
-  it("群聊：新开会话后聊天区只剩新一轮（@ 到的成员各开一条，旧内容收起但仍在历史里）", async () => {
-    const { base, close } = await startWithFaux(["alice", "bob"], ["alice", "bob"]);
-    try {
-      const post = (text: string, extra: Record<string, unknown> = {}): Promise<Response> =>
-        fetch(`${base}/api/rooms/group:yt/messages`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text, ...extra }),
-        });
-      const view = async (): Promise<{ messages: { text: string }[]; hidden: number }> =>
-        (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { text: string }[]; hidden: number };
-
-      await post("@alice 第一轮");
-      await waitFor(async () => {
-        const body = await view();
-        return body.messages.length >= 2 ? body : undefined;
-      });
-
-      expect((await post("@alice @bob 第二轮", { newSession: true })).status).toBe(202);
-      const fresh = await view();
-      expect(fresh.messages[0]).toMatchObject({ text: "@alice @bob 第二轮" }); // 群聊按 toIds 重建头部 @
-      expect(fresh.messages.some((m) => m.text.includes("第一轮"))).toBe(false);
-      expect(fresh.hidden).toBeGreaterThanOrEqual(2);
-
-      // alice：两轮 → 两条链行；bob：第二轮才第一次被 @ → 一条（新开会话仍是建了一条）
-      const chains = (await (await fetch(`${base}/api/rooms/group:yt/sessions`)).json()) as {
-        chains: { memberId: string; rows: unknown[] }[];
-      };
-      expect(chains.chains.find((chain) => chain.memberId === "alice")!.rows).toHaveLength(2);
-      expect(chains.chains.find((chain) => chain.memberId === "bob")!.rows).toHaveLength(1);
-    } finally {
-      await close();
-    }
-  }, 30_000);
-
-  it("会话信息：模型全值 / 思考强度 / 上下文用量与窗口；未建会话为空", async () => {
+  it("新建会议：只开新线程，旧会议不结束、随时可继续聊", async () => {
     const { base, close } = await startWithFaux(["alice"], []);
     try {
-      const empty = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/info`)).json()) as { sessions: unknown[] };
-      expect(empty.sessions).toEqual([]);
+      const first = (await (await postMessage(base, "dm:alice", { text: "第一场" })).json()) as { meetingId: string };
+      await waitFor(async () => {
+        const body = await meetingView(base, first.meetingId);
+        return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
+      });
 
-      await fetch(`${base}/api/rooms/dm:alice/messages`, {
+      // 「新建会议」= 第一条消息落定时才建：先发一条带 newMeeting 的消息
+      const freshPost = await postMessage(base, "dm:alice", { text: "第二场", newMeeting: true });
+      expect(freshPost.status).toBe(202);
+      const second = (await freshPost.json()) as { meetingId: string };
+      expect(second.meetingId).not.toBe(first.meetingId);
+
+      const subject = (await (await fetch(`${base}/api/subjects/dm%3Aalice`)).json()) as {
+        current?: { meetingId: string };
+        meetings: { meetingId: string }[];
+      };
+      expect(subject.current?.meetingId).toBe(second.meetingId); // 最新创建的是「当前」
+      expect(subject.meetings).toHaveLength(2);
+      expect(subject.meetings.map((m) => m.meetingId)).toEqual([second.meetingId, first.meetingId]);
+
+      // 旧会议不结束：还能继续聊；新会议从新消息开始
+      const old = await meetingView(base, first.meetingId);
+      expect(old.messages.map((m) => m.text)).toContain("第一场");
+      const next = await meetingView(base, second.meetingId);
+      expect(next.messages[0]).toMatchObject({ text: "第二场" });
+      expect(next.messages.every((m) => !m.text.includes("第一场"))).toBe(true);
+
+      const resumed = await fetch(`${base}/api/meetings/${encodeURIComponent(first.meetingId)}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "你好", requestId: "info-1" }),
+        body: JSON.stringify({ text: "补一句" }),
       });
+      expect(resumed.status).toBe(202);
+      const oldAfter = await meetingView(base, first.meetingId);
+      expect(oldAfter.messages.map((m) => m.text)).toContain("补一句");
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("删除会议：会议行 / 消息 / 会话映射一并清；当前会议回退到上一场", async () => {
+    const { base, close } = await startWithFaux(["alice"], []);
+    try {
+      const first = (await (await postMessage(base, "dm:alice", { text: "留着" })).json()) as { meetingId: string };
+      const second = (await (await postMessage(base, "dm:alice", { text: "要删的", newMeeting: true })).json()) as { meetingId: string };
+
+      const deleted = await fetch(`${base}/api/meetings/${second.meetingId}`, { method: "DELETE" });
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toMatchObject({ ok: true, meetingId: second.meetingId, subjectKey: "dm:alice" });
+
+      expect((await fetch(`${base}/api/meetings/${second.meetingId}`)).status).toBe(404);
+      const subject = (await (await fetch(`${base}/api/subjects/dm%3Aalice`)).json()) as {
+        current?: { meetingId: string };
+        meetings: { meetingId: string }[];
+      };
+      expect(subject.current?.meetingId).toBe(first.meetingId);
+      expect(subject.meetings.map((m) => m.meetingId)).toEqual([first.meetingId]);
+      expect((await meetingView(base, first.meetingId)).messages.map((m) => m.text)).toContain("留着");
+
+      // 删不存在的会议 → 404
+      expect((await fetch(`${base}/api/meetings/mtg_nope`, { method: "DELETE" })).status).toBe(404);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("会话信息：模型全值 / 思考强度 / 上下文用量与窗口；不存在的会议 404", async () => {
+    const { base, close } = await startWithFaux(["alice"], []);
+    try {
+      const accepted = (await (await postMessage(base, "dm:alice", { text: "你好", requestId: "info-1" })).json()) as { meetingId: string };
       const info = await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/dm:alice/sessions/info`);
+        const res = await fetch(`${base}/api/meetings/${accepted.meetingId}/sessions/info`);
         const body = (await res.json()) as { sessions: { memberId: string; model: string; thinkingLevel: string | null; contextUsed: number; contextWindow?: number }[] };
         return body.sessions.length > 0 && body.sessions[0]!.contextUsed > 0 ? body : undefined;
       });
       expect(info.sessions[0]).toMatchObject({
         memberId: "alice",
         model: "faux/faux-model",
-        thinkingLevel: "off", // Pi 默认档（会话实际在用）
+        thinkingLevel: "off",
         contextWindow: 128000,
       });
-      expect((await fetch(`${base}/api/rooms/dm:nobody/sessions/info`)).status).toBe(404);
+      expect((await fetch(`${base}/api/meetings/mtg_nope/sessions/info`)).status).toBe(404);
     } finally {
       await close();
     }
@@ -538,115 +498,78 @@ describe("房间 API", () => {
   it("全局 thinkingLevel 进入新会话；模型不支持该档 → 信息条返回 null", async () => {
     const { base, close } = await startWithFaux(["alice"], [], { thinkingLevel: "high", reasoning: false });
     try {
-      await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "你好", requestId: "info-2" }),
-      });
+      const accepted = (await (await postMessage(base, "dm:alice", { text: "你好", requestId: "info-2" })).json()) as { meetingId: string };
       const info = await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/dm:alice/sessions/info`);
+        const res = await fetch(`${base}/api/meetings/${accepted.meetingId}/sessions/info`);
         const body = (await res.json()) as { sessions: { thinkingLevel: string | null; contextUsed: number }[] };
         return body.sessions.length > 0 && body.sessions[0]!.contextUsed > 0 ? body : undefined;
       });
-      expect(info.sessions[0]!.thinkingLevel).toBeNull(); // 非推理模型只支持 off；不回落、不显示 high
+      expect(info.sessions[0]!.thinkingLevel).toBeNull();
     } finally {
       await close();
     }
   });
 
-  it("会话标题：sessions / info 下发 title；PATCH 改名成功且走 manual；400 / 404 边界", async () => {
+  it("会议标题：subject 下发 title；PATCH 改名走 manual 并广播；400 / 404 边界", async () => {
     const { base, close, events } = await startWithFaux(["alice"], []);
     try {
-      await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "帮我看看登录", requestId: "title-1" }),
-      });
-      // 新会话大概率已落时间标题（无 namer 时只有 fallback）；不管哪种，都有标题。
-      const chains = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string; title?: string; titleSource?: string }[] }[] };
-      const convId = chains.chains[0]!.rows[0]!.id;
-      expect(chains.chains[0]!.rows[0]!.title).toBeTruthy();
+      const accepted = (await (await postMessage(base, "dm:alice", { text: "帮我看看登录", requestId: "title-1" })).json()) as { meetingId: string };
 
-      const info = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/info`)).json()) as { sessions: { convId: string; title?: string }[] };
-      expect(info.sessions[0]!.title).toBeTruthy();
+      const subject = (await (await fetch(`${base}/api/subjects/dm%3Aalice`)).json()) as { meetings: { title?: string }[] };
+      expect(subject.meetings[0]!.title).toBeTruthy();
 
-      const patched = await fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/title`, {
+      const patched = await fetch(`${base}/api/meetings/${accepted.meetingId}/title`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "  我自己改的  " }),
       });
       expect(patched.status).toBe(200);
-      expect(await patched.json()).toMatchObject({ convId, title: "我自己改的", titleSource: "manual" });
-      expect(getSessions().get(convId)).toMatchObject({ title: "我自己改的", titleSource: "manual" });
-      expect(events.some((event) => event.type === "session.title" && event.convId === convId)).toBe(true);
+      expect(await patched.json()).toEqual({ meetingId: accepted.meetingId, title: "我自己改的", titleSource: "manual" });
+      expect(getMeetings().get(accepted.meetingId)).toMatchObject({ title: "我自己改的", titleSource: "manual" });
+      expect(events.some((event) => event.type === "meeting.title" && event.meetingId === accepted.meetingId && event.title === "我自己改的")).toBe(true);
 
-      const after = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { title?: string }[] }[] };
-      expect(after.chains[0]!.rows[0]!.title).toBe("我自己改的");
+      const after = (await (await fetch(`${base}/api/subjects/dm%3Aalice`)).json()) as { meetings: { title?: string }[] };
+      expect(after.meetings[0]!.title).toBe("我自己改的");
 
-      // 员工维度的会话列表 / 会话详情也带标题（会话详情面板与侧栏辇取）。
-      const employeeSessions = (await (await fetch(`${base}/api/employees/alice/sessions`)).json()) as { sessions: { convId: string; title?: string }[] };
-      expect(employeeSessions.sessions[0]!.title).toBe("我自己改的");
-      const contextView = (await (await fetch(`${base}/api/employees/alice/sessions/${convId}/context`)).json()) as { title?: string };
-      expect(contextView.title).toBe("我自己改的");
-
-      const patch = (body: unknown) => fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/title`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      expect((await patch({ title: "   " })).status).toBe(400);
-      expect((await patch({ title: "字".repeat(41) })).status).toBe(400);
-      expect((await patch({})).status).toBe(400);
-      expect((await fetch(`${base}/api/rooms/dm:alice/sessions/conv_nope/title`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "随便" }),
-      })).status).toBe(404);
+      const patch = (meetingId: string, body: unknown) =>
+        fetch(`${base}/api/meetings/${meetingId}/title`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      expect((await patch(accepted.meetingId, { title: "   " })).status).toBe(400);
+      expect((await patch(accepted.meetingId, { title: "字".repeat(41) })).status).toBe(400);
+      expect((await patch(accepted.meetingId, {})).status).toBe(400);
+      expect((await patch("mtg_nope", { title: "随便" })).status).toBe(404);
     } finally {
       await close();
     }
   });
 
-  it("interrupt：房间级中断返回 aborted（无在跑也 200）；不存在的房间 404", async () => {
+  it("interrupt：会议级中断返回 aborted（无在跑也 200）；不存在的会议 404", async () => {
     const { base, close } = await startWithFaux(["alice"], []);
     try {
-      const res = await fetch(`${base}/api/rooms/dm:alice/interrupt`, { method: "POST" });
+      const accepted = (await (await postMessage(base, "dm:alice", { text: "你好" })).json()) as { meetingId: string };
+      const res = await fetch(`${base}/api/meetings/${accepted.meetingId}/interrupt`, { method: "POST" });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { aborted: string[] };
       expect(Array.isArray(body.aborted)).toBe(true);
-      expect(body.aborted).toEqual([]); // 尚未建会话
-      expect((await fetch(`${base}/api/rooms/dm:nobody/interrupt`, { method: "POST" })).status).toBe(404);
+      expect((await fetch(`${base}/api/meetings/mtg_nope/interrupt`, { method: "POST" })).status).toBe(404);
     } finally {
       await close();
     }
   });
 
-  it("不存在的房间 404", async () => {
+  it("不存在的主题 404；主题键 / 会议 id 畸形编码 404", async () => {
     const { base, close } = await startWithFaux([], []);
     try {
-      expect((await fetch(`${base}/api/rooms/dm:nobody/messages`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/group:none/messages`)).status).toBe(404);
-    } finally {
-      await close();
-    }
-  });
+      expect((await fetch(`${base}/api/subjects/dm%3Anobody/messages`)).status).toBe(404);
+      expect((await fetch(`${base}/api/subjects/group%3Anone/messages`)).status).toBe(404);
+      expect((await fetch(`${base}/api/subjects/dm%3A..%2F..%2F..%2Fetc/messages`)).status).toBe(404);
+      expect((await fetch(`${base}/api/meetings/%2E%2E%2Fetc/messages`)).status).toBe(404);
 
-  it("房间键路径穿越（编码分隔符/点开头/畸形编码）一律 404", async () => {
-    const { base, close } = await startWithFaux(["alice"], ["alice"]);
-    try {
-      // %2F 编码的 ../ 穿越：不得泄露父目录存在性，也不得回读任意目录的会话链
-      expect((await fetch(`${base}/api/rooms/dm:..%2F..%2F..%2F..%2Fetc/messages`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/dm:..%2F..%2F..%2F..%2Fetc/sessions`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/group:..%2F..%2F..%2Fyt/messages`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/dm:%2E%2E/messages`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/dm:.hidden/messages`)).status).toBe(404);
-      // 深度穿越：20 层 .. 归一化到 /etc（真实存在）——修复前是存在性预言机（200），修复后恒 404
-      const deepEscape = `dm:${"..%2F".repeat(20)}etc`;
-      expect((await fetch(`${base}/api/rooms/${deepEscape}/messages`)).status).toBe(404);
-      expect((await fetch(`${base}/api/rooms/${deepEscape}/sessions`)).status).toBe(404);
-      // 畸形百分号编码：404 而非 500
       const malformed = await new Promise<number>((resolve) => {
-        const req = http.request({ host: "127.0.0.1", port: new URL(base).port, path: "/api/rooms/dm:%ZZ/messages" }, (res) => {
+        const req = http.request({ host: "127.0.0.1", port: new URL(base).port, path: "/api/subjects/dm:%ZZ/messages" }, (res) => {
           res.resume();
           resolve(res.statusCode ?? 0);
         });
@@ -658,31 +581,21 @@ describe("房间 API", () => {
     }
   });
 
-  it("pin 闭环：新消息红点 0 → pin 一条 → 1 → 取消 → 0；不存在的消息 404", async () => {
+  it("pin 闭环：pin 一条 → 主题红点 1 → 取消 → 0；不存在的消息 404", async () => {
     const { base, close } = await startWithFaux(["alice"], []);
     try {
-      const post = await fetch(`${base}/api/rooms/dm:alice/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "请回答" }),
-      });
-      expect(post.status).toBe(202);
+      const accepted = (await (await postMessage(base, "dm:alice", { text: "请回答" })).json()) as { meetingId: string };
 
       const merged = await waitFor(async () => {
-        const res = await fetch(`${base}/api/rooms/dm:alice/messages`);
-        const body = (await res.json()) as {
-          messages: { convId: string; entryId: string; speaker: { kind: string } }[];
-          pinned: string[];
-        };
+        const body = await meetingView(base, accepted.meetingId);
         return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
       });
-      // 新消息默认未 pin：红点为 0
       expect(merged.pinned).toEqual([]);
-      const before = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(before.rooms["dm:alice"] ?? 0).toBe(0);
+      const before = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; subjects: Record<string, number> };
+      expect(before.subjects["dm:alice"] ?? 0).toBe(0);
 
       const employee = merged.messages.find((m) => m.speaker.kind === "employee")!;
-      const pin = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+      const pin = await fetch(`${base}/api/meetings/${accepted.meetingId}/pin`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ convId: employee.convId, entryId: employee.entryId, pinned: true }),
@@ -690,27 +603,25 @@ describe("房间 API", () => {
       expect(pin.status).toBe(200);
       expect((await pin.json()) as { ok: boolean; count: number }).toMatchObject({ ok: true, count: 1 });
 
-      const after = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(after.rooms["dm:alice"]).toBe(1);
+      const after = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; subjects: Record<string, number> };
+      expect(after.subjects["dm:alice"]).toBe(1);
 
-      // messages GET 透出当前房间的 pin 集合（前端据此高亮）
-      const merged2 = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { pinned: string[] };
+      const merged2 = await meetingView(base, accepted.meetingId);
       expect(merged2.pinned).toEqual([`${employee.convId}:${employee.entryId}`]);
 
-      const unpin = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+      const unpin = await fetch(`${base}/api/meetings/${accepted.meetingId}/pin`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ convId: employee.convId, entryId: employee.entryId, pinned: false }),
       });
       expect((await unpin.json()) as { count: number }).toMatchObject({ count: 0 });
-      const cleared = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; rooms: Record<string, number> };
-      expect(cleared.rooms["dm:alice"] ?? 0).toBe(0);
+      const cleared = (await (await fetch(`${base}/api/pins`)).json()) as { total: number; subjects: Record<string, number> };
+      expect(cleared.subjects["dm:alice"] ?? 0).toBe(0);
 
-      // 视图里不存在的消息 → 404（不往 pin 存储里塞垃圾）
-      const ghost = await fetch(`${base}/api/rooms/dm:alice/pin`, {
+      const ghost = await fetch(`${base}/api/meetings/${accepted.meetingId}/pin`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ convId: "nope", entryId: "999", pinned: true }),
+        body: JSON.stringify({ convId: "store", entryId: "999", pinned: true }),
       });
       expect(ghost.status).toBe(404);
     } finally {
@@ -721,16 +632,11 @@ describe("房间 API", () => {
   it("称谓自定义：群回复 fallback 用真称谓（@掌柜）", async () => {
     const { base, close } = await startWithFaux(["alice"], ["alice"], { bossName: "掌柜" });
     try {
-      // status 是 UI 发言人名的真相源：自定义称谓必须透出（读盘，不是硬编码默认值）
       const status = (await (await fetch(`${base}/api/status`)).json()) as { bossName: string };
       expect(status.bossName).toBe("掌柜");
-      await fetch(`${base}/api/rooms/group:yt/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "@alice 你好" }),
-      });
+      const accepted = (await (await postMessage(base, "group:yt", { text: "@alice 你好" })).json()) as { meetingId: string };
       const merged = await waitFor(async () => {
-        const body = (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { speaker: { kind: string }; text: string }[] };
+        const body = await meetingView(base, accepted.meetingId);
         return body.messages.some((m) => m.speaker.kind === "employee") ? body : undefined;
       });
       expect(merged.messages.some((m) => m.text === "@掌柜 收到0")).toBe(true);
@@ -771,11 +677,11 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
       add: () => ({ pending: 0, close: () => {} }),
       size: 0,
     } as unknown as SseHub;
-    // 房间视图改读自有库：agent 回复要靠 pump 落库（对齐 main.ts 的接线）。
-    const pump = new Pump({ ws, harness, hub, store: getStore(), sessions: getSessions() });
+    const pump = new Pump({ ws, harness, hub, store: getStore(), meetings: getMeetings(), sessions: getSessions() });
     const server = createHttpServer({
       ws,
       store: getStore(),
+      meetings: getMeetings(),
       sessions: getSessions(),
       getConfig: () => configured,
       getHarness: () => harness,
@@ -800,15 +706,11 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
   }
 
   function post(base: string, body: unknown): Promise<Response> {
-    return fetch(`${base}/api/rooms/dm:alice/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    return postMessage(base, "dm:alice", body as Record<string, unknown>);
   }
 
-  async function room(base: string): Promise<{ messages: { text: string }[]; queued: { text: string; roomMessageId: string; memberId: string }[] }> {
-    return (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as never;
+  async function room(base: string, meetingId: string): Promise<MeetingViewBody> {
+    return meetingView(base, meetingId);
   }
 
   it("员工在跑：第二条以 queued 返回 + 进待发表 + 广播；撤回后不再投递", async () => {
@@ -816,98 +718,85 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
     try {
       const first = await post(base, { text: "第一轮" });
       expect(first.status).toBe(202);
-      expect(((await first.json()) as { deliveries: { status: string }[] }).deliveries[0]!.status).toBe("placed");
+      const firstBody = (await first.json()) as { meetingId: string; deliveries: { status: string }[] };
+      expect(firstBody.deliveries[0]!.status).toBe("placed");
 
       const second = await post(base, { text: "第二条" });
       expect(second.status).toBe(202);
-      const accepted = (await second.json()) as { roomMessageId: string; deliveries: { status: string; submissionId: string }[] };
-      expect(accepted.deliveries[0]!.status).toBe("queued"); // 员工在跑 → 进了 Pi 的 inbox
+      const accepted = (await second.json()) as { meetingId: string; messageId: string; deliveries: { status: string; submissionId: string }[] };
+      expect(accepted.deliveries[0]!.status).toBe("queued");
 
-      await waitFor(async () => (events.some((e) => e.type === "room.queued") ? true : undefined));
-      const queuedEvent = events.find((e) => e.type === "room.queued");
-      expect(queuedEvent?.type === "room.queued" ? queuedEvent.item : undefined).toMatchObject({
+      const queuedEvent = await waitFor(async () => events.find((e) => e.type === "meeting.queued"));
+      expect(queuedEvent.type === "meeting.queued" ? queuedEvent.item : undefined).toMatchObject({
         submissionId: accepted.deliveries[0]!.submissionId,
         memberId: "alice",
-        roomMessageId: accepted.roomMessageId,
+        messageId: accepted.messageId,
         text: "第二条",
       });
 
-      // 消息区拿得到排队态（刷新 / 换标签页一致）；老板消息发送即落自有库 → 房间视图里也在
-      const withQueued = await room(base);
+      const withQueued = await room(base, accepted.meetingId);
       expect(withQueued.queued.map((item) => item.text)).toEqual(["第二条"]);
       expect(withQueued.messages.map((m) => m.text)).toEqual(["第一轮", "第二条"]);
 
-      // 单条撤回：撤掉这条消息里还没开始的投递，广播出队
-      const cancel = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+      const cancel = await fetch(`${base}/api/meetings/${accepted.meetingId}/queue/cancel`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ roomMessageId: accepted.roomMessageId }),
+        body: JSON.stringify({ messageId: accepted.messageId }),
       });
       expect(cancel.status).toBe(200);
       expect(((await cancel.json()) as { cancelled: string[] }).cancelled).toEqual([accepted.deliveries[0]!.submissionId]);
-      expect(events.some((e) => e.type === "room.dequeued" && e.reason === "cancelled")).toBe(true);
+      expect(events.some((e) => e.type === "meeting.dequeued" && e.reason === "cancelled")).toBe(true);
 
-      const cleared = await room(base);
-      expect(cleared.queued).toEqual([]);
+      expect((await room(base, accepted.meetingId)).queued).toEqual([]);
 
-      // 撤回的输入绝不投递：放开第一轮后，**会话 transcript** 里只有第一轮与其回复
-      // （自有库里那条老板行只是「发送记录」，不代表已投递）。
+      // 撤回的输入绝不投递：放开第一轮后，该会话 transcript 里只有第一轮与其回复
       release();
-      await waitFor(async () => ((await room(base)).messages.some((m) => m.text === "第一轮回复") ? true : undefined));
-      const chains = (await (await fetch(`${base}/api/rooms/dm:alice/sessions`)).json()) as { chains: { rows: { id: string }[] }[] };
-      const convId = chains.chains[0]!.rows.at(-1)!.id;
-      const history = (await (await fetch(`${base}/api/rooms/dm:alice/sessions/${convId}/messages`)).json()) as { messages: { text: string }[] };
+      await waitFor(async () => ((await room(base, accepted.meetingId)).messages.some((m) => m.text === "第一轮回复") ? true : undefined));
+      const participants = (await (await fetch(`${base}/api/meetings/${accepted.meetingId}/sessions`)).json()) as {
+        participants: { memberId: string; convId?: string }[];
+      };
+      const convId = participants.participants[0]!.convId!;
+      const history = (await (await fetch(`${base}/api/meetings/${accepted.meetingId}/sessions/${convId}/messages`)).json()) as { messages: { text: string }[] };
       expect(history.messages.map((m) => m.text)).toEqual(["第一轮", "第一轮回复"]);
-      const after = await room(base);
-      expect(after.queued).toEqual([]);
     } finally {
       await close();
     }
   }, 30_000);
 
-  it("GET 房间：仍在排队的库行回填 roomMessageId（与 SSE 同口径），渲染不出重复气泡", async () => {
+  it("GET 会议：仍在排队的库行回填 messageId（与 SSE 同口径），渲染不出重复气泡", async () => {
     const { base, close, release } = await startQueued();
     try {
-      await post(base, { text: "第一轮" });
+      const first = (await (await post(base, { text: "第一轮" })).json()) as { meetingId: string };
       const second = await post(base, { text: "第二条" });
-      const accepted = (await second.json()) as { roomMessageId: string; deliveries: { status: string }[] };
-      expect(accepted.deliveries[0]!.status).toBe("queued"); // 员工在跑 → 该条投递仍在排队
+      const accepted = (await second.json()) as { messageId: string; deliveries: { status: string }[] };
+      expect(accepted.deliveries[0]!.status).toBe("queued");
 
-      const view = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as {
-        messages: RoomMessage[];
-        pinned: string[];
-        queued: QueuedItemView[];
-      };
-      // F1：刷新 / 换标签页 / 首次进房走 GET，仍在排队的库行要回填 roomMessageId（此前不带 →
-      // 真气泡 + `msg boss queued` 灰占位两条）；没有排队的库行（第一轮已投递）不带。
-      expect(view.messages.find((m) => m.text === "第二条")!.roomMessageId).toBe(accepted.roomMessageId);
-      expect(view.messages.find((m) => m.text === "第一轮")!.roomMessageId).toBeUndefined();
+      const view = await room(base, first.meetingId);
+      expect(view.messages.find((m) => m.text === "第二条")!.messageId).toBe(accepted.messageId);
+      expect(view.messages.find((m) => m.text === "第一轮")!.messageId).toBeUndefined();
 
-      // 等价断言：拿 GET 载荷交给 UI 渲染，老板气泡恰两个（第一轮 + 第二条），无独立灰占位。
       const html = messagesHtml(view.messages, "老板", view.pinned, view.queued);
       expect(html.match(/class="msg boss/g)).toHaveLength(2);
       expect(html).not.toContain('class="msg boss queued"');
     } finally {
-      release(); // 放行卡住的第一轮，否则 harness.close() 挂着
+      release();
       await close();
     }
   }, 30_000);
 
-  it("撤不回已开始投递的：409 + 明确文案；roomMessageId 必填 400", async () => {
+  it("撤不回已开始投递的：409 + 明确文案；messageId 必填 400", async () => {
     const { base, close, release } = await startQueued();
     try {
-      const first = await post(base, { text: "第一轮" });
-      const accepted = (await first.json()) as { roomMessageId: string };
-      // 这条已经 placed（员工空闲 → 直接进 transcript）→ 撤不回
-      const conflict = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+      const first = (await (await post(base, { text: "第一轮" })).json()) as { meetingId: string; messageId: string };
+      const conflict = await fetch(`${base}/api/meetings/${first.meetingId}/queue/cancel`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ roomMessageId: accepted.roomMessageId }),
+        body: JSON.stringify({ messageId: first.messageId }),
       });
       expect(conflict.status).toBe(409);
       expect(((await conflict.json()) as { error: string }).error).toContain("撤不回");
 
-      const missing = await fetch(`${base}/api/rooms/dm:alice/queue/cancel`, {
+      const missing = await fetch(`${base}/api/meetings/${first.meetingId}/queue/cancel`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -921,17 +810,19 @@ describe("待发队列 API（排队中了要看得见、可单条撤回）", () 
 });
 
 describe("授权请求 API", () => {
-  it("GET 列表（新在前、带 agentName）；accept 写权限并投递「已完成授权」；处理后列表清空", async () => {
+  it("GET 列表（新在前、带 agentName/来源）；accept 写权限并投递「已完成授权」；处理后列表清空", async () => {
     const { base, close, store } = await startWithFaux(["alice"], []);
     try {
       const target = path.join(root, "outside", "shared");
-      const added = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [target], reason: "要写共享目录" });
+      const ws = createWorkspace(root);
+      const meeting = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "dm", employeeId: "alice" }, new Date());
+      const { request: added } = store.add({ agentId: "alice", meetingId: meeting.meetingId, tools: ["write"], paths: [target], reason: "要写共享目录" });
 
       const list = (await (await fetch(`${base}/api/permission-requests`)).json()) as {
-        requests: { id: string; agentName: string; paths: string[]; reason: string }[];
+        requests: { id: string; agentName: string; where: string; paths: string[]; reason: string }[];
       };
       expect(list.requests).toHaveLength(1);
-      expect(list.requests[0]).toMatchObject({ id: added.id, agentName: "爱丽丝", paths: [target], reason: "要写共享目录" });
+      expect(list.requests[0]).toMatchObject({ id: added.id, agentName: "爱丽丝", where: "私聊 · 爱丽丝", paths: [target], reason: "要写共享目录" });
 
       const resolve = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
         method: "POST",
@@ -946,7 +837,7 @@ describe("授权请求 API", () => {
           .permissions?.write,
       ).toEqual([target]);
       await waitFor(async () => {
-        const body = (await (await fetch(`${base}/api/rooms/dm:alice/messages`)).json()) as { messages: { speaker: { kind: string }; text: string }[] };
+        const body = await meetingView(base, meeting.meetingId);
         return body.messages.some((m) => m.speaker.kind === "boss" && m.text === "已完成授权") ? body : undefined;
       });
       const after = (await (await fetch(`${base}/api/permission-requests`)).json()) as { requests: unknown[] };
@@ -959,7 +850,9 @@ describe("授权请求 API", () => {
   it("群聊 accept：消息以 @alice 已完成授权 开头（只触发该成员）", async () => {
     const { base, close, store } = await startWithFaux(["alice"], ["alice"]);
     try {
-      const added = store.add({ agentId: "alice", roomKey: "group:yt", paths: [path.join(root, "outside")], reason: "r" });
+      const ws = createWorkspace(root);
+      const meeting = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "group", project: "yt" }, new Date());
+      const { request: added } = store.add({ agentId: "alice", meetingId: meeting.meetingId, tools: ["write"], paths: [path.join(root, "outside")], reason: "r" });
       const resolve = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -967,7 +860,7 @@ describe("授权请求 API", () => {
       });
       expect(resolve.status).toBe(200);
       const merged = await waitFor(async () => {
-        const body = (await (await fetch(`${base}/api/rooms/group:yt/messages`)).json()) as { messages: { text: string }[] };
+        const body = await meetingView(base, meeting.meetingId);
         return body.messages.some((m) => m.text === "@alice 已完成授权") ? body : undefined;
       });
       expect(merged.messages.some((m) => m.text === "@alice 已完成授权")).toBe(true);
@@ -979,7 +872,9 @@ describe("授权请求 API", () => {
   it("reject 不写文件；未知 id 404；非法 decision 400", async () => {
     const { base, close, store } = await startWithFaux(["alice"], []);
     try {
-      const added = store.add({ agentId: "alice", roomKey: "dm:alice", paths: [path.join(root, "outside")], reason: "r" });
+      const ws = createWorkspace(root);
+      const meeting = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "dm", employeeId: "alice" }, new Date());
+      const { request: added } = store.add({ agentId: "alice", meetingId: meeting.meetingId, tools: ["write"], paths: [path.join(root, "outside")], reason: "r" });
       const reject = await fetch(`${base}/api/permission-requests/${added.id}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1019,10 +914,13 @@ describe("员工会话上下文 API", () => {
       projects: [{ id: "yt", alias: "油管", members: ["alice"] }, { id: "seo", members: ["bob"] }],
     });
     const ws = createWorkspace(root);
+    const dm = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "dm", employeeId: "alice" }, new Date());
+    const yt = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "group", project: "yt" }, new Date());
+    const seo = ensureMeeting({ ws, meetings: getMeetings() }, { kind: "group", project: "seo" }, new Date());
     const seeded = getSessions();
-    seeded.open({ convId: "conv_dm", room: "dm:alice", memberId: "alice", kind: "dm", now: "2026-10-25T10:00:00+08:00" });
-    seeded.open({ convId: "conv_yt", room: "group:yt", memberId: "alice", kind: "group", now: "2026-10-25T10:01:00+08:00" });
-    seeded.open({ convId: "conv_bob", room: "group:seo", memberId: "bob", kind: "group", now: "2026-10-25T10:02:00+08:00" });
+    seeded.open({ convId: "conv_dm", meetingId: dm.meetingId, memberId: "alice", started: "2026-10-25T10:00:00+08:00" });
+    seeded.open({ convId: "conv_yt", meetingId: yt.meetingId, memberId: "alice", started: "2026-10-25T10:01:00+08:00" });
+    seeded.open({ convId: "conv_bob", meetingId: seo.meetingId, memberId: "bob", started: "2026-10-25T10:02:00+08:00" });
 
     const harness = {
       sessionUsage: async (convId: string) => ({
@@ -1057,14 +955,16 @@ describe("员工会话上下文 API", () => {
       expect(list.employee).toEqual({ id: "alice", alias: "爱丽丝" });
       expect(list.sessions.map((session) => session["convId"])).toEqual(["conv_yt", "conv_dm"]);
       expect(list.sessions[0]).toMatchObject({
-        kind: "group", projectId: "yt", projectAlias: "油管", running: true, model: "faux/faux-model", contextUsed: 20,
+        kind: "group", subjectKey: "group:yt", projectId: "yt", projectAlias: "油管", running: true, model: "faux/faux-model", contextUsed: 20,
       });
 
       const context = (await (await fetch(`${base}/api/employees/alice/sessions/conv_dm/context`)).json()) as {
         instructions: string;
         items: { role: string; text: string }[];
+        subjectKey: string;
       };
       expect(context.instructions).toContain("你是 alice。");
+      expect(context.subjectKey).toBe("dm:alice");
       expect(context.items).toEqual([{ role: "user", text: "问题 conv_dm" }]);
 
       expect((await fetch(`${base}/api/employees/nobody/sessions`)).status).toBe(404);
@@ -1113,12 +1013,10 @@ describe("定义文件 API（侧栏 {} 按钮）", () => {
       expect(project.file).toBe(path.join("projects", "yt.project.config.json"));
       expect(project.text).toContain("油管");
 
-      // 不存在 / 越界 / 未知 scope：一律 404，不燸路径
-      expect((await fetch(`${base}/api/config?scope=agent&id=nobody`)).status).toBe(404);
-      expect((await fetch(`${base}/api/config?scope=project&id=${encodeURIComponent("../secret.txt")}`)).status).toBe(404);
-      expect((await fetch(`${base}/api/config?scope=department&id=${encodeURIComponent("../..")}`)).status).toBe(404);
-      expect((await fetch(`${base}/api/config?scope=bogus&id=alice`)).status).toBe(404);
-      expect((await fetch(`${base}/api/config?scope=project&id=a/b`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=agent&id=ghost`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=agent&id=..%2Fbob`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=project&id=..%2F..%2Fetc`)).status).toBe(404);
+      expect((await fetch(`${base}/api/config?scope=nope&id=alice`)).status).toBe(404);
     } finally {
       await close();
     }

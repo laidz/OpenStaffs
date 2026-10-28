@@ -1,7 +1,5 @@
 import fs from "node:fs";
 import { workDir, type Workspace } from "../domain/paths.ts";
-import { listProjects } from "../domain/project.ts";
-import { parseMembers, type AccessContext } from "../domain/access-control.ts";
 import { displayThinkingLevel, formatModelRef, readSkillPaths, resolveEmployeeModel, type WorkspaceConfig } from "../domain/config.ts";
 import { loadEmployee, type Employee } from "../domain/employee.ts";
 import type { McpSessionResolver } from "../domain/mcp.ts";
@@ -16,20 +14,18 @@ import { loadAgentConfig, loadProjectConfig } from "../config/load.ts";
 import { effectivePermissions } from "../permissions/effective.ts";
 import { runtimeGrantsFor } from "../permissions/runtime.ts";
 import type { HarnessPort, ConversationSpec } from "../harness/port.ts";
-import type { SessionRecord, SessionStore } from "../store/sessions.ts";
-import { parseRoomKey, roomKeyOf } from "./rooms.ts";
+import type { MeetingRecord, MeetingStore } from "../store/meetings.ts";
+import type { SessionStore } from "../store/sessions.ts";
+import { participantIds, subjectOf, subjectsOfEmployee } from "./meetings.ts";
 
 export type { Relation };
 
-/** 会话的快照行（查询 / 列表中返回的那一行）。 */
-export type SessionRow = SessionRecord;
-
-/** 队列 / 锁用的键（群聊按「群 + 成员」；与房间键不同：房间键不含成员）。 */
-export function relationKey(relation: Relation, speakerId: string): string {
-  return relation.kind === "dm" ? `dm:${relation.employeeId}` : `group:${relation.project}:${speakerId}`;
+/** 队列 / 锁用的键：一场会议里每个成员一条队列。 */
+export function queueKey(meetingId: string, memberId: string): string {
+  return `${meetingId}:${memberId}`;
 }
 
-/** 会话工作目录 = **agent 自己的工作目录**（D25/D27：项目没有工作目录）。 */
+/** 会话工作目录 = **agent 自己的工作目录**（项目没有工作目录）。 */
 export function relationCwd(ws: Workspace, _relation: Relation, speakerId: string): string {
   return workDir(ws, speakerId);
 }
@@ -63,8 +59,13 @@ export function instructionsFor(ws: Workspace, relation: Relation, speaker: Empl
   return parts.filter((part) => part.trim() !== "").join("\n\n");
 }
 
-/** 会话访问上下文：落盘路线（项目 → 员工，D11）+ 运行时授予（D13）；路径均为绝对路径。 */
-export function accessFor(ws: Workspace, relation: Relation, speaker: Employee): AccessContext {
+/** 会话访问上下文：落盘路线（项目 → 员工）+ 运行时授予；路径均为绝对路径。 */
+export function accessFor(ws: Workspace, relation: Relation, speaker: Employee): {
+  root: string;
+  cwd: string;
+  selfId: string;
+  permissions: ReturnType<typeof effectivePermissions>;
+} {
   const cwd = relationCwd(ws, relation, speaker.id);
   const agentConfig = loadAgentConfig(speaker.dir, speaker.id);
   const projectConfig = relation.kind === "group" ? loadProjectConfig(ws, relation.project) : undefined;
@@ -98,10 +99,11 @@ function ensureCwd(cwd: string): string {
 }
 
 function specFor(
-  ws: Workspace, relation: Relation, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
+  ws: Workspace, meeting: MeetingRecord, speaker: Employee, defaults?: SessionDefaults, mcp?: McpSessionResolver,
 ): ConversationSpec {
+  const relation = subjectOf(meeting);
   if (relation.kind === "dm" && speaker.id !== relation.employeeId) {
-    throw new Error(`私聊关系与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
+    throw new Error(`私聊会议与发言人不一致: ${relation.employeeId} ≠ ${speaker.id}`);
   }
   const cwd = ensureCwd(relationCwd(ws, relation, speaker.id));
   const model = resolveEmployeeModel(defaults?.model ?? "", speaker.model);
@@ -111,8 +113,9 @@ function specFor(
   const mcpExtensions = mcp?.extensionsFor(assembleCapabilities(scopesFor(ws, relation, speaker)).mcp) ?? [];
   return {
     cwd,
-    // 房间归属随会话快照固化：工具层（room_history / send_message / request_permission）靠它判断
-    // 「我在群聊还是私聊」——群聊与私聊共用同一个 cwd，不能靠 cwd 推。
+    meetingId: meeting.meetingId,
+    // 会议归属随会话快照固化：工具层（meeting_history / send_message / request_permission）靠它判断
+    // 「我在哪场会议」——relation 只是 prompt / 权限的装配依据，不承担投递路由。
     relation,
     // 技能清单与 MCP 选择随会话快照固化：这里读一次（新开会话才重读）
     instructions: instructionsFor(ws, relation, speaker),
@@ -127,104 +130,57 @@ function specFor(
 export type SessionDeps = {
   ws: Workspace;
   harness: HarnessPort;
-  /** 会话表（唯一真相：convId ↔ 房间 ↔ 主人）。 */
+  /** 会话表（唯一真相：convId ↔ 会议 ↔ 成员）。 */
   sessions: SessionStore;
   defaults?: SessionDefaults;
   mcp?: McpSessionResolver;
 };
 
 /**
- * **唯一的会话解析入口**：`(room, memberId)` → convId。
- * - 会话表里该 owner 有活跃行、且 Pi 那边能 attach → 复用（`created: false`）；
- * - 否则新建一条 Pi 会话并登记进会话表（`created: true`）；同 owner 的旧活跃行在同事务里 ended。
- * - `newSession: true` = 显式重开（跳过复用）。
+ * **唯一的会话解析入口**：`(会议, 成员)` → convId。
+ * - 该成员在这场会议里已有 conv、且 Pi 那边能 attach → 复用（`created: false`）；
+ * - 否则新建一条 Pi 会话并登记进会话表（`created: true`）；同 (会议, 成员) 的旧映射被 UPSERT 覆盖。
  *
- * 房间 + 主人是会话身份的两根锚：老板发消息、授权结果投递、群回复触发、员工工具（send_message / new_session）
- * 全部走这里，**没有任何一层再自己拼「我在哪个会话」**。
+ * 会议 + 成员是会话身份的两根锚：老板发消息、授权结果投递、群回复触发、员工工具全部走这里，
+ * **没有任何一层再自己拼「我在哪场会议」**。
  */
 export async function resolveSession(
   deps: SessionDeps,
-  room: string,
+  meeting: MeetingRecord,
   memberId: string,
-  options: { newSession?: boolean } = {},
 ): Promise<OpenResult> {
-  const relation = parseRoomKey(room);
-  if (relation === undefined) throw new Error(`房间键不合法：${room}`);
+  const relation = subjectOf(meeting);
   const speaker = loadEmployee(deps.ws, memberId);
-  if (options.newSession !== true) {
-    const active = deps.sessions.active(room, memberId);
-    if (active !== undefined && (await deps.harness.attach(active.convId, accessFor(deps.ws, relation, speaker), relation))) {
-      return { convId: active.convId, created: false };
+  const existing = deps.sessions.convOf(meeting.meetingId, memberId);
+  if (existing !== undefined) {
+    if (await deps.harness.attach(existing.convId, accessFor(deps.ws, relation, speaker), relation, meeting.meetingId)) {
+      return { convId: existing.convId, created: false };
     }
+    // Pi 那边已不存在（坏 conv）：只重建这一条，其余成员与该会议不受影响。
+    deps.sessions.remove(existing.convId);
   }
-  const convId = await deps.harness.startSession(specFor(deps.ws, relation, speaker, deps.defaults, deps.mcp));
-  deps.sessions.open({ convId, room, memberId, kind: relation.kind, now: new Date().toISOString() });
+  const convId = await deps.harness.startSession(specFor(deps.ws, meeting, speaker, deps.defaults, deps.mcp));
+  deps.sessions.open({ convId, meetingId: meeting.meetingId, memberId, started: new Date().toISOString() });
   return { convId, created: true };
 }
 
-/** 关系下的成员 id（私聊 = 那一个人；群聊 = 项目 config 的 members 顺序）。 */
-function memberIdsOf(ws: Workspace, relation: Relation): string[] {
-  return relation.kind === "dm" ? [relation.employeeId] : parseMembers(ws, relation.project);
-}
-
-/** 一个员工的活跃会话（私聊 + 他所在的每个群）：供「会话上下文」面板按人聚合。 */
-export function employeeActiveSessions(
+/** 会议内各成员与其 conv（按 participants 顺序；还没建 conv 的成员 convId 为 undefined）。 */
+export function meetingParticipants(
   ws: Workspace,
   sessions: SessionStore,
-  employeeId: string,
-): { relation: Relation; convId: string; started: string }[] {
-  const relations: Relation[] = [{ kind: "dm", employeeId }];
-  for (const project of listProjects(ws)) {
-    if (parseMembers(ws, project.id).includes(employeeId)) relations.push({ kind: "group", project: project.id });
-  }
-  const out: { relation: Relation; convId: string; started: string }[] = [];
-  for (const relation of relations) {
-    const active = sessions.active(roomKeyOf(relation), employeeId);
-    if (active !== undefined) out.push({ relation, convId: active.convId, started: active.started });
-  }
-  return out;
+  meeting: MeetingRecord,
+): { memberId: string; convId?: string }[] {
+  const rows = new Map(sessions.listByMeeting(meeting.meetingId).map((row) => [row.memberId, row.convId]));
+  return participantIds(ws, subjectOf(meeting)).map((memberId) => {
+    const convId = rows.get(memberId);
+    return convId === undefined ? { memberId } : { memberId, convId };
+  });
 }
 
-/** 关系下各成员的会话列表（成员按项目 config 顺序；已不在成员表里的历史会话排在后面）。 */
-export function sessionList(
-  ws: Workspace,
-  sessions: SessionStore,
-  relation: Relation,
-): { memberId: string; rows: SessionRow[] }[] {
-  const room = roomKeyOf(relation);
-  const rows = sessions.list(room);
-  const members = memberIdsOf(ws, relation);
-  const out = members.map((memberId) => ({ memberId, rows: rows.filter((row) => row.memberId === memberId) }));
-  const seen = new Set(members);
-  for (const row of rows) {
-    if (seen.has(row.memberId)) continue;
-    seen.add(row.memberId);
-    out.push({ memberId: row.memberId, rows: rows.filter((item) => item.memberId === row.memberId) });
-  }
-  return out;
-}
-
-/** 关系下各成员的活跃会话。 */
-export function activeMemberSessions(
-  ws: Workspace,
-  sessions: SessionStore,
-  relation: Relation,
-): { memberId: string; convId: string }[] {
-  const out: { memberId: string; convId: string }[] = [];
-  const room = roomKeyOf(relation);
-  for (const memberId of memberIdsOf(ws, relation)) {
-    const active = sessions.active(room, memberId);
-    if (active !== undefined) out.push({ memberId, convId: active.convId });
-  }
-  return out;
-}
-
-/** 会话信息条（展示层）：模型全值 + 思考强度 + 上下文用量 / 模型窗口 + 标题。 */
-export type RoomSessionInfo = {
+/** 会议信息条（展示层）：模型全值 + 思考强度 + 上下文用量 / 模型窗口。 */
+export type MeetingSessionInfo = {
   memberId: string;
   convId: string;
-  /** 会话标题（会话表同一行）；没有则缺省。 */
-  title?: string;
   /** "provider/modelId"（会话快照）。 */
   model: string;
   /** 展示层判定后的档位；模型明确不支持 → null。 */
@@ -233,51 +189,61 @@ export type RoomSessionInfo = {
   contextWindow?: number;
 };
 
-/** 关系下各成员活跃会话的实际信息；坏会话（Pi 那边已不存在等）跳过，不连坐整个房间。 */
-export async function roomSessionInfo(
-  ws: Workspace, harness: HarnessPort, relation: Relation, sessions: SessionStore,
-): Promise<RoomSessionInfo[]> {
-  const out: RoomSessionInfo[] = [];
-  const active = activeMemberSessions(ws, sessions, relation);
-  const metas = sessions.getMany(active.map((session) => session.convId));
-  for (const session of active) {
+/** 会议内各成员会话的实际信息；坏会话（Pi 那边已不存在等）跳过，不连坐整场会议。 */
+export async function meetingSessionInfo(
+  ws: Workspace, harness: HarnessPort, sessions: SessionStore, meeting: MeetingRecord,
+): Promise<MeetingSessionInfo[]> {
+  const out: MeetingSessionInfo[] = [];
+  for (const participant of meetingParticipants(ws, sessions, meeting)) {
+    if (participant.convId === undefined) continue;
     try {
-      const usage = await harness.sessionUsage(session.convId);
-      const meta = metas.get(session.convId);
+      const usage = await harness.sessionUsage(participant.convId);
       out.push({
-        memberId: session.memberId,
-        convId: session.convId,
-        ...(meta?.title === undefined ? {} : { title: meta.title }),
+        memberId: participant.memberId,
+        convId: participant.convId,
         model: formatModelRef(usage.model),
         thinkingLevel: displayThinkingLevel(usage.thinkingLevel, usage.supportedThinkingLevels),
         contextUsed: usage.contextUsed,
         ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
       });
     } catch {
-      // 坏会话跳过：一个坏会话不该让整房间的信息条 500。
+      // 坏会话跳过：一个坏会话不该让整场会议的信息条 500。
     }
   }
   return out;
 }
 
-/** 房间级中断：中止该关系下各成员的活跃会话；best-effort（坏会话失败不连坐其它）。 */
-export async function interruptRoom(
-  ws: Workspace, harness: HarnessPort, sessions: SessionStore, relation: Relation,
+/** 会议级中断：中止该会议内各成员的会话；best-effort（坏会话失败不连坐其它）。 */
+export async function interruptMeeting(
+  ws: Workspace, harness: HarnessPort, sessions: SessionStore, meeting: MeetingRecord,
 ): Promise<{ aborted: string[] }> {
   const aborted: string[] = [];
-  for (const session of activeMemberSessions(ws, sessions, relation)) {
+  for (const participant of meetingParticipants(ws, sessions, meeting)) {
+    if (participant.convId === undefined) continue;
     try {
-      await harness.abort(session.convId);
-      aborted.push(session.convId);
+      await harness.abort(participant.convId);
+      aborted.push(participant.convId);
     } catch {
-      // 坏会话（会话表指向不存在的 convId 等）跳过：一个失败不该让整房间中断失败。
+      // 坏会话（会话表指向不存在的 convId 等）跳过：一个失败不该让整场会议中断失败。
     }
   }
   return { aborted };
 }
 
-/** 这条 convId 属于关系下哪个成员（含已结束的会话）；不属于该房间返回 undefined。 */
-export function findSessionOwner(sessions: SessionStore, relation: Relation, convId: string): string | undefined {
-  const owner = sessions.owner(convId);
-  return owner !== undefined && owner.room === roomKeyOf(relation) ? owner.memberId : undefined;
+/** 一个员工在各主题（私聊 + 他参与的每个项目）**最新一场会议**里的 conv：供「会话上下文」面板按人聚合。 */
+export function employeeActiveSessions(
+  ws: Workspace,
+  meetings: MeetingStore,
+  sessions: SessionStore,
+  employeeId: string,
+): { meetingId: string; kind: "dm" | "group"; convId: string }[] {
+  const out: { meetingId: string; kind: "dm" | "group"; convId: string }[] = [];
+  for (const relation of subjectsOfEmployee(ws, employeeId)) {
+    const subjectId = relation.kind === "dm" ? relation.employeeId : relation.project;
+    const current = meetings.latest(relation.kind, subjectId);
+    if (current === undefined) continue;
+    const row = sessions.convOf(current.meetingId, employeeId);
+    if (row !== undefined) out.push({ meetingId: current.meetingId, kind: relation.kind, convId: row.convId });
+  }
+  return out;
 }

@@ -5,10 +5,11 @@ export type ModelRef = { provider: string; modelId: string };
 
 export type ConversationSpec = {
   cwd: string;
-  /** 这条会话属于哪个房间（私聊 / 群聊）。会话快照固化，**不靠 cwd 猜**：群聊与私聊共用员工工作目录。
-   *  工具层（`sessionInfo`）据此判断「我在群里还是私聊」，决定 `room_history` 缺省房间、
-   *  `send_message member:` 是否允许、`request_permission` 记到哪个房间。 */
+  /** 这场会议属于哪个主题（私聊 / 群聊）。会话快照固化，**不靠 cwd 猜**：群聊与私聊共用员工工作目录；
+   *  prompt 链 / 权限装配按它取作用域（项目 → 员工）。 */
   relation: Relation;
+  /** 这条会话挂在哪场会议下（框架自持的会话身份）：投递 / 回显 / 工具层都用它定位，不再有房间键。 */
+  meetingId: string;
   instructions: string;
   model: ModelRef;
   thinkingLevel?: string;
@@ -45,14 +46,14 @@ export type ChatMessage = {
   text: string;
   /** Pi entry kind（如 pi.user / pi.assistant / chat.message）。 */
   kind?: string;
-  /** entry data（如 { author: "boss", roomMessageId }）。 */
+  /** entry data（如 { author: "boss", messageId }）。 */
   data?: unknown;
 };
 
 export type InputMeta = {
   /** entry kind；缺省 pi.user。编排传 "chat.message"。 */
   kind?: string;
-  /** entry data（如 { author: "boss", roomMessageId }）。 */
+  /** entry data（如 { author: "boss", messageId }）。 */
   data?: unknown;
   /** Pi 会话内去重键（重试不产生重复输入）。 */
   requestId?: string;
@@ -108,12 +109,15 @@ export interface HarnessPort {
   /** 新建会话：spec 在创建事务内原子固化（快照）。返回 convId。 */
   startSession(spec: ConversationSpec): Promise<string>;
   /** 读回既有会话并注册 access / 关系（绝不重配置）；不存在返回 false。 */
-  attach(convId: string, access: AccessContext, relation: Relation): Promise<boolean>;
-  /** 只登记「会话属于谁、在哪个房间」（不读会话本体、不改 access）：重启后 pump 只订阅不停 attach，
-   *  但工具层仍需要这份归属信息，否则工具会报「未注册的会话」。 */
-  bindSession(convId: string, session: { selfId: string; relation: Relation }): void;
+  attach(convId: string, access: AccessContext, relation: Relation, meetingId: string): Promise<boolean>;
+  /**
+   * 重启后补登记「会话属于谁、在哪场会议、能访问什么」（不读会话本体、不改会话配置）。
+   * **access 必填**：访问控制钩子按 convId 查这份上下文，漏登记的表现是员工每个工具调用都被
+   * 「访问控制：未注册的会话」拦下（改完配置重启后才暴露，极易误判成模型故障）。
+   */
+  bindSession(convId: string, session: { selfId: string; relation: Relation; meetingId: string; access: AccessContext }): void;
   /** 会话所属（员工 + 关系）；未注册返回 undefined。工具据此判断"我在哪、我是谁"。 */
-  sessionInfo(convId: string): { selfId: string; relation: Relation } | undefined;
+  sessionInfo(convId: string): { selfId: string; relation: Relation; meetingId: string } | undefined;
   /** 会话实际在用的模型 / 思考强度 / 上下文用量 / 模型窗口（展示层数据）。 */
   sessionUsage(convId: string): Promise<SessionUsage>;
   /** 阻塞发送（测试与非流式场景）；编排走 submit + watch（Task 5）。 */

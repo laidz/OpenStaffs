@@ -184,7 +184,7 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
 
   let harness: Harness | undefined;
   const accessByConv = new Map<string, AccessContext>();
-  const sessionInfoByConv = new Map<string, { selfId: string; relation: Relation }>();
+  const sessionInfoByConv = new Map<string, { selfId: string; relation: Relation; meetingId: string }>();
   const accessExtension = createAccessExtension((id) => accessByConv.get(id), new WriteGuard(options.root));
   registry.install(accessExtension);
 
@@ -246,18 +246,21 @@ export function createPiHarness(options: PiHarnessOptions): HarnessPort {
         ctx,
       );
       accessByConv.set(String(conv.id), spec.access);
-      sessionInfoByConv.set(String(conv.id), { selfId: spec.access.selfId, relation: spec.relation });
+      sessionInfoByConv.set(String(conv.id), { selfId: spec.access.selfId, relation: spec.relation, meetingId: spec.meetingId });
       return String(conv.id);
     },
-    async attach(convId, access, relation) {
+    async attach(convId, access, relation, meetingId) {
       const found = await harness!.conversation(convId as unknown as ConversationId, ctx);
       if (!found) return false;
       accessByConv.set(String(found.id), access);
-      sessionInfoByConv.set(String(found.id), { selfId: access.selfId, relation });
+      sessionInfoByConv.set(String(found.id), { selfId: access.selfId, relation, meetingId });
       return true;
     },
     bindSession(convId, session) {
-      sessionInfoByConv.set(convId, session);
+      // 身份与访问控制一起补登记：重启后工具调用先过 access 钩子，
+      // 只登记身份 → 员工每个工具都被「访问控制：未注册的会话」拦掉。
+      accessByConv.set(convId, session.access);
+      sessionInfoByConv.set(convId, { selfId: session.selfId, relation: session.relation, meetingId: session.meetingId });
     },
     sessionInfo(convId) {
       return sessionInfoByConv.get(convId);

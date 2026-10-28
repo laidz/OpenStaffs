@@ -16,6 +16,7 @@ afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 function spec(cwd: string): ConversationSpec {
   return {
     cwd,
+    meetingId: "mtg_test",
     relation: { kind: "dm", employeeId: "alice" },
     instructions: "你是测试员工。",
     model: { provider: "faux", modelId: "faux-model" },
@@ -121,14 +122,14 @@ describe("Pi Durable HarnessPort", () => {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
       const convId = await harness.startSession(spec(cwd));
-      expect(await harness.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(true);
+      expect(await harness.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" }, "mtg_test")).toBe(true);
       await harness.send(convId, "你好");
       expect(seenSystem).toContain("你是测试员工。");
 
       const other = createPiHarness({ root, sqlitePath: path.join(root, "openstaffs/.data", "state2.sqlite"), models });
       await other.open();
       try {
-        expect(await other.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(false);
+        expect(await other.attach(convId, access(cwd), { kind: "dm", employeeId: "alice" }, "mtg_test")).toBe(false);
       } finally {
         await other.close();
       }
@@ -187,6 +188,7 @@ describe("Pi Durable HarnessPort", () => {
       fs.mkdirSync(cwd, { recursive: true });
       const empty: ConversationSpec = {
         cwd,
+        meetingId: "mtg_test",
         relation: { kind: "dm", employeeId: "nobody" },
         instructions: "无模型员工。",
         model: { provider: "", modelId: "" },
@@ -208,21 +210,52 @@ describe("Pi Durable HarnessPort", () => {
       fs.mkdirSync(cwd, { recursive: true });
 
       const dmConv = await harness.startSession(spec(cwd));
-      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" }, meetingId: "mtg_test" });
 
       const groupConv = await harness.startSession({ ...spec(cwd), relation: { kind: "group", project: "demo" } });
-      expect(harness.sessionInfo(groupConv)).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" } });
+      expect(harness.sessionInfo(groupConv)).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" }, meetingId: "mtg_test" });
 
-      expect(await harness.attach(dmConv, access(cwd), { kind: "dm", employeeId: "alice" })).toBe(true);
-      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" } });
+      expect(await harness.attach(dmConv, access(cwd), { kind: "dm", employeeId: "alice" }, "mtg_test")).toBe(true);
+      expect(harness.sessionInfo(dmConv)).toEqual({ selfId: "alice", relation: { kind: "dm", employeeId: "alice" }, meetingId: "mtg_test" });
 
       // 重启后 pump 只订阅不停 attach：靠 bindSession 补登记（房间由会话链推出）
-      harness.bindSession("conv:restart", { selfId: "alice", relation: { kind: "group", project: "demo" } });
-      expect(harness.sessionInfo("conv:restart")).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" } });
+      harness.bindSession("conv:restart", { selfId: "alice", relation: { kind: "group", project: "demo" }, meetingId: "mtg_restart", access: access(cwd) });
+      expect(harness.sessionInfo("conv:restart")).toEqual({ selfId: "alice", relation: { kind: "group", project: "demo" }, meetingId: "mtg_restart" });
       expect(harness.sessionInfo("conv:不存在")).toBeUndefined();
     } finally {
       await harness.close();
     }
+  });
+
+  it("重启后 bindSession 必须把访问上下文一起补登记，否则工具全被「未注册的会话」拦掉", async () => {
+    // 场景：进程重启 → pump 只订阅不 attach；会话的 access 是内存态，重启就丢了。
+    // 回归：bindSession 曾只补身份不补 access → 员工每个工具调用都被访问控制钩子拦下。
+    const cwd = path.join(root, "agents", "alice");
+    fs.mkdirSync(cwd, { recursive: true });
+    const sqlitePath = path.join(root, "openstaffs/.data", "state-restart-access.sqlite");
+
+    const first = createPiHarness({ root, sqlitePath, models: fauxModels([fauxAssistantMessage("ok")]).models });
+    await first.open();
+    const convId = await first.startSession(spec(cwd));
+    await first.close();
+
+    // 「重启」：新 harness 打开同一库，不 attach；按 pump 重启路径只 bindSession（带 access）
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("write", { path: "restarted.md", content: "ok" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("完成"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const second = createPiHarness({ root, sqlitePath, models });
+    await second.open();
+    try {
+      second.bindSession(convId, { selfId: "alice", relation: { kind: "dm", employeeId: "alice" }, meetingId: "mtg_test", access: access(cwd) });
+      await second.send(convId, "写个文件");
+    } finally {
+      await second.close();
+    }
+    expect(fs.existsSync(path.join(cwd, "restarted.md"))).toBe(true);
   });
 });
 
@@ -235,12 +268,12 @@ describe("提交与推流", () => {
       const cwd = path.join(root, "agents", "alice");
       fs.mkdirSync(cwd, { recursive: true });
       const convId = await harness.startSession(spec(cwd));
-      await harness.submit(convId, "做X", { kind: "chat.message", data: { author: "boss", roomMessageId: "rm_1" } });
+      await harness.submit(convId, "做X", { kind: "chat.message", data: { author: "boss", messageId: "rm_1" } });
       await waitFor(async () => (await harness.transcript(convId)).some((m) => m.role === "assistant"));
       const boss = (await harness.transcript(convId)).find((m) => m.role === "user");
       expect(boss?.kind).toBe("chat.message");
       expect(boss?.text).toBe("做X");
-      expect((boss?.data as { roomMessageId?: string } | undefined)?.roomMessageId).toBe("rm_1");
+      expect((boss?.data as { messageId?: string } | undefined)?.messageId).toBe("rm_1");
     } finally {
       await harness.close();
     }
@@ -602,6 +635,7 @@ describe("会话完整上下文（context）", () => {
     try {
       const convId = await harness.startSession({
         cwd: workdir,
+        meetingId: "mtg_test",
         relation: { kind: "dm", employeeId: "alice" },
         instructions: "你是 alice。",
         model: { provider: "faux", modelId: "faux-model" },

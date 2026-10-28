@@ -17,7 +17,7 @@ function fakeStorage(initial: Record<string, string> = {}): DraftStorage & { rea
 }
 
 describe("输入框草稿的本地缓存", () => {
-  it("按房间键各自保存 / 读取（切会话不串台，多行与中文原样保留）", () => {
+  it("按主题键各自保存 / 读取（切会话不串台，多行与中文原样保留）", () => {
     const store = createDraftStore(fakeStorage());
     store.save("dm:alice", "第一行\n第二行");
     store.save("group:yt", "@alice 在吗");

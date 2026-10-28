@@ -2,15 +2,15 @@
 export type QueuedDelivery = {
   /** Pi 的 submission id：撤回与出队的唯一句柄。 */
   submissionId: string;
-  roomKey: string;
+  meetingId: string;
   memberId: string;
-  /** 房间级去重键：同一次发送的 N 份投递共享（前端据此合并成一条气泡）。 */
-  roomMessageId: string;
+  /** 会议级去重键：同一次发送的 N 份投递共享（前端据此合并成一条气泡）。 */
+  messageId: string;
   text: string;
   convId: string;
   /**
    * 这次发送对应的库行 seq（`sendToRoom` 落库那一行）。
-   * GET 房间视图据此把仍在排队的库行回填 roomMessageId —— 与 SSE 广播同口径，
+   * GET 房间视图据此把仍在排队的库行回填 messageId —— 与 SSE 广播同口径，
    * 刷新 / 换标签页时「排队中」贴到真气泡上，不出「真气泡 + 灰占位」两条。
    * 无对应库行（正文为空没落行）时为 0（seq 从 1 起，永不命中）。
    */
@@ -22,18 +22,18 @@ export type QueuedDelivery = {
 /** 给前端的视图（内部字段 convId/seq 不外泄）。 */
 export type QueuedItemView = {
   submissionId: string;
-  roomKey: string;
+  meetingId: string;
   memberId: string;
-  roomMessageId: string;
+  messageId: string;
   text: string;
 };
 
 export function queuedItemView(item: QueuedDelivery): QueuedItemView {
   return {
     submissionId: item.submissionId,
-    roomKey: item.roomKey,
+    meetingId: item.meetingId,
     memberId: item.memberId,
-    roomMessageId: item.roomMessageId,
+    messageId: item.messageId,
     text: item.text,
   };
 }
@@ -65,24 +65,24 @@ export class Outbox {
     return item;
   }
 
-  /** 某房间的待发条目（按投递顺序）。 */
-  list(roomKey: string): QueuedDelivery[] {
-    return [...this.#items.values()].filter((item) => item.roomKey === roomKey).sort((a, b) => a.seq - b.seq);
+  /** 某会议的待发条目（按投递顺序）。 */
+  list(meetingId: string): QueuedDelivery[] {
+    return [...this.#items.values()].filter((item) => item.meetingId === meetingId).sort((a, b) => a.seq - b.seq);
   }
 
-  /** 某房间同一次发送的待发条目（撤回 = 整条消息所有还没开始的投递）。 */
-  byRoomMessage(roomKey: string, roomMessageId: string): QueuedDelivery[] {
-    return this.list(roomKey).filter((item) => item.roomMessageId === roomMessageId);
+  /** 某会议同一次发送的待发条目（撤回 = 整条消息所有还没开始的投递）。 */
+  byMeetingMessage(meetingId: string, messageId: string): QueuedDelivery[] {
+    return this.list(meetingId).filter((item) => item.messageId === messageId);
   }
 
   /**
-   * 某房间仍在排队的投递：库行 seq → roomMessageId（GET 房间视图回填用）。
-   * 同一行 seq 命中的 N 份投递共享同一 roomMessageId，值一致。
+   * 某会议仍在排队的投递：库行 seq → messageId（GET 会议视图回填用）。
+   * 同一行 seq 命中的 N 份投递共享同一 messageId，值一致。
    */
-  roomMessageIdByStoreSeq(roomKey: string): Map<number, string> {
+  messageIdByStoreSeq(meetingId: string): Map<number, string> {
     const map = new Map<number, string>();
     for (const item of this.#items.values()) {
-      if (item.roomKey === roomKey) map.set(item.storeSeq, item.roomMessageId);
+      if (item.meetingId === meetingId) map.set(item.storeSeq, item.messageId);
     }
     return map;
   }

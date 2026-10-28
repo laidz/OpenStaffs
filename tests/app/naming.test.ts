@@ -2,25 +2,29 @@ import { describe, expect, test, vi } from "vitest";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { NAMING_INPUT_MAX, NAMING_TITLE_MAX, cleanTitle, createNamer } from "../../src/app/naming.ts";
 
-type FakeReply = { text?: string; stopReason?: string; throw?: boolean };
+type FakeReply = { text?: string; stopReason?: string; error?: string; throw?: boolean };
 
 /** 假 Models：getModel 给假模型对象（带 reasoning / thinkingLevelMap），completeSimple 不打网络。 */
 function fakeModels(options: {
   model?: object | undefined;
   reply?: FakeReply;
   seen?: { systemPrompt?: string; user?: string }[];
+  /** completeSimple 收到的第三参（sessionId 等）。 */
+  optionsSeen?: { sessionId?: string }[];
 }): Models {
   const model = "model" in options ? options.model : { id: "m", provider: "faux", api: "openai-completions", reasoning: false };
   return {
     getModel: () => (model === undefined ? undefined : model),
-    completeSimple: async (_m: unknown, context: { systemPrompt?: string; messages: { content: string }[] }) => {
+    completeSimple: async (_m: unknown, context: { systemPrompt?: string; messages: { content: string }[] }, streamOptions?: { sessionId?: string }) => {
       options.seen?.push({ systemPrompt: context.systemPrompt, user: String(context.messages[0]?.content) });
+      options.optionsSeen?.push({ ...(streamOptions?.sessionId === undefined ? {} : { sessionId: streamOptions.sessionId }) });
       const reply = options.reply ?? {};
       if (reply.throw === true) throw new Error("boom");
       return {
         role: "assistant",
         content: [{ type: "text", text: reply.text ?? "标题" }],
         stopReason: reply.stopReason ?? "stop",
+        ...(reply.error === undefined ? {} : { errorMessage: reply.error }),
       };
     },
   } as unknown as Models;
@@ -103,6 +107,27 @@ describe("createNamer", () => {
       await expect(aborted("你好")).resolves.toBeUndefined();
       const blank = createNamer({ models: fakeModels({ reply: { text: "   " } }), namingModel: "faux/m" })!;
       await expect(blank("你好")).resolves.toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("completeSimple 必须带 sessionId（opencode-go 的 x-opencode-session 头来源，缺了会 400）", async () => {
+    const optionsSeen: { sessionId?: string }[] = [];
+    const namer = createNamer({ models: fakeModels({ optionsSeen }), namingModel: "faux/m" })!;
+    await namer!("你好");
+    expect(optionsSeen[0]?.sessionId).toBeTruthy();
+  });
+
+  test("失败日志带 errorMessage（便于定位供应商 400，而不是只看到 error）", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const namer = createNamer({
+        models: fakeModels({ reply: { stopReason: "error", error: "400: MissingSessionID" } }),
+        namingModel: "faux/m",
+      })!;
+      await expect(namer("你好")).resolves.toBeUndefined();
+      expect(warn.mock.calls.flat().join(" ")).toContain("MissingSessionID");
     } finally {
       warn.mockRestore();
     }

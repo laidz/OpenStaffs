@@ -8,14 +8,18 @@ import { listPeople, personDisplayName } from "../domain/org.ts";
 import { loadEmployee } from "../domain/employee.ts";
 import { loadAgentConfig } from "../config/load.ts";
 import { officeDbFile, stateDir, type Workspace } from "../domain/paths.ts";
-import type { PermissionRequest, PermissionRequestStore } from "../domain/permission-requests.ts";
+import { normalizeTools, type PermissionRequest, type PermissionRequestStore } from "../domain/permission-requests.ts";
 import { listProjects } from "../domain/project.ts";
 import type { Relation } from "../domain/types.ts";
 import type { HarnessPort } from "../harness/port.ts";
 import { relationCwd, resolveSession, sessionDefaults, type SessionDefaults } from "../app/conversations.ts";
+import { senderLabel } from "../app/send.ts";
+import { participantIds, subjectOf } from "../app/meetings.ts";
 import { stripLeadingMentions } from "../app/message-row.ts";
-import { parseRoomKey, roomKeyOf, toRoomMessage, type RoomMessage, type RoomSpeaker } from "../app/rooms.ts";
+import { toMeetingMessage, type MeetingMessage, type Speaker } from "../app/meeting-messages.ts";
+import { openMeetingStore } from "../store/meetings.ts";
 import { openMessageStore } from "../store/messages.ts";
+import type { MeetingStore } from "../store/meetings.ts";
 import type { SessionStore } from "../store/sessions.ts";
 import { memoryTools } from "./memory.ts";
 import { BOSS_PARTICIPANT } from "../store/row.ts";
@@ -35,9 +39,13 @@ export type ToolContext = {
   /** MCP 扩展选择（新建会话时按关系 / 发言人解析）。 */
   mcp?: McpSessionResolver;
   permissions?: ToolPermissions;
-  /** 房间消息广播（R-P1-12）：装配层注入 SSE 喇叭；缺省不广播（工具仍落库）。 */
-  broadcast?: (roomKey: string, message: RoomMessage) => void;
-  /** 会话表（唯一真相）：send_message / new_session 用它把 (房间, 成员) 解析成 convId。 */
+  /** 会议消息广播（R-P1-12）：装配层注入 SSE 喇叭；缺省不广播（工具仍落库）。 */
+  broadcast?: (meetingId: string, message: MeetingMessage) => void;
+  /** 我在这场会议里（框架自持的会话身份）：投递 / 回显都以它为锚。 */
+  meetingId: string;
+  /** 会议表：send_message / request_permission 用它定位会议。 */
+  meetings: MeetingStore;
+  /** 会话表（唯一真相）：send_message / meeting_history 用它把 (会议, 成员) 解析成 convId。 */
   sessions: SessionStore;
 };
 
@@ -107,28 +115,29 @@ const memberProfile: ToolDef = {
   },
 };
 
-function speakerName(ws: Workspace, speaker: RoomSpeaker): string {
+function speakerName(ws: Workspace, speaker: Speaker): string {
   if (speaker.kind === "boss") return readBossName(ws);
   return speaker.alias ?? displayName(ws, speaker.id);
 }
 
-/** 读房间聊天记录（只含当前一轮）。 */
-const roomHistory: ToolDef = {
-  name: "room_history",
+/** 读某场会议的聊天记录（一场会议 = 一次会话；上一场会是另一个 meetingId）。 */
+const meetingHistory: ToolDef = {
+  name: "meeting_history",
   description:
-    "读某个房间的聊天记录（含发言人）。只含**当前一轮**（最近一次老板点「新开会话」之后的消息；更早的在房间历史里，不在此工具范围）。room 缺省 = 当前房间；也可传房间键 dm:<员工id> 或 group:<项目id>。limit 取最近若干条（缺省 50）。",
+    "读某场会议的聊天记录（含发言人）。缺省 = 我当前所在会议；也可传 meetingId（历史会议可回看，只读）。limit 取最近若干条（缺省 50）。",
   parameters: Type.Object({
-    room: Type.Optional(Type.String({ description: "房间键：dm:<员工id> 或 group:<项目id>；缺省当前房间" })),
+    meeting: Type.Optional(Type.String({ description: "meetingId；缺省当前会议" })),
     limit: Type.Optional(Type.Number({ description: "最近 N 条，缺省 50" })),
   }),
   async run(args, ctx) {
-    const room = args["room"] === undefined ? undefined : String(args["room"]);
-    const relation = room === undefined ? ctx.relation : parseRoomKey(room);
-    if (relation === undefined) throw new Error(`房间键不合法：${room}（应为 dm:<员工id> 或 group:<项目id>）`);
+    const meeting = args["meeting"] === undefined ? undefined : String(args["meeting"]);
+    const meetingId = meeting === undefined ? ctx.meetingId : meeting;
+    const meta = ctx.meetings.get(meetingId);
+    if (meta === undefined) throw new Error(`会议不存在：${meetingId}`);
     const limitRaw = args["limit"];
     const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : 50;
 
-    // 读自有消息库（P1）：房间历史不再读各成员 transcript。
+    // 读自有消息库：会议历史不再读各成员 transcript。
     // 工具只有 ctx.ws，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）→ 自开一个实例、用完即关；
     // SQLite 同进程多连接安全（HTTP / pump 用的是 main.ts 的唯一实例）。
     // `openstaffs/.data` 从未创建时也要能读：openMessageStore 现在自建父目录（此处 mkdir 幂等保留）、
@@ -136,7 +145,7 @@ const roomHistory: ToolDef = {
     fs.mkdirSync(stateDir(ctx.ws), { recursive: true });
     const store = openMessageStore(officeDbFile(ctx.ws));
     try {
-      const messages = store.currentWindow(roomKeyOf(relation)).map((m) => toRoomMessage(m, readBossName(ctx.ws), ctx.ws));
+      const messages = store.byMeeting(meta.meetingId).map((m) => toMeetingMessage(m, meta.kind, readBossName(ctx.ws), ctx.ws));
       const recent = messages.slice(-limit);
       if (recent.length === 0) return "（暂无消息）";
       return recent.map((m) => `${speakerName(ctx.ws, m.speaker)}：${m.text}`).join("\n");
@@ -148,94 +157,81 @@ const roomHistory: ToolDef = {
 
 /**
  * 写路径自持广播（R-P1-12「谁写谁广播」）：落一行 + 广播该库行（键 `store:<seq>`）。
- * - 自有库实例按 `room_history` 同款处理：工具只有 `ctx.ws`，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）
+ * - 自有库实例按 `meeting_history` 同款处理：工具只有 `ctx.ws`，为它改 ToolCtx 装配会波及 harness（超出 P1 范围）
  *   → 自开一个实例、用完即关；SQLite 同进程多连接安全（HTTP / pump 用的是 main.ts 的唯一实例）。
  * - `text` 一律剥头部 @（与发送侧 `stripLeadingMentions` 同口径）；**空正文不落行**（也就不广播）。
- * - 房间键由 `roomKeyOfMessage` 自动推出（写库时定），广播用它 —— boss 目标落成 `dm:<自己>`，不退化成 `dm:`。
+ * - 归属由**本会议**决定（`ctx.meetingId`）：目标只决定投给谁，绝不决定消息落在哪场会议。
  */
-function recordAndBroadcast(ctx: ToolContext, row: { projectId: string | null; toIds: string[]; text: string }): void {
+function recordAndBroadcast(ctx: ToolContext, meeting: { meetingId: string; kind: "dm" | "group" }, row: { toIds: string[]; text: string }): void {
   const text = stripLeadingMentions(row.text);
   if (text === "") return;
   const store = openMessageStore(officeDbFile(ctx.ws));
   try {
     const stored = store.append({
       sendTime: new Date().toISOString(),
-      projectId: row.projectId,
+      meetingId: meeting.meetingId,
       fromId: ctx.selfId,
       toIds: row.toIds,
       text,
     });
-    ctx.broadcast?.(stored.room, toRoomMessage(stored, readBossName(ctx.ws), ctx.ws));
+    ctx.broadcast?.(meeting.meetingId, toMeetingMessage(stored, meeting.kind, readBossName(ctx.ws), ctx.ws));
   } finally {
     store.close();
   }
 }
 
-/** 通用发消息（老板 / 群成员 / 项目）。 */
+/** 通用发消息：**永远投在本会议内**（目标只决定投给谁，不决定消息落在哪场会议）。 */
 const sendMessage: ToolDef = {
   name: "send_message",
   description:
-    "发消息。target 三选一：boss（主动私聊负责人，会进其待办）；member:<成员id>（在**当前群聊**里触发该成员，即 @他）；project:<项目id>（投递到你在该项目群的会话）。text 为消息内容。",
+    "在当前会议里发言。target 二选一：boss（发给负责人，会进其待办）；member:<成员id>（触发本会议里的该成员，即 @他，仅群聊会议）。text 为消息内容。",
   parameters: Type.Object({
-    target: Type.String({ description: "boss | member:<成员id> | project:<项目id>" }),
+    target: Type.String({ description: "boss | member:<成员id>" }),
     text: Type.String({ description: "消息内容" }),
   }),
   async run(args, ctx) {
     const target = String(args["target"]);
     const text = String(args["text"]);
+    const meeting = ctx.meetings.get(ctx.meetingId);
+    if (meeting === undefined) throw new Error(`会议不存在：${ctx.meetingId}`);
     if (target === "boss") {
-      const { convId } = await resolveSession(sessionDepsOf(ctx), roomKeyOf(ctx.relation), ctx.selfId);
+      const { convId } = await resolveSession(sessionDepsOf(ctx), meeting, ctx.selfId);
       await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
-      // 房间可见发言：落库 + 广播（房间 = dm:<自己>，收件人 = 老板）。
-      recordAndBroadcast(ctx, { projectId: null, toIds: [BOSS_PARTICIPANT], text });
+      // 会议内可见发言：落库 + 广播（会议 = 我当前所在的会议，收件人 = 老板）。
+      recordAndBroadcast(ctx, meeting, { toIds: [BOSS_PARTICIPANT], text });
       return `已发给「${readBossName(ctx.ws)}」（会显示在其待办里）。`;
     }
     const memberMatch = /^member:(.+)$/u.exec(target);
     if (memberMatch !== null) {
       const memberId = memberMatch[1]!;
-      if (ctx.relation.kind !== "group") throw new Error("member: 目标只能在群聊里用（当前是私聊）");
-      if (!parseMembers(ctx.ws, ctx.relation.project).includes(memberId)) throw new Error(`不是本群成员：${memberId}`);
-      const { convId } = await resolveSession(sessionDepsOf(ctx), `group:${ctx.relation.project}`, memberId);
-      await ctx.harness.submit(convId, text, { kind: "chat.message", data: { author: ctx.selfId } });
-      // 房间可见发言：落库 + 广播（房间 = group:<当前群>，收件人 = 被触发的成员）。
-      recordAndBroadcast(ctx, { projectId: ctx.relation.project, toIds: [memberId], text });
+      if (meeting.kind !== "group") throw new Error("member: 目标只能在群聊会议里用（当前是私聊会议）");
+      if (!participantIds(ctx.ws, subjectOf(meeting)).includes(memberId)) throw new Error(`不是本会议成员：${memberId}`);
+      const { convId } = await resolveSession(sessionDepsOf(ctx), meeting, memberId);
+      // 接收者的模型上下文只看到正文：派活必须自报身份，否则他找不到该回告谁。
+      await ctx.harness.submit(convId, `${senderLabel(ctx.ws, ctx.selfId)}：${text}`, { kind: "chat.message", data: { author: ctx.selfId } });
+      // 会议内可见发言：落库 + 广播（会议不变，收件人 = 被触发的成员）。
+      recordAndBroadcast(ctx, meeting, { toIds: [memberId], text });
       return `已触发 ${memberId}。`;
     }
-    const projectMatch = /^project:(.+)$/u.exec(target);
-    if (projectMatch !== null) {
-      const projectId = projectMatch[1]!;
-      const { convId } = await resolveSession(sessionDepsOf(ctx), `group:${projectId}`, ctx.selfId);
-      await ctx.harness.append(convId, { kind: "chat.message", text, data: { author: ctx.selfId } });
-      // 房间可见发言：落库 + 广播（房间 = group:<该项目>）。
-      // toIds 取空：该目标只是把消息写进「自己在该项目群的会话」，没有具体投递对象（不触发任何人）；
-      // 列全部项目成员会凭空伪造头部 @ 与收件人（展示层按 toIds 重建头），故不采用。
-      recordAndBroadcast(ctx, { projectId, toIds: [], text });
-      return `已投递到项目 ${projectId}。`;
-    }
-    throw new Error(`无法识别的 target：${target}（应为 boss | member:<id> | project:<id>）`);
+    throw new Error(`无法识别的 target：${target}（应为 boss | member:<id>）`);
   },
 };
 
-/** 新开一段会话。 */
-const newSessionTool: ToolDef = {
-  name: "new_session",
-  description: "重开一段新会话（结束当前、开新条，旧会话保留可回看）。适合上下文太长或想彻底换个话题时。下一轮起生效。",
-  parameters: Type.Object({}),
-  async run(_args, ctx) {
-    await resolveSession(sessionDepsOf(ctx), roomKeyOf(ctx.relation), ctx.selfId, { newSession: true });
-    return "已重开会话（下一轮起使用新会话）。";
-  },
-};
-
-/** 申请写权限（异步：负责人稍后在界面弹框中处理）。 */
+/**
+ * 申请权限（异步：负责人稍后在界面弹框中处理）。
+ * 权限类型**必填**；同一组目录要多种权限时一次列全（服务端也会按「人 × 会议 × 目录组」合并，
+ * 但一次请求能让弹框第一眼就完整，不用老板看两张卡）。
+ */
 const requestPermission: ToolDef = {
   name: "request_permission",
   description:
-    "向负责人申请写入某些路径的权限。**异步**：工具立即返回；负责人稍后在界面弹框中接受或拒绝，结果会以一条新消息通知你——在此之前不要重复发起，也不要尝试写入这些路径或用其他方式绕过拦截。paths 为要申请的路径（目录或文件，可多个；相对路径按当前工作目录解析）；reason 为简短理由（必填，会展示给负责人）。`tool` 缺省 `write`；权限按工具授予，写 / 读 / bash 各是一张路径表。",
+    "向负责人申请权限（异步）。tools 必填：要申请的权限类型数组（write / read / bash …，至少一个）；**同一组目录需要多种权限时一次列全**（如 [\"read\",\"write\"]），不要分多次申请。paths 为要申请的路径（目录或文件，可多条；相对路径按当前工作目录解析）；reason 为简短理由（必填，会展示给负责人）。权限按工具授予，写 / 读 / bash 各是一张路径表。",
   parameters: Type.Object({
+    tools: Type.Array(Type.String(), {
+      description: "要申请的权限类型（至少一个）：write / read / bash。同一组目录的多种权限请一次列全，不要分开发起。",
+    }),
     paths: Type.Array(Type.String(), { description: "要申请的路径（目录 / 文件，可多个）" }),
     reason: Type.String({ description: "简短理由：为什么需要这些路径（会展示给负责人）" }),
-    tool: Type.Optional(Type.String({ description: "权限工具名（缺省 write；如 read / bash）" })),
   }),
   async run(args, ctx) {
     const permissions = ctx.permissions;
@@ -255,18 +251,38 @@ const requestPermission: ToolDef = {
     if (paths.length === 0) throw new Error("paths 不能为空：至少给出一个要申请的路径。");
     const reason = String(args["reason"] ?? "").trim();
     if (reason === "") throw new Error(`reason 不能为空：用一两句话说明为什么要这些路径（会展示给「${bossName}」）。`);
-    const tool = typeof args["tool"] === "string" && args["tool"].trim() !== "" ? args["tool"].trim() : "write";
+    // 权限类型必填、不得回落 write：让弹框上的每种权限都是发起者明确要的。
+    const tools = normalizeTools(args["tools"]);
+    if (tools.length === 0) throw new Error("tools 不能为空：必须明确要哪种权限（write / read / bash）。");
     // 工具名会被写进 config 的 permissions 键与日志，只放行字母 / 数字 / _ / -（防路径穿越或怪异键）。
-    if (!/^[A-Za-z0-9_-]+$/u.test(tool)) throw new Error(`tool 不合法：${tool}（只允许字母、数字、下划线、连字符）`);
-    if (permissions.store.findDuplicate(ctx.selfId, paths, tool) !== undefined) {
-      return `已有相同的授权请求在等待「${bossName}」处理（${paths.length} 个地址），请勿重复发起。`;
+    for (const tool of tools) {
+      if (!/^[A-Za-z0-9_-]+$/u.test(tool)) throw new Error(`tools 不合法：${tool}（只允许字母、数字、下划线、连字符）`);
     }
-    const request = permissions.store.add({ agentId: ctx.selfId, roomKey: roomKeyOf(ctx.relation), tool, paths, reason });
+
+    const { request, merged, addedTools } = permissions.store.add({
+      agentId: ctx.selfId,
+      meetingId: ctx.meetingId,
+      tools,
+      paths,
+      reason,
+    });
     permissions.notify(request);
+    const toolList = request.tools.join("+");
+    const waiting = "等待处理：请勿重复发起，也不要尝试访问这些路径或用其他方式绕过拦截；处理后你会收到新消息。";
+    if (merged) {
+      if (addedTools.length === 0) {
+        return `已有完全相同的授权请求在等待「${bossName}」处理（权限：[${toolList}]；${paths.length} 个目录），请勿重复发起。`;
+      }
+      return [
+        `已把「${addedTools.join("、")}」并入同一组目录的等待请求（当前权限：[${toolList}]）：`,
+        ...paths.map((value) => `- ${value}`),
+        waiting,
+      ].join("\n");
+    }
     return [
-      `已向「${bossName}」发起授权请求（${paths.length} 个地址）：`,
+      `已向「${bossName}」发起授权请求（权限：[${toolList}]；${paths.length} 个目录）：`,
       ...paths.map((value) => `- ${value}`),
-      "等待处理：请勿重复发起，也不要尝试写入这些路径或用其他方式绕过拦截；处理后你会收到新消息。",
+      waiting,
     ].join("\n");
   },
 };
@@ -275,9 +291,8 @@ const requestPermission: ToolDef = {
 export const openStaffsToolDefs: readonly ToolDef[] = [
   officeList,
   memberProfile,
-  roomHistory,
+  meetingHistory,
   sendMessage,
-  newSessionTool,
   requestPermission,
   ...memoryTools,
 ];
